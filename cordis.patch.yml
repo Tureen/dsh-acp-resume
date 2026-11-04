@@ -1,0 +1,11 @@
+# Bundle layer: mounts the plugin when this layer is selected (Plugins page
+# toggle). Defaults target a PATH-resolvable kiro-cli; override by id from the
+# profile's cordis.patch.yml for a custom agent command or path.
+- insert:
+    - id: subagent-acp-resume
+      name: 'dsh-acp-resume'
+      config:
+        providerName: acp-resume
+        command: kiro-cli
+        args: [acp]
+        permission: allow

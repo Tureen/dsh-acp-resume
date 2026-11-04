@@ -29,7 +29,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | `acp_chat_start` | 建立持久会话,返回会话句柄 chatId |
 | `acp_chat_send` | 向指定会话发消息,返回最终回答;进程死后自动重连恢复上下文 |
 | `acp_chat_list` | 列出活跃与持久化会话 |
-| `acp_chat_close` | 释放会话进程(记录保留,可再连) |
+| `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
+| **持久会话面板**(右侧栏,D15) | 按会话聚合的只读视图:状态/轮数/摘要,释放与删除操作——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
 
 ## 配置(cordis.patch.yml)
 
