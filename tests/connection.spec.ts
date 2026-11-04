@@ -147,6 +147,24 @@ describe('openAcpConnection / AcpConnection', () => {
     expect(text(turn.output)).not.toContain('replay:')
   })
 
+  it('streams only this turn\'s text to the observer (no load replay); a throwing observer does not break the turn', async () => {
+    const store = join(tempDir('acp-resume-store-'), 'sessions.json')
+    const env = { MOCK_REMEMBER: '1', MOCK_SESSION_STORE: store, MOCK_LOAD_REPLAY: '1' }
+    const first = makeSpec(env)
+    const connA = await openAcpConnection(first.spec, { mode: 'new' })
+    const firstTurn = await connA.prompt(ask('记住暗号S'), live(), () => { throw new Error('observer failure') })
+    expect(firstTurn.stopReason).toBe('completed')
+    expect(text(firstTurn.output)).toBe('remember:none')
+    await connA.dispose()
+
+    const connB = await open(makeSpec(env, first.dir).spec, { mode: 'load', sessionId: connA.remoteSessionId })
+    const seen: string[] = []
+    const turn = await connB.prompt(ask('暗号是什么'), live(), (chunk) => { seen.push(chunk) })
+    expect(turn.stopReason).toBe('completed')
+    expect(seen).toEqual(['remember:记住暗号S'])
+    expect(seen.join('')).toBe(text(turn.output))
+  })
+
   it('rejects a load of an unknown remote session as load-session/protocol', async () => {
     const error = await startupError(openAcpConnection(makeSpec({}).spec, { mode: 'load', sessionId: 'no-such-session' }))
     expect(error.stage).toBe('load-session')

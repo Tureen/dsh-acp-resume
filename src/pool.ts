@@ -16,6 +16,9 @@
  * Each `completed` turn bumps the entry's `turnCount` and, while the entry
  * has no title yet, records the turn's message (trimmed, first 40
  * characters) as its `title`; `aborted` and `error` turns record neither.
+ * Optional send observers ({@link PoolSendHooks}) receive the turn's text
+ * chunks as they stream and learn of a fresh-session fallback before the
+ * prompt goes out.
  *
  * @module dsh-acp-resume/pool
  */
@@ -55,6 +58,14 @@ export interface PoolSendResult {
   /** True when the remote session was lost and a FRESH one answered instead. */
   readonly freshSession: boolean
   readonly diagnostic: string | undefined
+}
+
+/** Optional observers of one {@link AcpSessionPool.send}; a throwing observer is contained. */
+export interface PoolSendHooks {
+  /** Called once, before the prompt is sent, when a FRESH remote session replaced the lost one. */
+  readonly onFreshSession?: () => void
+  /** Each assistant text chunk of this turn, in arrival order; their concatenation is `output`. */
+  readonly onText?: (text: string) => void
 }
 
 /** Pool construction inputs: the spawn base plus durability knobs. */
@@ -337,9 +348,11 @@ export class AcpSessionPool {
    * answers from a FRESH remote session (`freshSession: true`); any other
    * reconnect failure rejects and keeps the saved remote session id.
    * Rejects while another prompt on the same chat is in flight, and rejects
-   * an already-aborted signal without touching the chat's connection.
+   * an already-aborted signal without touching the chat's connection. The
+   * in-flight claim is taken synchronously within this call (before its first
+   * await) unless a release of the chat is already underway.
    */
-  async send(chatId: string, message: string, signal?: AbortSignal): Promise<PoolSendResult> {
+  async send(chatId: string, message: string, signal?: AbortSignal, hooks: PoolSendHooks = {}): Promise<PoolSendResult> {
     this.assertLive()
     if (isAborted(signal)) throw new Error('acp-resume: send aborted before it started')
     if (this.registry.get(chatId) === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
@@ -350,12 +363,12 @@ export class AcpSessionPool {
     if (existing?.closing !== undefined) {
       // A release is underway: let it finish, then take the released path.
       await existing.closing.catch(() => undefined)
-      return this.send(chatId, message, signal)
+      return this.send(chatId, message, signal, hooks)
     }
     if (existing?.conn.processSettled === true) {
       // The process already exited: release the dead connection and reconnect.
       await this.close(chatId).catch((error: unknown) => { this.report(error) })
-      return this.send(chatId, message, signal)
+      return this.send(chatId, message, signal, hooks)
     }
 
     let freshSession = false
@@ -390,6 +403,9 @@ export class AcpSessionPool {
         this.starting.delete(chatId)
       }
       this.assertLive()
+      if (freshSession && hooks.onFreshSession !== undefined) {
+        try { hooks.onFreshSession() } catch { /* an observer cannot break the send */ }
+      }
     }
 
     const chat = this.live.get(chatId)
@@ -399,7 +415,7 @@ export class AcpSessionPool {
     const conn = chat.conn
     chat.busy = true
     this.clearIdleTimer(chat)
-    const turnPromise = conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal)
+    const turnPromise = conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal, hooks.onText)
     chat.busyPromise = turnPromise
     try {
       const turn = await turnPromise
@@ -428,6 +444,24 @@ export class AcpSessionPool {
       chat.busyPromise = undefined
       if (!this.disposed) this.armIdle(chat)
     }
+  }
+
+  /**
+   * Synchronous preflight with the same verdicts {@link send} reaches before
+   * it claims the chat: throws when the pool is disposed, the chat is unknown,
+   * a prompt is already in flight on it, or (for a released chat) its record
+   * belongs to another agent command. Lets a caller refuse a send before
+   * committing to background work.
+   */
+  assertSendable(chatId: string): void {
+    this.assertLive()
+    const entry = this.registry.get(chatId)
+    if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
+    const existing = this.live.get(chatId)
+    if (existing?.busy === true || this.starting.has(chatId)) {
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight`)
+    }
+    if (existing === undefined) this.assertSameAgent(entry)
   }
 
   /**

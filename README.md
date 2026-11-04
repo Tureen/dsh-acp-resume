@@ -27,7 +27,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | 工具 | 用途 |
 |---|---|
 | `acp_chat_start` | 建立持久会话,返回会话句柄 chatId |
-| `acp_chat_send` | 向指定会话发消息,返回最终回答;进程死后自动重连恢复上下文 |
+| `acp_chat_send` | 向指定会话发消息;进程死后自动重连恢复上下文。宿主装有 jobs 服务时立即返回后台任务 id,回答流式写入该任务,完成后会话内通知,用 `job_output` 读、`job_kill` 停;无 jobs 服务时等待并返回最终回答(D17) |
 | `acp_chat_list` | 列出活跃与持久化会话 |
 | `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
 | **持久会话面板**(右侧栏,D15) | 按会话聚合的只读视图:状态/轮数/摘要,释放与删除操作——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
@@ -78,6 +78,10 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
       command: /absolute/path/to/kiro-cli
   ```
 
+## 后台任务模式的宿主前提
+
+`acp_chat_send` 的后台模式依赖宿主同时装有 `@deepseek-ai/dsh-jobs-local`(提供 `ctx.jobs`)与 `@deepseek-ai/dsh-tool-jobs`(挂 job 控制器、提供 `job_output` / `job_list` / `job_kill` 与完成通知)。只有前者时 send 会以"无控制器"报工具错误;两者都没有时 send 回到同步等待。
+
 ## 真机冒烟前置检查
 
 - 抓一次真机 `initialize` 响应,确认 `agentCapabilities.loadSession` 为 `true`。重连前会检查这项能力,未声明时每次重连都会降级为新会话,续聊失效(D16)。
@@ -87,7 +91,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;156 绿 = 官方协议面 67 + connection 23 + pool 32 + tools 12 + panel 8 + client 14
+pnpm test                      # vitest;168 绿 = 官方协议面 67 + connection 24 + pool 32 + tools 12 + jobs 11 + panel 8 + client 14
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

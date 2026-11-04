@@ -8,10 +8,13 @@
  * service is present (revoked when it leaves); their session pool lives on the
  * plugin fiber and is drained on plugin teardown. The side-panel Remote service
  * (`acpResume/list|close|purge`, see `./panel.ts`) registers alongside the tools.
+ * The send tool follows the job registry (D17): the job-backed variant is
+ * registered while `ctx.jobs` is present, the inline variant otherwise (and
+ * again when the registry leaves while the tools stay).
  * @module @deepseek-ai/dsh-subagent-acp
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, FiberState } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {
   ResolvedSubagentStartRequest,
@@ -24,8 +27,12 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool } from './pool.js'
-import { registerChatTools } from './tools.js'
+import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
+
+// cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
+// cannot read at runtime; `satisfies` pins the literal to the declared member.
+const FIBER_ACTIVE = 2 satisfies FiberState.ACTIVE
 
 export const name = 'acp-resume'
 export const inject = ['subagents', 'subprocess']
@@ -182,7 +189,30 @@ export function apply(ctx: Context, config: Config): void {
       onWarn: message => { ctx.logger.warn(message) },
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
-    registerChatTools(scope, scope.tools, pool, resolved.toolPrefix)
+    const chatPool = pool
+    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs)
+    const [start, list, close] = chatStaticTools(chatPool, resolved.toolPrefix)
+    scope.effect(() => scope.tools.register(start))
+    // Send follows the job registry, as the official bash tool does: the inline
+    // variant registers now unless a registry is already composed, the
+    // job-backed variant replaces it while `ctx.jobs` is present, and the inline
+    // one returns when the registry unloads while the tools scope stays.
+    let inlineSend = scope.get('jobs') === undefined ? scope.tools.register(sendTool()) : undefined
+    scope.effect(() => () => {
+      inlineSend?.()
+      inlineSend = undefined
+    })
+    scope.effect(() => scope.tools.register(list))
+    scope.effect(() => scope.tools.register(close))
+    scope.inject(['jobs'], (jobsScope) => {
+      inlineSend?.()
+      inlineSend = undefined
+      const unregister = scope.tools.register(sendTool(jobsScope.jobs))
+      jobsScope.effect(() => () => {
+        unregister()
+        if (scope.fiber.state === FIBER_ACTIVE) inlineSend = scope.tools.register(sendTool())
+      })
+    })
     // The panel Remote service (D15) shares the pool's arrival point and the
     // tools scope's lifetime: it is unregistered with that scope.
     new AcpResumePanelService(scope, pool)

@@ -26,6 +26,7 @@
 
 依据:D3 之下模型触达会话池的唯一途径;官方姿势 `defineTool`(@deepseek-ai/dsh-tools)+ `ctx.tools.register`,参照 tool-subagent 实现。
 后果:新增 dev/peer 依赖 dsh-tools;工具不走 `ctx.subagents`,不进委派目录 UI(与外部 one-shot 一致,可接受)。
+修订(2026-11-04,D17):宿主装有 jobs 服务(`ctx.jobs`)时,`acp_chat_send` 不再等整轮回答,改为把这一轮注册成后台任务(job),立即返回 jobId;回答流式写进该 job 的输出,完成通知由宿主的 tool-jobs 在会话内送达,模型用 `job_output` 读、`job_kill` 停。无 jobs 服务时 send 保持原同步语义。其余三个工具不变。
 
 ## D6 池语义(2026-11-04;同日按六维评审修订,见 D16)
 
@@ -38,6 +39,12 @@
 - 失败轮:结算为 `error` 的轮同样作废连接,理由同取消(子进程多半已死或状态不明);
 - close:在途轮先协作取消(`session/cancel`),最多等 `disposeGraceMs` 让它结算,再释放进程;`purge` 额外删注册表条目,释放失败时保留条目并报错;拆卸/关闭对重连窗口有界:close 与 `disposeAll` 中止进行中的启动/重连窗口(池持有的 AbortController,启动竞速据此自行释放子进程),最多等 `disposeGraceMs`,超时即按已释放处理,窗口晚到的连接一律丢弃并关进程(2026-11-04 补);
 - 环境:沿用官方凭据清洗 + 显式 env 叠加。
+
+修订(2026-11-04,D17,后台任务模式):
+- 单飞不变:同一会话已有在途轮(即它的 job 仍在跑)时,新 send 在**注册 job 之前**就作为工具错误拒绝,不生成第二个 job;
+- 取消入口增加 `job_kill`(以及属主 agent 销毁时注册表发起的取消):两者都走上面的取消条——本地立即结算 `aborted`、尽力 `session/cancel`、作废连接、注册表保留;job 结束为 `killed`;
+- 后台模式下工具调用自身的取消信号不再作用于这一轮(工具在返回 jobId 时已结束,轮归 job 所有);同步降级模式仍按原条执行;
+- 失败轮、降级注记、close 语义不变;降级注记成为 job 输出的第一行。
 
 ## D7 session/load 参数形状(2026-11-03 实测)
 
@@ -118,3 +125,28 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - 注册表仍是单写者设计,多个宿主进程共用同一路径无文件锁(D14 已记)。
 
 已修(2026-11-04):挂起的重连窗口卡死拆卸(测试阶段探针发现:load 永不返回时 `disposeAll` / `close` 无界等待),改为中止窗口 + `disposeGraceMs` 兜底(D6 close 条)。
+
+## D17 send 走宿主后台任务(jobs)(2026-11-04)
+
+问题:同步 send 把 kiro 整轮回答当工具返回值,agent loop 一直等它,kiro 跑多久这一步就卡多久。官方的长任务正道是 jobs 能力族(`packages/jobs/README.md:12`):工具把长任务注册成 job,属主 agent 不阻塞自己的回合,完成后在会话内收到通知。
+
+依据(官方 checkout `my-subagent-acp` @ dsh-v0.2.1-rc.5 实读,路径相对仓库根):
+- 注册形状:`ctx.jobs.start(spec)` 同步返回 `<kind>-<16 位 hex>` 的 id(`packages/jobs/jobs/src/index.ts:113`);`JobSpec` = `kind` / `label` / `owner?` / `toolCall?` / `output?` / `run(job) => JobHooks`(`packages/jobs/jobs/src/types.ts:179-213`)。`run` 在 `start` 内同步调用,抛错则什么都不注册。
+- 所有权:生产方把 `exec.agent.id` 填进 `owner`,把 `{ callId: exec.callId, rootCallId: exec.rootCallId }` 填进 `toolCall`(bash:`packages/shell/tool-bash/src/index.ts:272-273`;workflow:`packages/workflow/tool-workflow/src/index.ts:276-279`)。其他会话对该 job 的 get/read/kill 一律抛错(注册表按 owner 设防,`jobs/src/index.ts:62-63`)。
+- 增量输出:`JobHandle.append(text, { channel? })` 推送进该 job 的输出环(`types.ts:139-155`);不带 channel 的块模型可见,`log` 通道只给观察者(`packages/jobs/tool-jobs/src/render.ts:75-84`)。`job_output` 先给自上次读以来的增量,结束后再附一次 `JobOutcome.result`(`tool-jobs/src/index.ts:184-191`)。
+- 完成通知:tool-jobs 订阅 `settled` 事件,忙时注入下一步、闲时唤起新回合(`tool-jobs/src/index.ts:272-308`);通知正文只有状态行加 "Read its output with job_output"(`:126`),不带结果本身。
+- 取消:`job_kill` → `jobs.kill(id, caller, reason)`(`tool-jobs/src/index.ts:403`)→ 生产方的 `JobHooks.cancel(reason)`,该函数须同步、幂等,且最终让 `done` 结算(`types.ts:158-171`);bash 的接法见 `tool-bash/src/index.ts:287-290` 与 `src/background.ts:99-129`,workflow 见 `tool-workflow/src/index.ts:310`。
+- 前提:没有 job 控制器服务该 owner 时 `start` 拒绝(`jobs/src/index.ts:72-74`);控制器由 tool-jobs 加载时挂上。
+- 容量:jobs-local 每个 job 运行期保留 256 KiB 输出,结算时模型未读的字节不裁(`packages/jobs/jobs-local/README.md:44-46`,`jobs-local/src/index.ts:628`)。
+
+决策:
+- **流式**:kiro 的 `agent_message_chunk` 文本逐块 `append` 进 job 输出(不带 channel,模型可见),模型等待期用 `job_output` 能看到进展;不再另给 `result`,否则结束后的读会把整段回答再给一遍。各次读拼起来就是完整回答,与同步模式的返回文本相同;降级时注记是第一行,空回答时写入 `(agent returned no text)`。为此 connection 的 `prompt` 加可选文本观察者、pool 的 `send` 加可选 hooks(`onText` / `onFreshSession`),两者都把观察者抛错吞掉。
+- **结局映射**:`completed` → `completed`;`aborted` → `killed`;`error` / `max-tokens` / `refusal` / 其他 → `failed`,detail 为原工具错误的首行(如 `the agent ran out of room before it finished its answer`)。send 本身失败(重连失败等)→ `failed`,由 job 自己的取消引起时为 `killed`。`done` 永不 reject。
+- **所有权与调用标识**:按 bash 姿势,`owner` 取 `exec.agent.id`(无 agent 时为无主 job),`toolCall` 取调用标识。kind 为 `acp-chat`,label 为 `<会话 label 或 chatId>: <消息首行,至多 60 字>`。
+- **单飞与前置检查**:新增 `pool.assertSendable(chatId)`,同步复核 send 会给出的拒绝(池已销毁、未知会话、在途、注册表记录属于另一 agent 命令)。工具先做这项检查再 `jobs.start`;`run` 在 `start` 内同步调用 `pool.send`,而 send 在第一个 await 之前就占住会话,检查与占用之间没有可插入的空档(同一步里并行两个 send 到同一会话,第二个是工具错误)。注册表拒绝(无控制器、属主 job 数达上限)同样作为工具错误抛出,不降级为同步执行:上限报错本身告诉模型去 kill 或等待,自动转同步会让卡顿换个地方复现。
+- **不加 `wait` 参数**:官方 bash/workflow 都是默认前台、`run_in_background` 选择后台;本包按需求反过来默认后台。需要内联等待时,`job_output` 的 `wait: true` 就是官方的阻塞原语(上限受 tool-jobs 配置约束),再加一个 `wait` 只是第二条做同一件事的路径。
+- **接线**:与 bash 相同(`tool-bash/src/index.ts:546-555`):tools 作用域内,无 `ctx.jobs` 时注册同步 send;jobs 到达时换成后台 send;jobs 离开而 tools 仍在时换回同步。start/list/close 不随之变化。
+- **降级**:无 jobs 服务的上下文(官方 spec 的 setup、未装 jobs-local 的宿主)保持原同步语义与原工具说明,既有用例不变。
+- **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(`~0.2.1-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
+
+后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接。

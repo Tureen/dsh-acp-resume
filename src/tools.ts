@@ -3,16 +3,32 @@
  * durable conversation, send follow-up messages (reconnecting or degrading to
  * a fresh session when the remote one is gone), list durable chats, and
  * release a chat's process while keeping its record. Tool copy speaks to the
- * model, not to the UI. A send whose turn did not end `completed` is thrown as
- * a tool error (official convention: non-completed ⇒ isError); a degraded
- * fresh session is a success and is flagged by a leading note line.
+ * model, not to the UI. The send tool comes in two variants (D17): with a job
+ * registry (`ctx.jobs`) it registers the turn as a background job and returns
+ * the job id at once, streaming the answer into the job's output and settling
+ * the job `completed` / `failed` / `killed`; without one it awaits the answer
+ * inline, and a turn that did not end `completed` is thrown as a tool error
+ * (official convention: non-completed ⇒ isError). Either way a degraded fresh
+ * session is a success flagged by a leading note line.
  *
  * @module dsh-acp-resume/tools
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { AcpSessionPool, PoolSendResult } from './pool.js'
+
+declare module '@deepseek-ai/dsh-jobs' {
+  interface JobKindMap {
+    'acp-chat': 'acp-chat'
+  }
+}
+
+/** The registry face the job-backed send needs: `ctx.jobs` in a host. */
+export type ChatJobsFace = Pick<JobRegistry, 'start'>
+
+type ToolDefinitionOf = ReturnType<typeof defineTool>
 
 /** Leading line on a degraded send; embeds the fixed D6 phrase. */
 const FRESH_NOTE = '[remote session lost, started fresh — prior context is gone; restate what matters and re-ask]'
@@ -24,8 +40,11 @@ const DIAGNOSTIC_EXCERPT_MAX = 300
 
 /** Minimal registry face the tools need; the host provides the real service. */
 export interface ToolsRegistryFace {
-  register(definition: ReturnType<typeof defineTool>): () => void
+  register(definition: ToolDefinitionOf): () => void
 }
+
+/** Longest message excerpt carried in a job label. */
+const LABEL_EXCERPT_MAX = 60
 
 /** `12s` / `12m` / `3h` / `2d` since `then`; clock skew reads as `0s`. */
 function formatIdle(then: number, now: number): string {
@@ -54,35 +73,180 @@ function diagnosticExcerpt(diagnostic: string | undefined): string {
   return `: ${capped}`
 }
 
+/** One-line account of a non-completed turn: the tool error's headline and the job's terminal detail. */
+function turnFailureHeadline(result: PoolSendResult): string {
+  switch (result.stopReason) {
+    case 'aborted':
+      return 'the agent stopped before finishing; the chat may hold a partial turn — check its state before resending'
+    case 'error':
+      return `the agent failed before it finished${diagnosticExcerpt(result.diagnostic)}`
+    case 'max-tokens':
+      return 'the agent ran out of room before it finished its answer'
+    case 'refusal':
+      return 'the agent declined to answer'
+    default:
+      return `the agent ended its turn without finishing (stop reason: ${result.stopReason})${diagnosticExcerpt(result.diagnostic)}`
+  }
+}
+
 /** Error for a non-completed send: headline, then any partial output the agent produced. */
 function failedTurnError(result: PoolSendResult): Error {
   const fresh = result.freshSession ? `\n${FRESH_NOTE}` : ''
   const partial = result.output.trim() === '' ? '' : `\npartial output received:\n${result.output}`
-  switch (result.stopReason) {
-    case 'aborted':
-      return new Error(`the agent stopped before finishing; the chat may hold a partial turn — check its state before resending${fresh}${partial}`)
-    case 'error':
-      return new Error(`the agent failed before it finished${diagnosticExcerpt(result.diagnostic)}${fresh}${partial}`)
-    case 'max-tokens':
-      return new Error(`the agent ran out of room before it finished its answer${fresh}${partial}`)
-    case 'refusal':
-      return new Error(`the agent declined to answer${fresh}${partial}`)
-    default:
-      return new Error(`the agent ended its turn without finishing (stop reason: ${result.stopReason})${diagnosticExcerpt(result.diagnostic)}${fresh}${partial}`)
-  }
+  return new Error(`${turnFailureHeadline(result)}${fresh}${partial}`)
+}
+
+/** `<label or chatId>: <first message line, capped>`: the job's one-line label. */
+function jobLabel(pool: AcpSessionPool, chatId: string, message: string): string {
+  const chat = pool.listChats().find(c => c.chatId === chatId)
+  const name = chat?.label ?? chatId
+  const firstLine = message.trim().split('\n', 1)[0]?.trim() ?? ''
+  const chars = Array.from(firstLine)
+  const excerpt = chars.length > LABEL_EXCERPT_MAX ? `${chars.slice(0, LABEL_EXCERPT_MAX).join('')}…` : firstLine
+  return excerpt === '' ? name : `${name}: ${excerpt}`
 }
 
 /**
- * Register the four chat tools under `toolPrefix` (`acp_chat_` by default:
- * acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close).
- * @param ctx - host context; owns the registrations' lifetime via `ctx.effect`.
- * @param tools - the tools registry the four definitions are registered into.
- * @param pool - the pool the tools drive.
- * @param toolPrefix - name prefix for all four tools.
+ * Run one pooled turn as a job's work. The answer streams into the job's
+ * output (the fresh-session note first, when the remote session was lost);
+ * the outcome maps the stop reason: `completed` → completed, `aborted` →
+ * killed, anything else → failed, with the failure headline as detail. A
+ * send that rejects (reconnect failure, single-flight race) fails the job, or
+ * ends it killed when the job's own cancellation caused it. Never rejects.
  */
-export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: AcpSessionPool, toolPrefix: string): void {
-  const unknownChat = (chatId: string): Error =>
-    new Error(`unknown chat ${chatId}; call ${toolPrefix}list to see known chats`)
+async function runTurnAsJob(pool: AcpSessionPool, chatId: string, message: string, signal: AbortSignal, job: JobHandle): Promise<JobOutcome> {
+  try {
+    const result = await pool.send(chatId, message, signal, {
+      onFreshSession: () => { job.append(`${FRESH_NOTE}\n`) },
+      onText: (text) => { job.append(text) },
+    })
+    if (result.stopReason === 'completed') {
+      if (result.output.trim() === '') job.append(EMPTY_OUTPUT)
+      return { status: 'completed' }
+    }
+    return { status: result.stopReason === 'aborted' ? 'killed' : 'failed', detail: turnFailureHeadline(result) }
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return { status: signal.aborted ? 'killed' : 'failed', detail }
+  }
+}
+
+function unknownChatError(toolPrefix: string, chatId: string): Error {
+  return new Error(`unknown chat ${chatId}; call ${toolPrefix}list to see known chats`)
+}
+
+const SEND_PARAMETERS = (toolPrefix: string) => ({
+  chatId: {
+    type: 'string',
+    required: true,
+    description: `The chatId returned by ${toolPrefix}start.`,
+  },
+  message: {
+    type: 'string',
+    required: true,
+    description: 'The message to send. Include any context the chat needs; it remembers its own prior turns.',
+  },
+}) as const
+
+const SEND_OUTPUT = {
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      text: { type: 'string', required: true },
+      jobId: { type: 'string' },
+    },
+  },
+  render: (_args: unknown, value: { text: string }) => [{ type: 'text' as const, text: value.text }],
+} as const
+
+/**
+ * The send tool. With `jobs` it is job-backed: preflight (unknown chat,
+ * in-flight turn, foreign agent record) throws as a tool error, otherwise the
+ * turn is registered as an `acp-chat` job owned by the calling agent's
+ * session and the call returns its id at once; a registry refusal (owner job
+ * limit, no job controller) is thrown as the tool error. `job_kill` (or owner
+ * teardown) aborts the turn: local `aborted` settlement, best-effort
+ * `session/cancel`, connection released (D6). Without `jobs` it awaits the
+ * answer inline.
+ * @param pool - the pool the tool drives.
+ * @param toolPrefix - name prefix shared by the four tools.
+ * @param jobs - the job registry, when the host composes one.
+ */
+export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace): ToolDefinitionOf {
+  const name = `${toolPrefix}send`
+  if (jobs === undefined) {
+    return defineTool({
+      name,
+      description: `Send one message to a persistent chat started with ${toolPrefix}start and await its final answer. `
+        + 'The chat keeps full conversation context. One prompt may be in flight per chat; wait for each answer. '
+        + 'Different chats may run in parallel; never send twice to the same chat in one turn. '
+        + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
+        + 'If the agent did not finish its turn, the tool fails and includes any partial output.',
+      parameters: SEND_PARAMETERS(toolPrefix),
+      output: SEND_OUTPUT,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        exec.signal.throwIfAborted()
+        if (!pool.knows(args.chatId)) throw unknownChatError(toolPrefix, args.chatId)
+        const result = await pool.send(args.chatId, args.message, exec.signal)
+        if (result.stopReason !== 'completed') throw failedTurnError(result)
+        const body = result.output.trim() === '' ? EMPTY_OUTPUT : result.output
+        return { text: result.freshSession ? `${FRESH_NOTE}\n${body}` : body }
+      },
+    })
+  }
+  return defineTool({
+    name,
+    description: `Send one message to a persistent chat started with ${toolPrefix}start. Returns at once with a background job id; `
+      + 'the agent\'s answer streams into that job while you keep working. You are notified in-session when the job finishes: '
+      + 'read the answer with job_output (set wait: true only when you are blocked on it), and stop it with job_kill. '
+      + 'The chat keeps full conversation context. One prompt may be in flight per chat: a send to a chat whose previous job '
+      + 'is still running is rejected, so wait for that job first. Different chats may run in parallel. '
+      + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
+      + 'If the agent did not finish its turn, the job ends failed (or killed, when cancelled) with the reason in its status, '
+      + 'and any partial answer stays readable with job_output.',
+    parameters: SEND_PARAMETERS(toolPrefix),
+    output: SEND_OUTPUT,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      exec.signal.throwIfAborted()
+      const { chatId, message } = args
+      if (!pool.knows(chatId)) throw unknownChatError(toolPrefix, chatId)
+      pool.assertSendable(chatId)
+      // The job owns the turn's cancellation from here on: the tool call ends
+      // when the id is returned, so its own signal must not reach the turn.
+      const controller = new AbortController()
+      const jobId = jobs.start({
+        kind: 'acp-chat',
+        label: jobLabel(pool, chatId, message),
+        toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
+        ...(exec.agent === undefined ? {} : { owner: exec.agent.id }),
+        // The starter runs synchronously inside start(), and pool.send claims
+        // the chat before its first await, so the preflight above and the
+        // claim leave no gap for a parallel send on the same chat.
+        run: job => ({
+          done: runTurnAsJob(pool, chatId, message, controller.signal, job),
+          cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: chat job killed')) },
+        }),
+      })
+      return {
+        text: `message sent to chat ${chatId}; the answer runs as background job ${jobId}. `
+          + `You are notified in-session when it finishes; read the answer with job_output, stop it with job_kill. `
+          + `Do not send to this chat again until the job finishes.`,
+        jobId,
+      }
+    },
+  })
+}
+
+/**
+ * The start, list, and close tools (send is built by {@link chatSendTool}).
+ * @param pool - the pool the tools drive.
+ * @param toolPrefix - name prefix shared by the four tools.
+ */
+export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolDefinitionOf[] {
+  const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
 
   const start = defineTool({
     name: `${toolPrefix}start`,
@@ -118,46 +282,6 @@ export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: 
       if (label.length > LABEL_MAX) throw new Error(`label is ${label.length} characters; keep it at most ${LABEL_MAX}`)
       const chat = await pool.start(args.cwd, exec.signal, label === '' ? {} : { label })
       return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
-    },
-  })
-
-  const send = defineTool({
-    name: `${toolPrefix}send`,
-    description: `Send one message to a persistent chat started with ${toolPrefix}start and await its final answer. `
-      + 'The chat keeps full conversation context. One prompt may be in flight per chat; wait for each answer. '
-      + 'Different chats may run in parallel; never send twice to the same chat in one turn. '
-      + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
-      + 'If the agent did not finish its turn, the tool fails and includes any partial output.',
-    parameters: {
-      chatId: {
-        type: 'string',
-        required: true,
-        description: `The chatId returned by ${toolPrefix}start.`,
-      },
-      message: {
-        type: 'string',
-        required: true,
-        description: 'The message to send. Include any context the chat needs; it remembers its own prior turns.',
-      },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          text: { type: 'string', required: true },
-        },
-      },
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    isConcurrencySafe: () => true,
-    async execute(args, exec) {
-      exec.signal.throwIfAborted()
-      if (!pool.knows(args.chatId)) throw unknownChat(args.chatId)
-      const result = await pool.send(args.chatId, args.message, exec.signal)
-      if (result.stopReason !== 'completed') throw failedTurnError(result)
-      const body = result.output.trim() === '' ? EMPTY_OUTPUT : result.output
-      return { text: result.freshSession ? `${FRESH_NOTE}\n${body}` : body }
     },
   })
 
@@ -229,7 +353,21 @@ export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: 
     },
   })
 
-  for (const definition of [start, send, list, close]) {
+  return [start, list, close]
+}
+
+/**
+ * Register the four chat tools under `toolPrefix` (`acp_chat_` by default:
+ * acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close).
+ * @param ctx - host context; owns the registrations' lifetime via `ctx.effect`.
+ * @param tools - the tools registry the four definitions are registered into.
+ * @param pool - the pool the tools drive.
+ * @param toolPrefix - name prefix for all four tools.
+ * @param jobs - the job registry; when given, send is the job-backed variant.
+ */
+export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace): void {
+  const [start, list, close] = chatStaticTools(pool, toolPrefix)
+  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs), list, close]) {
     ctx.effect(() => tools.register(definition))
   }
 }

@@ -3,7 +3,8 @@
  * process, open its remote session (`session/new`, or `session/load` reconnect
  * gated on the advertised `loadSession` capability), run prompt turns with the
  * official settlement semantics (stop-reason mapping, unattended permission
- * policy, cancellation), and tear down with the official ladder. Startup
+ * policy, cancellation, an optional per-turn text observer for streaming),
+ * and tear down with the official ladder. Startup
  * failures reject with {@link AcpConnectionError} carrying fixed safe facts.
  * This is the pool's sister implementation of run.ts; the one-shot provider
  * keeps using run.ts verbatim (D11), so roughly 200 lines are deliberately
@@ -86,9 +87,12 @@ export interface AcpConnection {
    * `error` with the safe diagnostic, mirroring the one-shot contract.
    * @param blocks - ACP prompt content blocks (text only today).
    * @param signal - cancellation channel for this turn.
+   * @param onText - optional observer of this turn's assistant text chunks, in
+   *   arrival order; their concatenation equals the settled output. Chunks after
+   *   settlement are not delivered; a throwing observer is contained.
    * @returns this turn's text, stop reason, and optional diagnostic.
    */
-  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal): Promise<AcpTurnResult>
+  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult>
   /** Observe the process outcome for failure classification (bounded by the spec grace). */
   observeOutcome(signal?: AbortSignal): Promise<SubprocessOutcome | undefined>
   /** Best-effort `session/cancel` notification for the remote session. */
@@ -282,6 +286,8 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   // arriving AFTER a settled turn (a cancelled turn's late tail) must not enter
   // the next turn's output. Only chunks observed while a turn is in flight accumulate.
   let acceptingUpdates = false
+  // The in-flight turn's text observer; cleared with acceptingUpdates.
+  let turnTextObserver: ((text: string) => void) | undefined
   let latestPermission: AcpPermissionDecision | undefined
   const flags = { cancelled: false }
 
@@ -289,7 +295,11 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     .onNotification(methods.client.session.update, ({ params }) => {
       const update = params.update
       if (update.sessionUpdate === 'agent_message_chunk' && acceptingUpdates) {
-        turnText += acpContentText(update.content)
+        const text = acpContentText(update.content)
+        turnText += text
+        if (text !== '' && turnTextObserver !== undefined) {
+          try { turnTextObserver(text) } catch { /* an observer cannot break the turn */ }
+        }
       }
       // Other updates (thoughts, tool calls, plans) are consumed but not
       // surfaced — the connection returns only the final answer text.
@@ -440,12 +450,13 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     observeOutcome,
     notifyCancel: requestCancel,
     dispose,
-    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal): Promise<AcpTurnResult> {
+    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult> {
       // Per-turn state: a notifyCancel between turns or a previous turn's
       // permission decision must not leak into this turn.
       flags.cancelled = false
       latestPermission = undefined
       turnText = ''
+      turnTextObserver = onText
       acceptingUpdates = true
       let turnCancelled = false
       let turnCancelSettled!: () => void
@@ -457,7 +468,10 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       }
       promptSignal.addEventListener('abort', onTurnAbort, { once: true })
       if (promptSignal.aborted) onTurnAbort()
-      const settleTurn = (): void => { acceptingUpdates = false }
+      const settleTurn = (): void => {
+        acceptingUpdates = false
+        turnTextObserver = undefined
+      }
       const turnOutput = (): readonly ContentBlock[] => turnText === '' ? [] : [{ type: 'text', text: turnText }]
       let diagnostic: string | undefined
       try {
