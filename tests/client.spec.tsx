@@ -19,7 +19,7 @@ import * as client from '../src/client/index.ts'
 import { ChatsPanel, relativeTime, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, POLL_INTERVAL_MS, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import type { ChatsPanelInjected, ChatsSnapshot, Observable, PanelChat } from '../src/client/face.ts'
-import { zh, type PanelTranslate } from '../src/client/locales.ts'
+import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Button: ({ children, variant: _variant, size: _size, icon: _icon, ...rest }: Record<string, unknown> & { children?: ReactNode }) =>
@@ -35,8 +35,9 @@ afterEach(() => {
 })
 
 /** The zh dictionary with `{name}` interpolation, as the locale seat renders it. */
-const t: PanelTranslate = (key, params) =>
-  zh[key].replace(/\{(\w+)\}/g, (_, name: string) => String(params?.[name] ?? `{${name}}`))
+const translator = (dict: Record<PanelCopyKey, string>): PanelTranslate => (key, params) =>
+  dict[key].replace(/\{(\w+)\}/g, (_, name: string) => String(params?.[name] ?? `{${name}}`))
+const t = translator(zh)
 
 const NOW = 1_800_000_000_000
 const UUID_A = 'a1b2c3d4-0000-4000-8000-000000000001'
@@ -90,6 +91,7 @@ describe('ChatsPanel', () => {
     const labelled = chat({ label: '审阅', title: '记住暗号P', turnCount: 12 })
     const legacy = chat({ chatId: `chat-${UUID_B}`, remoteSessionId: '9c0d1e2f-2222', cwd: '/work', active: false, lastActive: NOW - 2 * 3_600_000 })
     render(<ChatsPanel {...props(ready([labelled, legacy]))} />)
+    fireEvent.click(screen.getByRole('button', { name: '已释放 (1) · 展开' }))
     const cards = screen.getAllByRole('listitem')
     expect(cards).toHaveLength(2)
 
@@ -109,6 +111,61 @@ describe('ChatsPanel', () => {
     expect(second.getByText('cwd /work · 远端 9c0d1e2f')).toBeTruthy()
     // A released chat has nothing to release.
     expect((second.getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('puts active chats first and released ones under a collapsed group, both newest first', () => {
+    // Snapshot order is newest first across both kinds (ChatsSource sorts).
+    const rows = [
+      chat({ chatId: 'chat-r1', active: false, lastActive: NOW - 1_000 }),
+      chat({ chatId: 'chat-a1', active: true, lastActive: NOW - 2_000 }),
+      chat({ chatId: 'chat-r2', active: false, lastActive: NOW - 3_000 }),
+      chat({ chatId: 'chat-a2', active: true, lastActive: NOW - 4_000 }),
+      chat({ chatId: 'chat-r3', active: false, lastActive: NOW - 5_000 }),
+    ]
+    const { container } = render(<ChatsPanel {...props(ready(rows))} />)
+    const ids = (): (string | null)[] => [...container.querySelectorAll('li')].map(li => li.getAttribute('data-chat-id'))
+    expect(ids()).toEqual(['chat-a1', 'chat-a2'])
+    const toggle = screen.getByRole('button', { name: '已释放 (3) · 展开' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(toggle.textContent).toBe('已释放 (3) · 收起')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(ids()).toEqual(['chat-a1', 'chat-a2', 'chat-r1', 'chat-r2', 'chat-r3'])
+    // The group header sits between the two lists.
+    const lists = container.querySelectorAll('ul')
+    expect(lists).toHaveLength(2)
+    expect(lists[0]?.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(toggle.compareDocumentPosition(lists[1] as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(toggle)
+    expect(toggle.textContent).toBe('已释放 (3) · 展开')
+    expect(ids()).toEqual(['chat-a1', 'chat-a2'])
+  })
+
+  it('shows no group header when nothing is released', () => {
+    render(<ChatsPanel {...props(ready([chat(), chat({ chatId: `chat-${UUID_B}` })]))} />)
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /^已释放/ })).toBeNull()
+  })
+
+  it('with every chat released shows the group header, not the empty state', () => {
+    render(<ChatsPanel {...props(ready([chat({ active: false }), chat({ chatId: `chat-${UUID_B}`, active: false })]))} />)
+    expect(screen.queryByText('暂无持久会话')).toBeNull()
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: '已释放 (2) · 展开' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+  })
+
+  it('has the group copy in both locales', () => {
+    for (const key of ['releasedGroup', 'expand', 'collapse'] as const) {
+      expect(zh[key]).toBeTruthy()
+      expect(en[key]).toBeTruthy()
+    }
+    expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort())
+    render(<ChatsPanel {...props(ready([chat({ active: false })]), { t: translator(en) })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Released (1) · Expand' }))
+    expect(screen.getByRole('button', { name: 'Released (1) · Collapse' })).toBeTruthy()
   })
 
   it('releases directly, without a confirmation dialog', async () => {

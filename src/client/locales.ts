@@ -35,6 +35,9 @@ export const zh = {
   cancel: '取消',
   dismiss: '关闭',
   actionFailed: '操作失败:{message}',
+  releasedGroup: '已释放 ({count})',
+  expand: '展开',
+  collapse: '收起',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -68,6 +71,9 @@ export const en: Record<PanelCopyKey, string> = {
   cancel: 'Cancel',
   dismiss: 'Close',
   actionFailed: 'Action failed: {message}',
+  releasedGroup: 'Released ({count})',
+  expand: 'Expand',
+  collapse: 'Collapse',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */

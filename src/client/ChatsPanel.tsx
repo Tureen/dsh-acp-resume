@@ -1,7 +1,10 @@
 /**
  * The persistent-chat panel body (PANEL-DESIGN §2.2/§2.3): header with
  * refresh, empty state, one card per chat, release without confirmation,
- * delete behind a confirmation dialog. Pure props: data arrives through the
+ * delete behind a confirmation dialog. Active chats come first; released ones
+ * sit under a "Released (N)" group header, collapsed by default, with the
+ * open state kept in component state only. Both groups keep the snapshot's
+ * newest-first order. Pure props: data arrives through the
  * bound `useChats` hook, commands through injected callbacks, copy through `t`.
  * @module dsh-acp-resume/client/ChatsPanel
  */
@@ -39,6 +42,8 @@ const styles = {
   meta: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', overflowWrap: 'anywhere' },
   dotActive: { color: 'var(--dsw-alias-state-success-primary)' },
   dotReleased: { color: 'var(--dsw-alias-label-tertiary)' },
+  list: { display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' },
+  groupToggle: { alignSelf: 'flex-start' },
 } satisfies Record<string, CSSProperties>
 
 /**
@@ -116,6 +121,7 @@ export function ChatsPanel({ useChats, refresh, close, purge, t }: ChatsPanelPro
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState<PanelChat | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
+  const [releasedOpen, setReleasedOpen] = useState(false)
 
   const run = (chatId: string, action: (chatId: string) => Promise<void>): void => {
     setPending(current => new Set(current).add(chatId))
@@ -130,6 +136,17 @@ export function ChatsPanel({ useChats, refresh, close, purge, t }: ChatsPanelPro
   }
 
   const now = snapshot.fetchedAt ?? 0
+  const activeChats = snapshot.chats.filter(c => c.active)
+  const releasedChats = snapshot.chats.filter(c => !c.active)
+  const cards = (chats: readonly PanelChat[]): ReactNode => (
+    <ul style={styles.list}>
+      {chats.map(chat => (
+        <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
+          onRelease={(target) => { run(target.chatId, close) }}
+          onDelete={(target) => { setConfirming(target) }} />
+      ))}
+    </ul>
+  )
   const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chatId)
   return (
     <section style={styles.root} aria-label={t('title')}>
@@ -151,13 +168,18 @@ export function ChatsPanel({ useChats, refresh, close, purge, t }: ChatsPanelPro
             </div>
           )
           : (
-            <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
-              {snapshot.chats.map(chat => (
-                <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
-                  onRelease={(target) => { run(target.chatId, close) }}
-                  onDelete={(target) => { setConfirming(target) }} />
-              ))}
-            </ul>
+            <>
+              {activeChats.length === 0 ? null : cards(activeChats)}
+              {releasedChats.length === 0 ? null : (
+                <>
+                  <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={releasedOpen}
+                    onClick={() => { setReleasedOpen(open => !open) }}>
+                    {t('releasedGroup', { count: releasedChats.length })} · {releasedOpen ? t('collapse') : t('expand')}
+                  </Button>
+                  {releasedOpen ? cards(releasedChats) : null}
+                </>
+              )}
+            </>
           )}
       <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
         title={t('confirmTitle', { chatId: confirmingShort })} description={t('confirmBody')}
