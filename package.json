@@ -24,7 +24,9 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
-    "@deepseek-ai/schemastery": "~3.18.5"
+    "@deepseek-ai/schemastery": "~3.18.5",
+    "@deepseek-ai/dsh-brand": "~0.2.1-rc.5",
+    "@deepseek-ai/dsh-home-paths": "~0.2.1-rc.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",

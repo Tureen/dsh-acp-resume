@@ -1577,12 +1577,13 @@ describe('dsh-subagent-acp', () => {
 
   it('has the namespace-plugin export shape (no stray default)', () => {
     expect('default' in acp).toBe(false)
-    expect(acp.name).toBe('subagent-acp')
+    // dsh-acp-resume: renamed plugin identity (independent sibling package, D1/D11).
+    expect(acp.name).toBe('acp-resume')
     expect(acp.inject).toEqual(['subagents', 'subprocess'])
     const loader = Object.create(Loader.prototype) as Loader
     const unwrapped = loader.unwrapExports(acp) as Record<string, unknown>
     expect(unwrapped).toBe(acp)
-    expect(unwrapped.name).toBe('subagent-acp')
+    expect(unwrapped.name).toBe('acp-resume')
     expect(typeof unwrapped.apply).toBe('function')
   })
 })

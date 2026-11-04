@@ -15,10 +15,15 @@ import type {
   SubagentProvider,
 } from '@deepseek-ai/dsh-subagent'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
+import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
+import { join } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
+import { AcpSessionPool } from './pool.js'
+import { registerChatTools } from './tools.js'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 
-export const name = 'subagent-acp'
+export const name = 'acp-resume'
 export const inject = ['subagents', 'subprocess']
 
 /** Config: how to spawn and drive the child ACP agent process. */
@@ -51,16 +56,28 @@ export interface Config {
   disposeEofGraceMs?: number
   /** Failure-observation and termination-escalation grace (ms); must not exceed `MAX_TIMER_DELAY_MS`. */
   disposeGraceMs?: number
+  /** Idle window (ms) after a settled chat turn before the chat's process is released. */
+  idleTimeoutMs?: number
+  /** Registry file for durable chats; defaults to $DSH_HOME/storages/acp-resume/registry.json. */
+  registryPath?: string
+  /** Name prefix for the four persistent-chat tools (default `acp_chat_`). */
+  toolPrefix?: string
+  /** Register the persistent-chat tools alongside the one-shot provider (default true). */
+  enableChatTools?: boolean
 }
 
 export const Config: z<Config> = z.object({
-  providerName: z.string().default('acp'),
+  providerName: z.string().default('acp-resume'),
   command: z.string().required(),
   args: z.array(z.string()).default([]),
   permission: z.union(['allow', 'reject'] as const).default('reject'),
   env: z.dict(z.string()).default({}),
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
+  idleTimeoutMs: z.number().default(600_000),
+  registryPath: z.string().default(''),
+  toolPrefix: z.string().default('acp_chat_'),
+  enableChatTools: z.boolean().default(true),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */
@@ -126,4 +143,30 @@ export function apply(ctx: Context, config: Config): void {
   assertPositiveFinite('disposeEofGraceMs', resolved.disposeEofGraceMs)
   assertPositiveFinite('disposeGraceMs', resolved.disposeGraceMs)
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved))
+
+  const tools = ctx.get('tools') as { register: (definition: ReturnType<typeof defineTool>) => () => void } | undefined
+  if (!resolved.enableChatTools || tools === undefined) return
+  const registryPath = resolved.registryPath === ''
+    ? join(defaultDshHome(), 'storages', 'acp-resume', 'registry.json')
+    : resolved.registryPath
+  assertPositiveFinite('idleTimeoutMs', resolved.idleTimeoutMs)
+  const pool = new AcpSessionPool({
+    specBase: {
+      command: resolved.command,
+      args: resolved.args,
+      permission: resolved.permission,
+      env: resolved.env,
+      disposeEofGraceMs: resolved.disposeEofGraceMs,
+      disposeGraceMs: resolved.disposeGraceMs,
+      spawn: spec => ctx.subprocess.spawn(spec),
+      onError: (error, stopReason) => {
+        ctx.logger.warn(`acp-resume "${resolved.providerName}": chat child failed (${stopReason}): ${error.message}`)
+      },
+    },
+    registryPath,
+    idleTimeoutMs: resolved.idleTimeoutMs,
+  })
+  registerChatTools(ctx, tools, pool, resolved.toolPrefix)
+  // Plugin-fiber teardown releases every live chat process; the registry file survives.
+  ctx.effect(() => () => { void pool.disposeAll() })
 }
