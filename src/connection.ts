@@ -226,6 +226,10 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   // THIS turn's answer, not the connection's accumulated history. The fold
   // above keeps the connection-level accumulation for one-shot consumers.
   let turnText = ''
+  // Turn isolation: ACP update notifications carry no turn identity, so chunks
+  // arriving AFTER a settled turn (a cancelled turn's late tail) must not enter
+  // the next turn's output. Only chunks observed while a turn is in flight accumulate.
+  let acceptingUpdates = false
   let latestPermission: AcpPermissionDecision | undefined
   const flags = { cancelled: false }
 
@@ -235,7 +239,7 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       if (update.sessionUpdate === 'agent_message_chunk') {
         const piece = acpContentText(update.content)
         fold.pushText(piece)
-        turnText += piece
+        if (acceptingUpdates) turnText += piece
       }
       // Other updates (thoughts, tool calls, plans) are consumed but not
       // surfaced — the connection returns only the final answer text.
@@ -316,7 +320,10 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     signal?.removeEventListener('abort', onAbort)
     const observedOutcome = !flags.cancelled ? await observeOutcome() : undefined
     try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
-    await dispose().catch(() => { /* startup classification owns the message */ })
+    await dispose().catch((cleanupError: unknown) => {
+      // Startup classification owns the rejection; a failed cleanup is still reported.
+      try { spec.onError?.(toError(cleanupError), 'error') } catch { /* sink cannot replace the failure */ }
+    })
     if (flags.cancelled) {
       throw new Error('subagent request was aborted before the ACP child started')
     }
@@ -350,6 +357,8 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       }
       promptSignal.addEventListener('abort', onTurnAbort, { once: true })
       turnText = ''
+      acceptingUpdates = true
+      const settleTurn = (): void => { acceptingUpdates = false }
       const turnOutput = (): readonly ContentBlock[] => turnText === '' ? [] : [{ type: 'text', text: turnText }]
       let diagnostic: string | undefined
       try {
@@ -360,6 +369,7 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
           }),
           turnCancel.then((): never => { throw new Error('subagent cancelled while the ACP prompt was running') }),
         ])) as { stopReason: StopReason }
+        settleTurn()
         const stopReason = acpStopReason(promptResult.stopReason)
         diagnostic = terminalDiagnostic(promptResult.stopReason, latestPermission)
         return { output: turnOutput(), stopReason, diagnostic }
@@ -372,11 +382,17 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
             + (latestPermission === undefined ? '' : `\n${permissionDiagnostic(latestPermission)}`)
         }
         if (turnCancelled || flags.cancelled) {
+          settleTurn()
           return { output: turnOutput(), stopReason: 'aborted', diagnostic }
         }
+        settleTurn()
         return { output: turnOutput(), stopReason: 'error', diagnostic }
       } finally {
         promptSignal.removeEventListener('abort', onTurnAbort)
+        // A cancelled turn must not poison later turns on this connection:
+        // the pooled connection outlives one turn, so clear the connection-level
+        // flag once the turn has settled.
+        flags.cancelled = false
       }
     },
   }

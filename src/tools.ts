@@ -128,14 +128,18 @@ export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: 
 
   const close = defineTool({
     name: `${toolPrefix}close`,
-    description: 'Release a persistent chat\'s agent process. The chat record is KEPT: a later send reconnects it '
-      + '(context restored). Use this to free resources when a conversation is paused. '
-      + 'To also delete the remote session record, use the agent\'s own CLI (for kiro: kiro-cli chat --list-sessions / --delete-session).',
+    description: 'Release a persistent chat\'s agent process. By default the chat record is KEPT: a later send '
+      + 'reconnects it with context restored. Set purge to also delete the local record when the conversation is over '
+      + '(the remote session record, if any, lives in the external agent\'s own store — e.g. kiro-cli chat --list-sessions / --delete-session).',
     parameters: {
       chatId: {
         type: 'string',
         required: true,
         description: 'The chatId to release.',
+      },
+      purge: {
+        type: 'boolean',
+        description: 'Also delete the local chat record (default false: keep it for reconnect).',
       },
     },
     output: {
@@ -153,6 +157,10 @@ export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: 
       exec.signal.throwIfAborted()
       if (!pool.knows(args.chatId)) {
         return { text: `unknown chat ${args.chatId}` }
+      }
+      if (args.purge === true) {
+        await pool.remove(args.chatId)
+        return { text: `chat ${args.chatId} released and its record deleted` }
       }
       await pool.close(args.chatId)
       return { text: `chat ${args.chatId} released; its record is kept and a later send reconnects it` }

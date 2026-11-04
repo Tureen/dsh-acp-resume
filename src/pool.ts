@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { AcpConnection } from './connection.js'
 import { openAcpConnection } from './connection.js'
+import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import type { AcpRunSpec } from './run.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
@@ -68,6 +69,8 @@ interface LiveChat {
   conn: AcpConnection
   idleTimer: NodeJS.Timeout | undefined
   busy: boolean
+  /** The in-flight turn's promise, awaited by disposeAll before releasing. */
+  busyPromise: Promise<unknown> | undefined
 }
 
 function emptyRegistry(): RegistryFile {
@@ -98,6 +101,10 @@ class ChatRegistry {
     return this.file.sessions.find(s => s.chatId === chatId)
   }
 
+  remove(chatId: string): void {
+    this.write({ version: 1, sessions: this.file.sessions.filter(s => s.chatId !== chatId) })
+  }
+
   upsert(entry: RegistryEntry): void {
     const next = this.file.sessions.filter(s => s.chatId !== entry.chatId)
     next.push(entry)
@@ -120,6 +127,8 @@ class ChatRegistry {
  */
 export class AcpSessionPool {
   private readonly live = new Map<string, LiveChat>()
+  /** Reconnect windows in progress; a concurrent send on the same chat is rejected. */
+  private readonly starting = new Map<string, Promise<AcpConnection>>()
   private readonly registry: ChatRegistry
   private disposed = false
 
@@ -146,6 +155,8 @@ export class AcpSessionPool {
   /** Start a fresh durable chat: new process, new remote session. */
   async start(cwd: string, signal?: AbortSignal): Promise<PooledChatInfo> {
     this.assertLive()
+    // Fail loud at the earliest resolvable point, mirroring the official provider start.
+    assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const conn = await openAcpConnection({ ...this.opts.specBase, cwd }, { mode: 'new' }, signal)
     const chatId = `chat-${randomUUID()}`
     const now = Date.now()
@@ -172,32 +183,56 @@ export class AcpSessionPool {
     const entry = this.registry.get(chatId)
     if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
     const existing = this.live.get(chatId)
-    if (existing?.busy === true) throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight`)
+    if (existing?.busy === true || this.starting.has(chatId)) {
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight`)
+    }
 
     let conn: AcpConnection | undefined = existing?.conn
     let freshSession = false
     if (conn === undefined) {
       const spec = { ...this.opts.specBase, cwd: entry.cwd }
+      // Claim the reconnect window BEFORE awaiting: a concurrent send on this
+      // chat must be rejected here, not leak a second connection.
+      const reconnect = (async (): Promise<AcpConnection> => {
+        try {
+          return await openAcpConnection(spec, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
+        } catch {
+          // The remote session is gone (expired, cleaned, or the agent lost it):
+          // degrade to a fresh session and persist the replacement id.
+          const fresh = await openAcpConnection(spec, { mode: 'new' }, signal)
+          freshSession = true
+          this.registry.upsert({ ...entry, remoteSessionId: fresh.remoteSessionId, lastActive: Date.now() })
+          return fresh
+        }
+      })()
+      this.starting.set(chatId, reconnect)
       try {
-        conn = await openAcpConnection(spec, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
-      } catch {
-        // The remote session is gone (expired, cleaned, or the agent lost it):
-        // degrade to a fresh session and persist the replacement id.
-        conn = await openAcpConnection(spec, { mode: 'new' }, signal)
-        freshSession = true
-        this.registry.upsert({ ...entry, remoteSessionId: conn.remoteSessionId, lastActive: Date.now() })
+        conn = await reconnect
+        this.track(chatId, conn)
+      } finally {
+        this.starting.delete(chatId)
       }
-      this.track(chatId, conn)
     }
 
     const chat = this.live.get(chatId) as LiveChat
     chat.busy = true
     this.clearIdle(chatId)
+    const turnPromise = conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal)
+    chat.busyPromise = turnPromise
     try {
-      const turn = await conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal)
+      const turn = await turnPromise
       const now = Date.now()
       const current = this.registry.get(chatId) ?? entry
       this.registry.upsert({ ...current, lastActive: now })
+      // A cancelled turn leaves the connection's stream state indeterminate: ACP
+      // updates carry no turn identity, so a late chunk from the cancelled turn
+      // would pollute the next turn on the SAME connection. The official one-shot
+      // answers cancellation with process teardown; the pool does the same and
+      // lets the next send rebuild context through session/load.
+      if (turn.stopReason === 'aborted') {
+        this.registry.upsert({ ...current, lastActive: now })
+        await this.close(chatId)
+      }
       return {
         chatId,
         remoteSessionId: conn.remoteSessionId,
@@ -208,8 +243,15 @@ export class AcpSessionPool {
       }
     } finally {
       chat.busy = false
+      chat.busyPromise = undefined
       if (!this.disposed) this.armIdle(chatId)
     }
+  }
+
+  /** Release the process AND delete the durable record (cannot reconnect afterwards). */
+  async remove(chatId: string): Promise<void> {
+    await this.close(chatId)
+    this.registry.remove(chatId)
   }
 
   /** Release the chat's process; the registry entry survives for reconnect. */
@@ -221,9 +263,13 @@ export class AcpSessionPool {
     await chat.conn.dispose()
   }
 
-  /** Release every live process (host teardown). Registry survives. */
+  /** Stop admission, let in-flight turns settle, then release every live process. Registry survives. */
   async disposeAll(): Promise<void> {
     this.disposed = true
+    const busy = [...this.live.values()]
+      .map(c => c.busyPromise)
+      .filter((p): p is Promise<unknown> => p !== undefined)
+    await Promise.allSettled(busy)
     await Promise.allSettled([...this.live.keys()].map(id => this.close(id)))
   }
 
@@ -232,7 +278,7 @@ export class AcpSessionPool {
   }
 
   private track(chatId: string, conn: AcpConnection): void {
-    this.live.set(chatId, { conn, idleTimer: undefined, busy: false })
+    this.live.set(chatId, { conn, idleTimer: undefined, busy: false, busyPromise: undefined })
     this.armIdle(chatId)
   }
 

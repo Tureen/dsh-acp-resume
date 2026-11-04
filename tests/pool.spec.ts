@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { AcpSessionPool, type PoolOptions } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
@@ -31,8 +30,9 @@ function makePool(env: Record<string, string> = {}, idleTimeoutMs = 600_000, reg
       args: [mockServer],
       permission: 'reject',
       env,
-      disposeEofGraceMs: DEFAULT_DISPOSE_EOF_GRACE_MS,
-      disposeGraceMs: DEFAULT_DISPOSE_GRACE_MS,
+      // 测试用短宽限:取消后连接作废会同步走一次销毁梯子,默认 6s EOF 窗口会超用例预算
+      disposeEofGraceMs: 500,
+      disposeGraceMs: 500,
       spawn: nodeSpawn,
     },
     registryPath,
@@ -122,6 +122,58 @@ describe('AcpSessionPool', () => {
     await expect(pool.send(chat.chatId, 'p2')).rejects.toThrow(/in flight/)
     fs.rmSync(hold)
     await expect(inFlight).resolves.toMatchObject({ stopReason: 'completed' })
+  })
+
+  it('recovers a chat for further turns after one cancelled turn', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-resume-cancel-'))
+    dirs.push(dir)
+    const hold = join(dir, 'hold')
+    const fs = await import('node:fs')
+    const env = { MOCK_REMEMBER: '1', MOCK_SESSION_ID: 'pool-cancel', MOCK_SESSION_STORE: join(dir, 's.json'), MOCK_PROMPT_HOLD: hold }
+    const { pool } = makePool(env)
+    const chat = await pool.start(process.cwd())
+    // 先完成一轮成功对话,确保暗号已落地
+    await pool.send(chat.chatId, '记住暗号E')
+    fs.writeFileSync(hold, 'holding')
+    // 取消轮发送与成功轮相同的文本:取消轮的消息是否被远端落地是竞速
+    // (取消即打断,不承诺副作用),同文本使断言与竞速结果无关。
+    const controller = new AbortController()
+    const cancelled = pool.send(chat.chatId, '记住暗号E', controller.signal)
+    controller.abort()
+    await expect(cancelled).resolves.toMatchObject({ stopReason: 'aborted' })
+    fs.rmSync(hold)
+    const after = await pool.send(chat.chatId, '暗号是什么')
+    expect(after.stopReason).toBe('completed')
+    expect(after.output).toBe('remember:记住暗号E')
+  }, 15000)
+
+  it('rejects a concurrent send during the reconnect window (no second connection)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-resume-race-'))
+    dirs.push(dir)
+    const gate = join(dir, 'gate')
+    const fs = await import('node:fs')
+    // 首个进程建会话并记住暗号;释放后用 newSession 门挡住重连,使窗口可观察
+    fs.writeFileSync(gate, 'closed')
+    const env = { MOCK_REMEMBER: '1', MOCK_SESSION_ID: 'pool-race', MOCK_SESSION_STORE: join(dir, 's.json') }
+    const { pool } = makePool(env)
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '记住暗号F')
+    await pool.close(chat.chatId)
+    const first = pool.send(chat.chatId, '第一问')
+    await expect(pool.send(chat.chatId, '第二问')).rejects.toThrow(/in flight/)
+    const answer = await first
+    expect(answer.stopReason).toBe('completed')
+    void gate
+  })
+
+  it('purges the durable record on remove', async () => {
+    const { pool } = makePool({ MOCK_REMEMBER: '1' })
+    const chat = await pool.start(process.cwd())
+    expect(pool.knows(chat.chatId)).toBe(true)
+    await pool.remove(chat.chatId)
+    expect(pool.knows(chat.chatId)).toBe(false)
+    expect(pool.listChats().find(c => c.chatId === chat.chatId)).toBeUndefined()
+    await expect(pool.send(chat.chatId, 'p')).rejects.toThrow(/unknown chat/)
   })
 
   it('restores durable chats in a NEW pool instance over the same registry', async () => {
