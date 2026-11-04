@@ -1,7 +1,9 @@
 /**
  * The persistent-chat panel body (PANEL-DESIGN §2.2/§2.3): header with
  * refresh, empty state, one card per chat, release without confirmation,
- * delete behind a confirmation dialog. Active chats come first; released ones
+ * delete behind a confirmation dialog. A card opens the chat's detail tab
+ * (D18) on a click anywhere on it; its release/delete buttons stop the click.
+ * Active chats come first; released ones
  * sit under a "Released (N)" group header, collapsed by default, with the
  * open state kept in component state only. Both groups keep the snapshot's
  * newest-first order. Pure props: data arrives through the
@@ -9,14 +11,17 @@
  * @module dsh-acp-resume/client/ChatsPanel
  */
 
-import { useState, type CSSProperties, type ReactNode } from 'react'
+import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, SelectorHook } from './face.ts'
+import { chatAddress } from './chat-address.ts'
+import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, SelectorHook, TabInfoHook } from './face.ts'
 import type { PanelTranslate } from './locales.ts'
 
 /** The panel's props: the injected face with `hooks.chats` bound to `useChats`, plus the locale seat. */
 export type ChatsPanelProps = Omit<ChatsPanelInjected, 'hooks'> & {
   readonly useChats: SelectorHook<ChatsSnapshot>
+  /** The framework's tab-info hook: its `tab.actions.openResource` opens a detail tab. */
+  readonly useTabInfo: TabInfoHook
   readonly t: PanelTranslate
 }
 
@@ -34,7 +39,8 @@ const styles = {
   notice: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
   error: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   empty: { display: 'flex', flexDirection: 'column', gap: 4, padding: '24px 4px', textAlign: 'center' },
-  card: { display: 'flex', flexDirection: 'column', gap: 4, padding: 10, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
+  card: { cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4, padding: 10, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
+  nameButton: { flex: 1, minWidth: 0, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' },
   cardHead: { display: 'flex', alignItems: 'center', gap: 6 },
   name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   id: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
@@ -80,10 +86,11 @@ interface ChatCardProps {
   readonly pending: boolean
   readonly onRelease: (chat: PanelChat) => void
   readonly onDelete: (chat: PanelChat) => void
+  readonly onOpen: (chat: PanelChat) => void
   readonly t: PanelTranslate
 }
 
-function ChatCard({ chat, now, pending, onRelease, onDelete, t }: ChatCardProps): ReactNode {
+function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
   const short = shortChatId(chat.chatId)
   const turns = chat.turnCount === undefined ? t('noValue') : String(chat.turnCount)
   const status = [
@@ -92,17 +99,20 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, t }: ChatCardProps)
     relativeTime(t, chat.lastActive, now),
   ].join(' · ')
   return (
-    <li style={styles.card} data-chat-id={chat.chatId}>
+    <li style={styles.card} data-chat-id={chat.chatId} onClick={() => { onOpen(chat) }}>
       <div style={styles.cardHead}>
         <span aria-hidden="true" style={chat.active ? styles.dotActive : styles.dotReleased}>{chat.active ? '●' : '○'}</span>
-        <span style={styles.name} title={chat.chatId}>
-          {chat.label ?? short}
-          {chat.label === undefined ? null : <span style={styles.id}> {short}</span>}
-        </span>
+        {/* The click is handled by the card; this button is the keyboard and screen-reader way in. */}
+        <button type="button" style={styles.nameButton} title={chat.chatId} aria-label={t('viewDetail', { chatId: short })}>
+          <span style={styles.name}>
+            {chat.label ?? short}
+            {chat.label === undefined ? null : <span style={styles.id}> {short}</span>}
+          </span>
+        </button>
         <Button size="sm" variant="ghost" disabled={pending || !chat.active} aria-label={t('releaseLabel', { chatId: short })}
-          onClick={() => { onRelease(chat) }}>{t('release')}</Button>
+          onClick={(event: MouseEvent) => { event.stopPropagation(); onRelease(chat) }}>{t('release')}</Button>
         <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}
-          onClick={() => { onDelete(chat) }}>{t('delete')}</Button>
+          onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
       </div>
       <p style={styles.line}>{chat.title === undefined ? t('noValue') : chat.title}</p>
       <p style={styles.meta}>{status}</p>
@@ -116,8 +126,9 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, t }: ChatCardProps)
  * @param props - bound chats hook, commands, and copy.
  * @returns the panel body.
  */
-export function ChatsPanel({ useChats, refresh, close, purge, t }: ChatsPanelProps): ReactNode {
+export function ChatsPanel({ useChats, useTabInfo, refresh, close, purge, t }: ChatsPanelProps): ReactNode {
   const snapshot = useChats(s => s)
+  const { tab } = useTabInfo()
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState<PanelChat | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
@@ -142,6 +153,7 @@ export function ChatsPanel({ useChats, refresh, close, purge, t }: ChatsPanelPro
     <ul style={styles.list}>
       {chats.map(chat => (
         <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
+          onOpen={(target) => { tab.actions.openResource(chatAddress(target.chatId)) }}
           onRelease={(target) => { run(target.chatId, close) }}
           onDelete={(target) => { setConfirming(target) }} />
       ))}

@@ -9,9 +9,9 @@
  * @module dsh-acp-resume/tests/pool.spec
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -771,5 +771,204 @@ describe('AcpSessionPool', () => {
     expect(existsSync(registryPath)).toBe(false)
     expect(pool.listChats()).toEqual([])
     expect(warnings).toEqual([])
+  })
+})
+
+/** The chat's turn-log file, parsed line by line (the log lives in `turns/` next to the registry, D18). */
+function logFile(registryPath: string, chatId: string): string {
+  return join(dirname(registryPath), 'turns', `${chatId}.jsonl`)
+}
+
+function logLines(registryPath: string, chatId: string): Record<string, unknown>[] {
+  const file = logFile(registryPath, chatId)
+  if (!existsSync(file)) return []
+  return readFileSync(file, 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Record<string, unknown>)
+}
+
+describe('AcpSessionPool turn log (D18)', () => {
+  it('logs each settled turn with its message, answer, stop reason, timestamps, and fresh flag', async () => {
+    const before = Date.now()
+    const { pool, registryPath } = makePool({ env: { MOCK_REMEMBER: '1' } })
+    const chat = await pool.start(process.cwd())
+    expect(existsSync(logFile(registryPath, chat.chatId))).toBe(false)
+    await pool.send(chat.chatId, '记住暗号K')
+    await pool.send(chat.chatId, '暗号是什么')
+    const lines = logLines(registryPath, chat.chatId)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ v: 1, seq: 1, kind: 'turn', message: '记住暗号K', stopReason: 'completed', freshSession: false })
+    expect(lines[1]).toMatchObject({ seq: 2, kind: 'turn', message: '暗号是什么', output: 'remember:记住暗号K' })
+    for (const line of lines) {
+      expect(line.startedAt as number).toBeGreaterThanOrEqual(before)
+      expect(line.at as number).toBeGreaterThanOrEqual(line.startedAt as number)
+      expect(line).not.toHaveProperty('diagnostic')
+    }
+    // The pool reads the same entries back, and nothing else changed in the registry's shape.
+    expect(pool.turnEntries(chat.chatId)).toEqual(lines)
+    expect(Object.keys(JSON.parse(readFileSync(registryPath, 'utf8')) as object).sort()).toEqual(['sessions', 'version'])
+  })
+
+  it('logs turns that did not complete: stop reason and diagnostic, with the registry count unchanged', async () => {
+    const { env } = storeEnv('acp-resume-log-notcompleted-')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_CRASH_PROMPTS: '2', MOCK_STOP: 'refusal' } })
+    const chat = await pool.start(process.cwd())
+    const refused = await pool.send(chat.chatId, 'first')
+    expect(refused.stopReason).toBe('refusal')
+    const failed = await pool.send(chat.chatId, 'crash')
+    expect(failed.stopReason).toBe('error')
+    const lines = logLines(registryPath, chat.chatId)
+    expect(lines.map(l => [l.seq, l.stopReason])).toEqual([[1, 'refusal'], [2, 'error']])
+    expect(lines[1]?.diagnostic).toMatch(/process-exit/)
+    expect(lines[1]?.message).toBe('crash')
+  })
+
+  it('logs a cancelled turn as aborted', async () => {
+    const { env, dir } = storeEnv('acp-resume-log-cancel-')
+    const ready = join(dir, 'ready')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_HANG: '1', MOCK_READY_FILE: ready } })
+    const chat = await pool.start(process.cwd())
+    const controller = new AbortController()
+    const cancelled = pool.send(chat.chatId, 'hang', controller.signal)
+    await until(() => existsSync(ready), 'turn in flight')
+    controller.abort()
+    await expect(cancelled).resolves.toMatchObject({ stopReason: 'aborted' })
+    expect(logLines(registryPath, chat.chatId)).toMatchObject([{ kind: 'turn', message: 'hang', stopReason: 'aborted' }])
+  })
+
+  it('records a session-lost event, then the turn answered by the fresh session', async () => {
+    const { env, dir } = storeEnv('acp-resume-log-lost-')
+    const loadMissing = join(dir, 'load-missing')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_LOAD_MISSING_FILE: loadMissing } })
+    const chat = await pool.start(process.cwd())
+    await pool.close(chat.chatId)
+    writeFileSync(loadMissing, 'on')
+    await pool.send(chat.chatId, 'p')
+    const lines = logLines(registryPath, chat.chatId)
+    expect(lines.map(l => [l.seq, l.kind, l.event ?? l.freshSession])).toEqual([[1, 'event', 'session-lost'], [2, 'turn', true]])
+    expect(lines[0]?.error).toEqual(expect.any(String))
+  })
+
+  it('records a reconnect-failed event with the unsent message when session/load fails otherwise, and no turn', async () => {
+    const { env, dir } = storeEnv('acp-resume-log-loadcrash-')
+    const crashOnLoad = join(dir, 'crash-on-load')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_CRASH_ON_LOAD_FILE: crashOnLoad } })
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '记住暗号L')
+    await pool.close(chat.chatId)
+    writeFileSync(crashOnLoad, 'on')
+    await expect(pool.send(chat.chatId, '这条发不出去')).rejects.toBeInstanceOf(AcpConnectionError)
+    const lines = logLines(registryPath, chat.chatId)
+    expect(lines.map(l => [l.seq, l.kind])).toEqual([[1, 'turn'], [2, 'event']])
+    expect(lines[1]).toMatchObject({ event: 'reconnect-failed', message: '这条发不出去' })
+    expect(String(lines[1]?.error)).toMatch(/load-session/)
+    // The transient failure passes; the retried send is an ordinary turn.
+    rmSync(crashOnLoad)
+    await pool.send(chat.chatId, '暗号是什么')
+    expect(logLines(registryPath, chat.chatId).map(l => [l.seq, l.kind])).toEqual([[1, 'turn'], [2, 'event'], [3, 'turn']])
+  })
+
+  it('records a reconnect-failed event when the saved session belongs to another agent', async () => {
+    const dir = tempDir('acp-resume-log-fingerprint-')
+    const registryPath = join(dir, 'registry.json')
+    writeFileSync(registryPath, JSON.stringify({
+      version: 1,
+      sessions: [{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), command: '/opt/other-agent', args: ['acp'], lastActive: 1 }],
+    }))
+    const { pool } = makePool({ registryPath })
+    await expect(pool.send('chat-other', 'hello')).rejects.toThrow(/belongs to another agent/)
+    expect(logLines(registryPath, 'chat-other')).toMatchObject([{ kind: 'event', event: 'reconnect-failed', message: 'hello' }])
+  })
+
+  it('does not log a send refused before any work: unknown chat, in-flight, already-aborted signal', async () => {
+    const { env, dir } = storeEnv('acp-resume-log-refused-')
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_PROMPT_HOLD: hold } })
+    await expect(pool.send('chat-nope', 'p')).rejects.toThrow(/unknown chat/)
+    expect(existsSync(join(dirname(registryPath), 'turns'))).toBe(false)
+    const chat = await pool.start(process.cwd())
+    const first = pool.send(chat.chatId, 'long')
+    await expect(pool.send(chat.chatId, 'second')).rejects.toThrow(/already has a prompt in flight/)
+    const controller = new AbortController()
+    controller.abort()
+    await expect(pool.send(chat.chatId, 'late', controller.signal)).rejects.toThrow()
+    rmSync(hold)
+    await first
+    expect(logLines(registryPath, chat.chatId).map(l => l.message)).toEqual(['long'])
+  })
+
+  it('keeps the log when the process is released, and numbering continues in a rebuilt pool', async () => {
+    const { env } = storeEnv('acp-resume-log-rebuild-')
+    const first = makePool({ env })
+    const chat = await first.pool.start(process.cwd())
+    await first.pool.send(chat.chatId, 'one')
+    await first.pool.close(chat.chatId)
+    expect(logLines(first.registryPath, chat.chatId)).toHaveLength(1)
+    await first.pool.disposeAll()
+    const second = makePool({ env, registryPath: first.registryPath })
+    expect(second.pool.turnEntries(chat.chatId)).toHaveLength(1)
+    await second.pool.send(chat.chatId, 'two')
+    expect(logLines(first.registryPath, chat.chatId).map(l => [l.seq, l.message])).toEqual([[1, 'one'], [2, 'two']])
+  })
+
+  it('remove deletes the chat\'s log and only that one; the other chat keeps its entries', async () => {
+    const { pool, registryPath } = makePool()
+    const kept = await pool.start(process.cwd())
+    const dropped = await pool.start(process.cwd())
+    await pool.send(kept.chatId, 'k')
+    await pool.send(dropped.chatId, 'd')
+    expect(existsSync(logFile(registryPath, dropped.chatId))).toBe(true)
+    await pool.remove(dropped.chatId)
+    expect(existsSync(logFile(registryPath, dropped.chatId))).toBe(false)
+    expect(logLines(registryPath, kept.chatId)).toHaveLength(1)
+    expect(pool.turnEntries(dropped.chatId)).toEqual([])
+    expect(pool.chatInfo(dropped.chatId)).toBeUndefined()
+    expect(pool.chatInfo(kept.chatId)).toMatchObject({ chatId: kept.chatId, turnCount: 1 })
+  })
+
+  it('remove while a turn is in flight leaves no log behind (no resurrection by the settling turn)', async () => {
+    const { env, dir } = storeEnv('acp-resume-log-purge-inflight-')
+    const ready = join(dir, 'ready')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_HANG: '1', MOCK_READY_FILE: ready } })
+    const chat = await pool.start(process.cwd())
+    const sending = pool.send(chat.chatId, 'hang')
+    await until(() => existsSync(ready), 'turn in flight')
+    await pool.remove(chat.chatId)
+    await sending.catch(() => undefined)
+    expect(existsSync(logFile(registryPath, chat.chatId))).toBe(false)
+    expect(pool.knows(chat.chatId)).toBe(false)
+  })
+
+  it('an entry arriving for a chat that was purged meanwhile is dropped, not written (no orphan log)', async () => {
+    const { pool, registryPath } = makePool()
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, 'x')
+    await pool.remove(chat.chatId)
+    // The path a late settle would take: the pool's own mirror step, called after the record is gone.
+    const late = pool as unknown as { logEntry(chatId: string, input: unknown): void }
+    late.logEntry(chat.chatId, { kind: 'turn', startedAt: 1, at: 2, message: 'late', output: 'late', stopReason: 'completed', freshSession: false })
+    late.logEntry(chat.chatId, { kind: 'event', event: 'reconnect-failed', at: 3, message: 'late', error: 'late' })
+    expect(existsSync(logFile(registryPath, chat.chatId))).toBe(false)
+  })
+
+  it('a log that cannot be written only warns: the turn result and the registry are unaffected', async () => {
+    const dir = tempDir('acp-resume-log-blocked-')
+    // `turns` is a file, so the log directory cannot be created.
+    writeFileSync(join(dir, 'turns'), 'blocked')
+    const warnings: string[] = []
+    const { pool, registryPath } = makePool({ registryPath: join(dir, 'registry.json'), onWarn: m => warnings.push(m) })
+    const chat = await pool.start(process.cwd())
+    const result = await pool.send(chat.chatId, 'still answered')
+    expect(result.stopReason).toBe('completed')
+    expect(result.output).toBe('mock child answer')
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ turnCount: 1, title: 'still answered' })
+    expect(warnings.some(w => /turn log for .* could not be written/.test(w))).toBe(true)
+    expect(pool.turnEntries(chat.chatId)).toEqual([])
+  })
+
+  it('turnEntries is empty for an unknown chat even if a stray file exists', async () => {
+    const { pool, registryPath } = makePool()
+    mkdirSync(join(dirname(registryPath), 'turns'), { recursive: true })
+    writeFileSync(logFile(registryPath, 'chat-stray'), `${JSON.stringify({ v: 1, seq: 1, kind: 'event', event: 'session-lost', at: 1 })}\n`)
+    expect(pool.turnEntries('chat-stray')).toEqual([])
   })
 })

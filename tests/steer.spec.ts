@@ -84,7 +84,7 @@ function heldTurn(prefix: string): { hold: string; steers: string; release: () =
 describe('acp_chat_steer', () => {
   it('queues a steering message into the in-flight turn and leaves the turn running', async () => {
     const { hold, steers, release } = heldTurn('acp-resume-steer-happy-')
-    const { call, tools } = mountTools({ MOCK_TEXT: 'final answer', MOCK_PROMPT_HOLD: hold, MOCK_STEER_FILE: steers })
+    const { call, tools, pool } = mountTools({ MOCK_TEXT: 'final answer', MOCK_PROMPT_HOLD: hold, MOCK_STEER_FILE: steers })
     expect(tools.get('acp_chat_steer')?.description).toMatch(/next tool or message boundary/)
     expect(tools.get('acp_chat_steer')?.description).toMatch(/job_kill/)
     const { chatId } = await call('start', { cwd: process.cwd() })
@@ -104,6 +104,11 @@ describe('acp_chat_steer', () => {
     release()
     // Steering neither settled nor disturbed the turn.
     expect(await sending).toEqual({ text: 'final answer' })
+    // A steer is not a turn: the turn log holds the one turn and no trace of the steers (D18).
+    const logged = pool.turnEntries(chatId as string)
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toMatchObject({ kind: 'turn', message: 'long task', output: 'final answer', stopReason: 'completed' })
+    expect(JSON.stringify(logged)).not.toMatch(/prefer small commits|run the linter/)
   })
 
   it('fails with a clear degrade message when the agent lacks _session/steer, and the turn is untouched', async () => {

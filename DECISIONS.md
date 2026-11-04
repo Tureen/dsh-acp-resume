@@ -175,3 +175,32 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - 不做:不为 steer 增加「自动探测并缓存支持情况」;每次调用直接试,失败即降级文案,避免缓存过期。
 
 后果:`acp_chat_*` 工具从四个变五个;kiro 新建会话默认走 v3 引擎(`--agent-engine v3`),旧会话继续可续;测试 172 → 188(steer 5、engine 7、pool 指纹放宽 3、jobs 并存 1)。未验证:真机 v3 引擎下 `session/prompt` 的流式分块与 v2 的差异(本包的 mock 无法覆盖),留待装机冒烟。
+
+## D18 按轮日志 + 会话详情页签(2026-11-04)
+
+问题:v1 面板只有卡片(状态/摘要/轮数/释放/删除),看不到一个会话里到底发生过什么。注册表只存 `turnCount` 与首轮摘要,没有逐轮内容。
+
+裁定记录(2026-11-04,用户按研究推荐全选;研究见 PANEL-DETAIL-RESEARCH.md,界面规格见 PANEL-DESIGN.md §2.6):
+1. 详情形态:**资源地址页签,不注册 provider**(方案 A)——地址 `dsh-resource://acp-resume-chat/<chatId>`,类型声明 `patterns`,数据由包内按会话的数据源拉取;
+2. 数据:**自落轮次日志**,注册表不动;
+3. 入口:**整张卡片可点**;
+4. 展开状态:**组件内状态**(切走页签再切回会合上);
+5. 在途轮实时文本:**留 v3**。
+
+决策与细则:
+- **日志文件**:`<registryPath 的父目录>/turns/<chatId>.jsonl`,只追加,一行一条 JSON。两类记录,共用每会话递增的 `seq`(从 1 起,裁剪后不复用):
+  - `turn`:`startedAt`、`at`(结算时刻)、`message`、`output`(回答文本)、`stopReason`(completed / aborted / error / max-tokens / refusal / …)、`freshSession`、可选 `diagnostic`;每个 `completed` 之外的结局也记。
+  - `event`:`session-lost`(`session/load` 被协议拒绝,新开远端会话顶替;随后同一次 send 还会记一条 `freshSession: true` 的 `turn`)、`reconnect-failed`(send 在 prompt 发出前失败:load 的非协议类失败、进程起不来、已记录的 agent 指纹与当前配置不符;带上未发出的消息与错误文案)。拆卸引起的中止(`was released before the prompt started`)与池已销毁不记。
+- **不记的**:steer(不是轮)、send 在做任何事之前就被拒绝的情形(未知会话、在途、信号已中止)、启动(start)。
+- **写入点**:`AcpSessionPool.send` 的轮结算处(紧跟注册表更新,因此 jobs 与同步两种 send 都覆盖,tools.ts 不改)与重连窗口/失败处。写之前复查注册表里该会话还在,与"结算前 purge 不得复活记录"同一条规则,所以 purge 之后不会留下孤儿日志。
+- **与 D6 / D17 的边界**:注册表字段与版本不变;单飞、降级判定(只有协议级 load 拒绝才降级)、取消条、空闲释放、释放时序全部不动;日志写失败**只经 `onWarn` 告警,绝不改变轮的结果**(同 D6 "轮结果优先于拆卸失败");`purge` 在删注册表条目后删日志文件,删失败只告警;`close` 保留日志。
+- **容量**:单条上限——`message` 8192 字符、`output` 32768 字符(按码点截,不拆代理对,截断时记 `messageTruncated` / `outputTruncated`)、`diagnostic` 与 `error` 2000 字符;每会话保留最近 200 条,文件超过 400 条时用"临时文件 + 原子改名"裁回 200 条(条数在进程内计数,首次写入时读一次文件)。
+- **容错**:读逐行解析,不能解析或形状不对的行跳过;进程崩溃留下的半行,下一次追加先补换行;`seq` 取文件中最大可读值 + 1。chatId 作文件名前校验(只允许字母数字与 `._-`,首字符为字母数字),不合法则告警并不读写,防路径逃逸。
+- **host 读接口**(`AcpResumePanelService`,与 list/close/purge 同款 source 模式,参数自校验):`turns(chatId, limit?)` → `{ chat, entries, total }`,`entries` 是最近 `limit` 条(默认 50,上限 200)的**预览**(message / output 各至多 120 字,附 `messageMore` / `outputMore` 标志),`chat` 是该会话的注册表行,所以详情页一次调用拿全;`turn(chatId, seq)` → 单条全文。未知会话 `acp-resume/unknown-chat`(同现有错误码),日志里没有该 seq `acp-resume/unknown-turn`(新),参数非法 `gateway/bad-request`。与研究 §3.4 的偏差:研究草图写的是 `detail / turns(before, limit) / turn`;实施时合并 `detail` 进 `turns`(省一次往返),并把分页改成只给 `limit`(加载更早 = 提高 `limit`),因为 5 秒轮询每次整体重取,游标会和裁剪、追加互相竞争。
+- **client**:新增页签类型 `acp-resume.chat`(`id: dsh-acp-resume/chat`),`patterns: ['dsh-resource://acp-resume-chat/**']`,`canOpen` 校验地址,不设 `priority`(默认 extension)、不设 `multiple`、不进引导页;正文与 chip 标题各占 `sidebar.right.pane.tab` / `.title` 槽位。同一地址聚焦已有页签,关一个不影响其他,刷新后凭持久化的地址恢复。`ChatDetailSource` 每个 chatId 一个、正文与标题共用,有订阅者才每 5 秒轮询;答 `unknown-chat` 时发布 `gone` 并停轮询。列表卡片 `onClick` 打开详情,释放/删除按钮 `stopPropagation`,标题是真按钮以支持键盘。client 依赖面不变(`inject` 仍是 `slots / locale / sidebarRightTabs`,另有 `connection` 的响应式等待)。
+- **隐私**:日志以明文保存发给外部 agent 的消息与回答,和 kiro 自己的会话存储同级;`purge` 随记录一并删除。v2 不提供关闭开关(用户未要求);若需要,加 Config `recordTurns` 即可,是纯增量改动。
+- **兼容**:旧注册表、旧会话无日志,详情页显示空历史占位,不迁移;降级回 v1 后日志文件被忽略;新 host 配旧 client 无影响(只多两个没人调的方法),旧 host 配新 client 时详情页显示读取失败条而列表不受影响;`PooledChatInfo` 不变。
+
+后果:池多一个 `TurnLog` 成员与 `chatInfo` / `turnEntries` 两个只读方法;面板 host 半 3 → 5 个 Remote 方法;client 半新增 4 个文件;测试 192 → 259(见 AGENTS.md「期望测试基线」)。未验证:真机 GUI 中官方侧栏对第二个页签类型、chip 标题槽与"同地址聚焦"的实际表现(以官方源码与 jsdom 测试为依据,装机验收清单见 PANEL-DESIGN.md §2.6)。
+
+D15 追注(2026-11-04):v2 增加会话详情页签,见 D18;D15 "只读视图 + 资源操作、不含输入框"的边界不变。

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Browser-half tests (PANEL-DESIGN §4): the panel component fed realistic
+ * Browser-half tests (PANEL-DESIGN §4, §2.6): the panel component fed realistic
  * props (empty state, cards with and without label/title/turnCount, release
  * without confirmation, delete behind a dialog naming the chat, cancel), the
  * data source over a mocked `connection.rpc` (call shape, fetch on open,
@@ -18,7 +18,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as client from '../src/client/index.ts'
 import { ChatsPanel, relativeTime, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, POLL_INTERVAL_MS, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
-import type { ChatsPanelInjected, ChatsSnapshot, Observable, PanelChat } from '../src/client/face.ts'
+import { ChatDetail, ChatDetailTitle, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
+import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
+import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
+import type {
+  ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
+  PanelChat, TabInfoHook, TurnItem,
+} from '../src/client/face.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
@@ -59,9 +65,17 @@ function staticHook(snapshot: ChatsSnapshot): ChatsPanelProps['useChats'] {
   return selector => selector(snapshot)
 }
 
+/** A tab-info stub whose tab sits at `contentId` and records opens and closes. */
+function tabInfo(contentId = 'sidebar://acp-resume.chats'): { hook: TabInfoHook; openResource: ReturnType<typeof vi.fn>; closeTab: ReturnType<typeof vi.fn> } {
+  const openResource = vi.fn()
+  const closeTab = vi.fn()
+  return { hook: () => ({ tab: { contentId, actions: { openResource, close: closeTab } } }), openResource, closeTab }
+}
+
 function props(snapshot: ChatsSnapshot, overrides: Partial<ChatsPanelProps> = {}): ChatsPanelProps {
   return {
     useChats: staticHook(snapshot),
+    useTabInfo: tabInfo().hook,
     refresh: vi.fn(),
     close: vi.fn(async () => {}),
     purge: vi.fn(async () => {}),
@@ -309,7 +323,7 @@ describe('ChatsSource', () => {
 /** Stub services for `apply`, recording what registers. */
 function stubServices() {
   const tabs: Record<string, unknown>[] = []
-  const bodies: { options: { name: string; key: string; locale: string; inject: () => ChatsPanelInjected }; component: unknown }[] = []
+  const bodies: { options: { name: string; key: string; locale?: string; inject: () => unknown }; component: unknown }[] = []
   const dictionaries: string[] = []
   return {
     tabs, bodies, dictionaries,
@@ -343,7 +357,7 @@ function renderBody(injected: ChatsPanelInjected): void {
   function Body(): ReactNode {
     const useChats: ChatsPanelProps['useChats'] = selector =>
       selector(useSyncExternalStore((hooks.chats as Observable<ChatsSnapshot>).subscribe, hooks.chats.getSnapshot))
-    return <ChatsPanel {...rest} useChats={useChats} t={t} />
+    return <ChatsPanel {...rest} useChats={useChats} useTabInfo={tabInfo().hook} t={t} />
   }
   render(<Body />)
 }
@@ -367,7 +381,7 @@ describe('apply (client wiring)', () => {
     const fiber = await ctx.plugin(client)
     expect(warn).not.toHaveBeenCalled()
 
-    expect(services.tabs).toHaveLength(1)
+    expect(services.tabs).toHaveLength(2)
     const tab = services.tabs[0] as { id: string; kind: string; title: () => string; guide: { title: () => string }[]; patterns?: unknown; multiple?: unknown }
     expect(tab).toMatchObject({ id: 'dsh-acp-resume', kind: 'acp-resume.chats' })
     expect(tab.patterns).toBeUndefined()
@@ -375,12 +389,19 @@ describe('apply (client wiring)', () => {
     expect(tab.title()).toBe('持久会话')
     expect(tab.guide.map(entry => entry.title())).toEqual(['持久会话'])
     expect(services.dictionaries).toEqual(['acpResumePanel'])
-    expect(services.bodies).toHaveLength(1)
+    // The list body, the detail body, and the detail chip title.
+    expect(services.bodies.map(b => [b.options.name, b.options.key])).toEqual([
+      ['sidebar.right.pane.tab', 'dsh-acp-resume'],
+      ['sidebar.right.pane.tab', 'dsh-acp-resume/chat'],
+      ['sidebar.right.pane.tab.title', 'dsh-acp-resume/chat'],
+    ])
     const body = services.bodies[0] as (typeof services.bodies)[number]
     expect(body.options).toMatchObject({ name: 'sidebar.right.pane.tab', key: 'dsh-acp-resume', locale: 'acpResumePanel' })
     expect(body.component).toBe(ChatsPanel)
+    expect(services.bodies[1]?.component).toBe(ChatDetail)
+    expect(services.bodies[2]?.component).toBe(ChatDetailTitle)
 
-    renderBody(body.options.inject())
+    renderBody(body.options.inject() as ChatsPanelInjected)
     expect(await screen.findByText('记住暗号P')).toBeTruthy()
     expect(rpc.calls[0]).toEqual(['/api', 'acpResume/list', { args: {} }])
     rows = []
@@ -394,6 +415,32 @@ describe('apply (client wiring)', () => {
     expect(services.tabs).toHaveLength(0)
     expect(services.bodies).toHaveLength(0)
     expect(services.dictionaries).toHaveLength(0)
+  })
+
+  it('registers the detail tab type as a resource type: patterns, canOpen, title; no multiple, no guide entry, no provider', async () => {
+    const ctx = new Context()
+    const services = stubServices()
+    ctx.provide('slots', services.slots)
+    ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
+    ctx.provide('locale', services.locale)
+    ctx.provide('connection', { rpc: mockRpc() })
+    const fiber = await ctx.plugin(client)
+    const detail = services.tabs[1] as { id: string; kind: string; patterns: string[]; canOpen: (a: string) => boolean; title: (a: string) => string; multiple?: unknown; guide?: unknown; priority?: unknown }
+    expect(detail).toMatchObject({ id: 'dsh-acp-resume/chat', kind: 'acp-resume.chat', patterns: [CHAT_ADDRESS_PATTERN] })
+    expect(CHAT_ADDRESS_PATTERN).toBe('dsh-resource://acp-resume-chat/**')
+    expect(detail.multiple).toBeUndefined()
+    expect(detail.guide).toBeUndefined()
+    expect(detail.canOpen(chatAddress(`chat-${UUID_A}`))).toBe(true)
+    expect(detail.canOpen('dsh-resource://file/session/x/a.txt')).toBe(false)
+    expect(detail.canOpen('dsh-resource://acp-resume-chat/')).toBe(false)
+    expect(detail.title(chatAddress(`chat-${UUID_A}`))).toBe('chat-a1b2c3d4')
+    // Both detail registrations hand out one source per chat, shared by body and title.
+    const bodyFace = services.bodies[1]?.options.inject() as ChatDetailInjected
+    const titleFace = services.bodies[2]?.options.inject() as ChatDetailInjected
+    expect(bodyFace.sourceFor('chat-x')).toBe(titleFace.sourceFor('chat-x'))
+    expect(bodyFace.sourceFor('chat-x')).not.toBe(bodyFace.sourceFor('chat-y'))
+    await fiber.dispose()
+    expect(services.tabs).toHaveLength(0)
   })
 
   it('without a connection service registers nothing and warns once; a later connection brings the panel in', async () => {
@@ -410,10 +457,400 @@ describe('apply (client wiring)', () => {
     expect(services.bodies).toHaveLength(0)
 
     ctx.provide('connection', { rpc: mockRpc() })
-    await vi.waitFor(() => { expect(services.tabs).toHaveLength(1) })
-    expect(services.bodies).toHaveLength(1)
+    await vi.waitFor(() => { expect(services.tabs).toHaveLength(2) })
+    expect(services.bodies).toHaveLength(3)
     expect(warn).toHaveBeenCalledTimes(1)
     await fiber.dispose()
     expect(services.tabs).toHaveLength(0)
+  })
+})
+
+describe('ChatsPanel card click (D18)', () => {
+  it('opens the detail tab at the chat address when the card is clicked anywhere', () => {
+    const info = tabInfo()
+    render(<ChatsPanel {...props(ready([chat({ title: '记住暗号P' })]), { useTabInfo: info.hook })} />)
+    fireEvent.click(screen.getByText('记住暗号P'))
+    expect(info.openResource).toHaveBeenCalledTimes(1)
+    expect(info.openResource).toHaveBeenCalledWith(`dsh-resource://acp-resume-chat/chat-${UUID_A}`)
+  })
+
+  it('opens once from the name button (the keyboard way in), with an accessible name', () => {
+    const info = tabInfo()
+    render(<ChatsPanel {...props(ready([chat()]), { useTabInfo: info.hook })} />)
+    fireEvent.click(screen.getByRole('button', { name: '查看 chat-a1b2c3d4 详情' }))
+    expect(info.openResource).toHaveBeenCalledTimes(1)
+  })
+
+  it('release and delete do not open the detail tab, but still act', async () => {
+    const info = tabInfo()
+    const p = props(ready([chat()]), { useTabInfo: info.hook })
+    render(<ChatsPanel {...p} />)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    expect(p.close).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(info.openResource).not.toHaveBeenCalled()
+  })
+
+  it('opens the right chat when several cards exist', () => {
+    const info = tabInfo()
+    render(<ChatsPanel {...props(ready([chat(), chat({ chatId: `chat-${UUID_B}`, title: '第二个' })]), { useTabInfo: info.hook })} />)
+    fireEvent.click(screen.getByText('第二个'))
+    expect(info.openResource).toHaveBeenCalledWith(`dsh-resource://acp-resume-chat/chat-${UUID_B}`)
+  })
+})
+
+describe('chat address', () => {
+  it('round-trips ids, including ones that need escaping', () => {
+    for (const id of [`chat-${UUID_A}`, 'chat-a/b?c#d', 'chat-空格 x']) {
+      expect(parseChatAddress(chatAddress(id))).toBe(id)
+    }
+    expect(chatAddress('chat-x')).toBe('dsh-resource://acp-resume-chat/chat-x')
+  })
+
+  it('rejects other schemes, empty ids, nested paths, and bad escapes', () => {
+    for (const address of [
+      'dsh-resource://file/session/s/x', 'dsh-resource://acp-resume-chat/', 'dsh-resource://acp-resume-chat/a/b',
+      'dsh-resource://acp-resume-chat/a?x=1', 'dsh-resource://acp-resume-chat/%E0%A4%A', 'sidebar://acp-resume.chats', '',
+    ]) {
+      expect(parseChatAddress(address)).toBeUndefined()
+    }
+  })
+})
+
+const turn = (seq: number, overrides: Partial<TurnItem> = {}): TurnItem => ({
+  seq, kind: 'turn', startedAt: NOW - 10 * 60_000, at: NOW - 9 * 60_000,
+  message: `问题${seq}`, output: `回答${seq}`, messageMore: false, outputMore: false,
+  stopReason: 'completed', freshSession: false, ...overrides,
+})
+
+const lostEvent = (seq: number): EventItem => ({ seq, kind: 'event', event: 'session-lost', at: NOW - 5 * 60_000 })
+
+function detailSnapshot(overrides: Partial<DetailSnapshot> = {}): DetailSnapshot {
+  const entries = overrides.entries ?? []
+  return { status: 'ready', chat: chat({ label: '审阅', title: '记住暗号P', turnCount: 2 }), entries, total: entries.length, fetchedAt: NOW, ...overrides }
+}
+
+function fakeSource(snapshot: DetailSnapshot, full: (seq: number) => Promise<FullEntry> = async seq => ({ seq, kind: 'turn', message: `完整问题${seq}`, output: `完整回答${seq}` })) {
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    refresh: vi.fn(async () => {}),
+    loadMore: vi.fn(async () => {}),
+    loadEntry: vi.fn(full),
+  } satisfies DetailSource
+}
+
+function detailProps(source: DetailSource, overrides: Partial<ChatDetailProps> = {}, info = tabInfo(chatAddress(`chat-${UUID_A}`))) {
+  const injected: ChatDetailProps = {
+    useTabInfo: info.hook, sourceFor: () => source, close: vi.fn(async () => {}), purge: vi.fn(async () => {}), t, ...overrides,
+  }
+  return { injected, info }
+}
+
+describe('ChatDetail (D18)', () => {
+  it('shows the chat facts and the turns newest first, with stop reasons, fresh badge, and a reconnect event', () => {
+    const entries = [turn(1), lostEvent(2), turn(3, { stopReason: 'aborted', freshSession: true, message: '再问一次', output: '' })]
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries })))
+    const { container } = render(<ChatDetail {...injected} />)
+    expect(screen.getByText('审阅')).toBeTruthy()
+    expect(screen.getByText('chat-a1b2c3d4')).toBeTruthy()
+    expect(screen.getByText('活跃 · 2 轮 · 3 分钟前')).toBeTruthy()
+    expect(screen.getByText('首轮:记住暗号P')).toBeTruthy()
+    expect(screen.getByText('cwd /tmp · 远端 4fb07582')).toBeTruthy()
+    expect([...container.querySelectorAll('li')].map(li => li.getAttribute('data-seq'))).toEqual(['3', '2', '1'])
+    expect(screen.getByText('#3 · 已取消 · 新会话 · 9 分钟前')).toBeTruthy()
+    expect(screen.getByText('#1 · 已完成 · 9 分钟前')).toBeTruthy()
+    expect(screen.getByText(/问: 问题1/)).toBeTruthy()
+    expect(screen.getByText(/答: 回答1/)).toBeTruthy()
+    expect(screen.getByText(/答: \(无回答文本\)/)).toBeTruthy()
+    expect(container.querySelector('[data-event="session-lost"]')?.textContent).toBe('5 分钟前 · 远端会话已丢失,已新开会话')
+  })
+
+  it('shows a reconnect failure with the unsent message', () => {
+    const failed: EventItem = { seq: 1, kind: 'event', event: 'reconnect-failed', at: NOW - 60_000 * 2, message: '继续', error: 'process exited' }
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [failed] })))
+    const { container } = render(<ChatDetail {...injected} />)
+    expect(container.querySelector('[data-event="reconnect-failed"]')?.textContent).toBe('2 分钟前 · 重连失败:process exited · 未能发送:继续')
+  })
+
+  it('shows a placeholder for an empty log, and none while loading', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot()))
+    const { unmount } = render(<ChatDetail {...injected} />)
+    expect(screen.getByText('暂无轮次记录(此前的轮次没有被记录)。')).toBeTruthy()
+    unmount()
+    const loading = detailProps(fakeSource({ status: 'loading', entries: [], total: 0 }))
+    render(<ChatDetail {...loading.injected} />)
+    expect(screen.queryByText('暂无轮次记录(此前的轮次没有被记录)。')).toBeNull()
+    expect(screen.getByText('正在读取…')).toBeTruthy()
+  })
+
+  it('expands a turn on click: full text fetched once when the preview is cut, no fetch when it is complete', async () => {
+    const cut = turn(1, { message: '问…', output: '答…', messageMore: true, outputMore: true })
+    const whole = turn(2)
+    const source = fakeSource(detailSnapshot({ entries: [cut, whole] }))
+    const { injected } = detailProps(source)
+    const { container } = render(<ChatDetail {...injected} />)
+    expect(container.querySelector('[data-full]')).toBeNull()
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 1 条记录' })) })
+    expect(source.loadEntry).toHaveBeenCalledWith(1)
+    expect(container.querySelector('[data-seq="1"] [data-full="message"]')?.textContent).toBe('完整问题1')
+    expect(container.querySelector('[data-seq="1"] [data-full="output"]')?.textContent).toBe('完整回答1')
+    expect(screen.getByRole('button', { name: '第 1 条记录' }).getAttribute('aria-expanded')).toBe('true')
+
+    // Collapse, expand again: no second fetch.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 1 条记录' })) })
+    expect(container.querySelector('[data-seq="1"] [data-full]')).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 1 条记录' })) })
+    expect(source.loadEntry).toHaveBeenCalledTimes(1)
+
+    // A turn whose preview is complete shows its text without asking the host.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 2 条记录' })) })
+    expect(source.loadEntry).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-seq="2"] [data-full="message"]')?.textContent).toBe('问题2')
+  })
+
+  it('keeps expansion independent per turn and shows the diagnostic of an expanded failed turn', async () => {
+    const failed = turn(2, { stopReason: 'error', diagnostic: 'stage: prompt' })
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1), failed] })))
+    const { container } = render(<ChatDetail {...injected} />)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 2 条记录' })) })
+    expect(container.querySelector('[data-seq="2"] [data-full]')).not.toBeNull()
+    expect(container.querySelector('[data-seq="1"] [data-full]')).toBeNull()
+    expect(screen.getByText('诊断:stage: prompt')).toBeTruthy()
+    expect(screen.getByText('#2 · 出错 · 9 分钟前')).toBeTruthy()
+  })
+
+  it('shows the failure when the full text cannot be read, keeping the preview', async () => {
+    const cut = turn(1, { message: '问…', messageMore: true })
+    const source = fakeSource(detailSnapshot({ entries: [cut] }), async () => { throw new Error('acp-resume/unknown-turn: trimmed') })
+    const { injected } = detailProps(source)
+    const { container } = render(<ChatDetail {...injected} />)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '第 1 条记录' })) })
+    expect(screen.getByRole('alert').textContent).toBe('读取全文失败:acp-resume/unknown-turn: trimmed')
+    expect(container.querySelector('[data-full="message"]')?.textContent).toBe('问…')
+  })
+
+  it('offers older entries when the log holds more than is shown', () => {
+    const source = fakeSource(detailSnapshot({ entries: [turn(5), turn(6)], total: 6 }))
+    const { injected } = detailProps(source)
+    render(<ChatDetail {...injected} />)
+    expect(screen.getByText('显示最近 2 / 共 6 条')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '加载更早的记录' }))
+    expect(source.loadMore).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows no load-more when everything is shown', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1)], total: 1 })))
+    render(<ChatDetail {...injected} />)
+    expect(screen.queryByRole('button', { name: '加载更早的记录' })).toBeNull()
+  })
+
+  it('refreshes from the header, and shows a load error above the kept data', () => {
+    const source = fakeSource(detailSnapshot({ status: 'error', error: 'HTTP 502', entries: [turn(1)] }))
+    const { injected } = detailProps(source)
+    render(<ChatDetail {...injected} />)
+    expect(screen.getByRole('alert').textContent).toBe('读取失败:HTTP 502')
+    expect(screen.getByText(/问: 问题1/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    expect(source.refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases from the detail page, and a released chat has nothing to release', async () => {
+    const source = fakeSource(detailSnapshot())
+    const { injected } = detailProps(source)
+    const { unmount } = render(<ChatDetail {...injected} />)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    expect(injected.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
+    expect(source.refresh).toHaveBeenCalled()
+    unmount()
+    const released = detailProps(fakeSource(detailSnapshot({ chat: chat({ active: false }) })))
+    render(<ChatDetail {...released.injected} />)
+    expect((screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(/已释放\(下次发送自动重连\)/)).toBeTruthy()
+  })
+
+  it('asks before deleting; cancel deletes nothing; confirming purges and closes the tab', async () => {
+    const source = fakeSource(detailSnapshot())
+    const { injected, info } = detailProps(source)
+    render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
+    expect(injected.purge).not.toHaveBeenCalled()
+    expect(info.closeTab).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
+    expect(injected.purge).toHaveBeenCalledWith(`chat-${UUID_A}`)
+    expect(info.closeTab).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed delete keeps the tab open and shows the failure', async () => {
+    const { injected, info } = detailProps(fakeSource(detailSnapshot()), { purge: vi.fn(async () => { throw new Error('acp-resume/unknown-chat: x') }) })
+    render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
+    expect(screen.getByRole('alert').textContent).toBe('操作失败:acp-resume/unknown-chat: x')
+    expect(info.closeTab).not.toHaveBeenCalled()
+  })
+
+  it('a chat the host no longer knows shows a gone notice with a close-tab button', () => {
+    const { injected, info } = detailProps(fakeSource({ status: 'gone', entries: [], total: 0, error: 'acp-resume/unknown-chat: x' }))
+    render(<ChatDetail {...injected} />)
+    expect(screen.getByText('该会话已删除')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '关闭页签' }))
+    expect(info.closeTab).toHaveBeenCalledTimes(1)
+  })
+
+  it('two tabs of different chats keep separate sources and state', async () => {
+    const a = fakeSource(detailSnapshot({ entries: [turn(1, { message: '甲…', messageMore: true })] }))
+    const b = fakeSource(detailSnapshot({ chat: chat({ chatId: `chat-${UUID_B}`, label: '乙' }), entries: [turn(1, { message: '乙问' })] }))
+    const first = detailProps(a, { sourceFor: id => (id === `chat-${UUID_A}` ? a : b) })
+    const second = detailProps(b, { sourceFor: id => (id === `chat-${UUID_A}` ? a : b) }, tabInfo(chatAddress(`chat-${UUID_B}`)))
+    render(<><ChatDetail {...first.injected} /><ChatDetail {...second.injected} /></>)
+    expect(screen.getByText('乙')).toBeTruthy()
+    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: '第 1 条记录' })[0] as HTMLElement) })
+    expect(a.loadEntry).toHaveBeenCalledTimes(1)
+    expect(b.loadEntry).not.toHaveBeenCalled()
+  })
+
+  it('renders in English too', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1)] })), { t: translator(en) })
+    render(<ChatDetail {...injected} />)
+    expect(screen.getByText('Turn history')).toBeTruthy()
+    expect(screen.getByText('#1 · completed · 9 min ago')).toBeTruthy()
+  })
+
+  it('an address that names no chat shows a notice instead of throwing', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot()), {}, tabInfo('dsh-resource://acp-resume-chat/'))
+    render(<ChatDetail {...injected} />)
+    expect(screen.getByRole('alert').textContent).toBe('该会话已删除')
+  })
+})
+
+describe('ChatDetailTitle', () => {
+  it('shows the label when there is one, else the short id', () => {
+    const labelled = detailProps(fakeSource(detailSnapshot()))
+    const { container, unmount } = render(<ChatDetailTitle useTabInfo={labelled.injected.useTabInfo} sourceFor={labelled.injected.sourceFor} />)
+    expect(container.textContent).toBe('审阅')
+    unmount()
+    const bare = detailProps(fakeSource(detailSnapshot({ chat: chat() })))
+    const second = render(<ChatDetailTitle useTabInfo={bare.injected.useTabInfo} sourceFor={bare.injected.sourceFor} />)
+    expect(second.container.textContent).toBe('chat-a1b2c3d4')
+  })
+})
+
+/** Mock carrier for the detail source: `acpResume/turns` and `acpResume/turn`. */
+function detailRpc(handlers: { turns?: (args: Record<string, unknown>) => PanelRpcResult | Promise<PanelRpcResult>; turn?: (args: Record<string, unknown>) => PanelRpcResult } = {}) {
+  const calls: [string, string, { args: Record<string, unknown> }][] = []
+  const rpc: PanelRpc & { calls: typeof calls } = {
+    calls,
+    call: vi.fn(async (channel: string, endpoint: string, payload: unknown): Promise<PanelRpcResult> => {
+      const body = payload as { args: Record<string, unknown> }
+      calls.push([channel, endpoint, body])
+      if (endpoint === 'acpResume/turns') {
+        return handlers.turns?.(body.args) ?? { ok: true, value: { chat: chat(), entries: [turn(1)], total: 1 } }
+      }
+      if (endpoint === 'acpResume/turn') return handlers.turn?.(body.args) ?? { ok: true, value: { seq: 1, kind: 'turn', message: 'm', output: 'o' } }
+      return { ok: true, value: null }
+    }),
+  }
+  return rpc
+}
+
+describe('ChatDetailSource', () => {
+  it('fetches turns for its chat on the first subscription, polls while subscribed, and stops after the last leaves', async () => {
+    vi.useFakeTimers()
+    const rpc = detailRpc()
+    const source = new ChatDetailSource(rpc, `chat-${UUID_A}`, () => NOW)
+    expect(source.getSnapshot().status).toBe('loading')
+    const stop = source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rpc.calls).toEqual([['/api', 'acpResume/turns', { args: { chatId: `chat-${UUID_A}`, limit: DETAIL_PAGE } }]])
+    expect(source.getSnapshot()).toEqual({ status: 'ready', chat: chat(), entries: [turn(1)], total: 1, fetchedAt: NOW })
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(rpc.calls).toHaveLength(2)
+    stop()
+    await vi.advanceTimersByTimeAsync(3 * POLL_INTERVAL_MS)
+    expect(rpc.calls).toHaveLength(2)
+  })
+
+  it('does not poll before anyone subscribes', async () => {
+    vi.useFakeTimers()
+    const rpc = detailRpc()
+    new ChatDetailSource(rpc, 'chat-x')
+    await vi.advanceTimersByTimeAsync(3 * POLL_INTERVAL_MS)
+    expect(rpc.calls).toHaveLength(0)
+  })
+
+  it('loadMore raises the limit by a page, up to the host ceiling of 200', async () => {
+    const rpc = detailRpc()
+    const source = new ChatDetailSource(rpc, 'chat-x', () => NOW)
+    await source.loadMore()
+    await source.loadMore()
+    await source.loadMore()
+    await source.loadMore()
+    await source.loadMore()
+    expect(rpc.calls.map(c => c[2].args.limit)).toEqual([100, 150, 200, 200, 200])
+  })
+
+  it('reads one entry in full with the chatId and seq', async () => {
+    const rpc = detailRpc({ turn: () => ({ ok: true, value: { seq: 7, kind: 'turn', message: '全文问', output: '全文答' } }) })
+    const source = new ChatDetailSource(rpc, 'chat-x')
+    await expect(source.loadEntry(7)).resolves.toEqual({ seq: 7, kind: 'turn', message: '全文问', output: '全文答' })
+    expect(rpc.calls).toEqual([['/api', 'acpResume/turn', { args: { chatId: 'chat-x', seq: 7 } }]])
+  })
+
+  it('rejects a failed entry read with the host code', async () => {
+    const rpc = detailRpc({ turn: () => ({ ok: false, error: { code: 'acp-resume/unknown-turn', message: 'gone' } }) })
+    await expect(new ChatDetailSource(rpc, 'chat-x').loadEntry(1)).rejects.toThrow('acp-resume/unknown-turn: gone')
+  })
+
+  it('publishes gone and stops polling when the host reports the chat unknown', async () => {
+    vi.useFakeTimers()
+    const rpc = detailRpc({ turns: () => ({ ok: false, error: { code: 'acp-resume/unknown-chat', message: 'acp-resume: unknown chat x' } }) })
+    const source = new ChatDetailSource(rpc, 'chat-x')
+    source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(source.getSnapshot()).toMatchObject({ status: 'gone', entries: [], total: 0 })
+    await vi.advanceTimersByTimeAsync(3 * POLL_INTERVAL_MS)
+    expect(rpc.calls).toHaveLength(1)
+  })
+
+  it('keeps the last good data under an error status when a refresh fails', async () => {
+    let fail = false
+    const rpc = detailRpc({ turns: () => {
+      if (fail) throw new Error('transport failure: HTTP 502')
+      return { ok: true, value: { chat: chat(), entries: [turn(1)], total: 1 } }
+    } })
+    const source = new ChatDetailSource(rpc, 'chat-x', () => NOW)
+    await source.refresh()
+    fail = true
+    await source.refresh()
+    expect(source.getSnapshot()).toEqual({
+      status: 'error', chat: chat(), entries: [turn(1)], total: 1, fetchedAt: NOW, error: 'transport failure: HTTP 502',
+    })
+  })
+
+  it('rejects an answer without a chat as an error, and drops stale answers and everything after dispose', async () => {
+    const answers: ((value: PanelRpcResult) => void)[] = []
+    const rpc: PanelRpc = { call: () => new Promise((resolve) => { answers.push(resolve) }) }
+    const source = new ChatDetailSource(rpc, 'chat-x', () => NOW)
+    const first = source.refresh()
+    const second = source.refresh()
+    answers[1]?.({ ok: true, value: { chat: chat({ cwd: '/new' }), entries: [], total: 0 } })
+    answers[0]?.({ ok: true, value: { chat: chat({ cwd: '/old' }), entries: [], total: 0 } })
+    await Promise.all([first, second])
+    expect(source.getSnapshot().chat?.cwd).toBe('/new')
+    const third = source.refresh()
+    answers[2]?.({ ok: true, value: null })
+    await third
+    expect(source.getSnapshot()).toMatchObject({ status: 'error', error: 'acpResume/turns returned no detail' })
+    const fourth = source.refresh()
+    source.dispose()
+    answers[3]?.({ ok: true, value: { chat: chat({ cwd: '/late' }), entries: [], total: 0 } })
+    await fourth
+    expect(source.getSnapshot().chat?.cwd).toBe('/new')
   })
 })

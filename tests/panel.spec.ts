@@ -4,13 +4,14 @@
  * way the Gateway's source mode would (no real Gateway): over a REAL pool and
  * mock-server subprocesses, as in pool.spec. Covers the method-to-pool
  * mapping (list state with title/turnCount, close keeps the record, purge
- * drops it), unknown and malformed chatIds, the Remote markers the Gateway
+ * drops it), the detail reads `turns` and `turn` (D18: previews with
+ * more-flags, the limit, full text, events, unknown chat/turn, bad arguments), unknown and malformed chatIds, the Remote markers the Gateway
  * discovers, and the `apply` wiring lifetime. Keyless; no model.
  *
  * @module dsh-acp-resume/tests/panel.spec
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -84,11 +85,11 @@ async function rejectionCode(promise: Promise<unknown>): Promise<string | undefi
 }
 
 describe('AcpResumePanelService', () => {
-  it('registers under acpResume with the three Remote markers the Gateway discovers', async () => {
+  it('registers under acpResume with the five Remote markers the Gateway discovers', async () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['close', 'list', 'purge'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['close', 'list', 'purge', 'turn', 'turns'])
   })
 
   it('list reflects started chats, then title and turnCount after a completed turn', async () => {
@@ -157,6 +158,123 @@ describe('AcpResumePanelService', () => {
     }
     expect(panel.list()).toHaveLength(1)
     expect(panel.list()[0]?.active).toBe(true)
+  })
+})
+
+/** Source-mode invocation of the detail reads with arbitrary (possibly malformed) arguments. */
+type DetailInvoke = Record<'turns' | 'turn', (...args: unknown[]) => unknown>
+
+describe('AcpResumePanelService detail reads (D18)', () => {
+  it('turns returns the chat row, the entries oldest first as previews, and the retained total', async () => {
+    const { pool } = makePool({ MOCK_REMEMBER: '1' })
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd(), undefined, { label: '审阅' })
+    expect(panel.turns(chat.chatId, 50)).toEqual({ chat: pool.listChats()[0], entries: [], total: 0 })
+    await pool.send(chat.chatId, '记住暗号M')
+    await pool.send(chat.chatId, '暗号是什么')
+    const answer = panel.turns(chat.chatId, 50)
+    expect(answer.total).toBe(2)
+    expect(answer.chat).toMatchObject({ chatId: chat.chatId, label: '审阅', turnCount: 2, title: '记住暗号M', active: true })
+    expect(answer.entries).toMatchObject([
+      { seq: 1, kind: 'turn', message: '记住暗号M', messageMore: false, outputMore: false, stopReason: 'completed', freshSession: false },
+      { seq: 2, kind: 'turn', message: '暗号是什么', output: 'remember:记住暗号M' },
+    ])
+    expect(answer.entries[0]).not.toHaveProperty('diagnostic')
+  })
+
+  it('turns defaults to 50 entries and honors limit by returning the newest ones', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    for (let i = 1; i <= 3; i += 1) await pool.send(chat.chatId, `m${i}`)
+    const invoke = panel as unknown as DetailInvoke
+    expect((invoke.turns(chat.chatId, undefined) as { entries: unknown[] }).entries).toHaveLength(3)
+    const newest = panel.turns(chat.chatId, 2)
+    expect(newest.entries.map(e => e.seq)).toEqual([2, 3])
+    expect(newest.total).toBe(3)
+  })
+
+  it('cuts previews to 120 characters and flags that the full text is longer; turn returns it whole', async () => {
+    const long = '长'.repeat(300)
+    const { pool } = makePool({ MOCK_TEXT: long })
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, `问${'题'.repeat(299)}`)
+    const [entry] = panel.turns(chat.chatId, 50).entries
+    expect(entry).toMatchObject({ messageMore: true, outputMore: true })
+    expect(Array.from((entry as { message: string }).message)).toHaveLength(120)
+    expect(Array.from((entry as { output: string }).output)).toHaveLength(120)
+    expect(panel.turn(chat.chatId, 1)).toMatchObject({ seq: 1, kind: 'turn', message: `问${'题'.repeat(299)}`, output: long })
+  })
+
+  it('carries a failed turn with its diagnostic', async () => {
+    const { pool } = makePool({ MOCK_CRASH_PROMPTS: '1' })
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, 'crash')
+    const [failed] = panel.turns(chat.chatId, 50).entries
+    expect(failed).toMatchObject({ kind: 'turn', stopReason: 'error' })
+    expect((failed as { diagnostic?: string }).diagnostic).toMatch(/process-exit/)
+  })
+
+  it('shows a reconnect event as an event entry', async () => {
+    const dir = tempDir('acp-resume-panel-event-')
+    const registryPath = join(dir, 'registry.json')
+    writeFileSync(registryPath, JSON.stringify({
+      version: 1,
+      sessions: [{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), command: '/opt/other-agent', args: ['acp'], lastActive: 1 }],
+    }))
+    const pool = new AcpSessionPool({
+      specBase: { command: process.execPath, args: [mockServer], permission: 'reject', env: {}, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+      registryPath, idleTimeoutMs: 600_000,
+    })
+    pools.push(pool)
+    const { panel } = await mountPanel(pool)
+    await pool.send('chat-other', 'hello').catch(() => undefined)
+    const [event] = panel.turns('chat-other', 50).entries
+    expect(event).toMatchObject({ seq: 1, kind: 'event', event: 'reconnect-failed', message: 'hello' })
+    expect(panel.turn('chat-other', 1)).toMatchObject({ kind: 'event', event: 'reconnect-failed' })
+  })
+
+  it('rejects an unknown chat with acp-resume/unknown-chat, also after a purge removed the log', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const invoke = panel as unknown as DetailInvoke
+    expect(await rejectionCode(Promise.resolve().then(() => invoke.turns('chat-nope', 5)))).toBe('acp-resume/unknown-chat')
+    expect(await rejectionCode(Promise.resolve().then(() => invoke.turn('chat-nope', 1)))).toBe('acp-resume/unknown-chat')
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, 'x')
+    await panel.purge(chat.chatId)
+    expect(await rejectionCode(Promise.resolve().then(() => invoke.turns(chat.chatId, 5)))).toBe('acp-resume/unknown-chat')
+    expect(await rejectionCode(Promise.resolve().then(() => invoke.turn(chat.chatId, 1)))).toBe('acp-resume/unknown-chat')
+  })
+
+  it('rejects an entry the log does not hold with acp-resume/unknown-turn', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, 'x')
+    const invoke = panel as unknown as DetailInvoke
+    for (const seq of [2, 0, -1, 999]) {
+      expect(await rejectionCode(Promise.resolve().then(() => invoke.turn(chat.chatId, seq)))).toBe('acp-resume/unknown-turn')
+    }
+  })
+
+  it('validates its own arguments (source mode passes missing fields as undefined)', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    const invoke = panel as unknown as DetailInvoke
+    for (const bad of [undefined, '', 3, null, {}]) {
+      expect(await rejectionCode(Promise.resolve().then(() => invoke.turns(bad, 5)))).toBe('gateway/bad-request')
+      expect(await rejectionCode(Promise.resolve().then(() => invoke.turn(bad, 1)))).toBe('gateway/bad-request')
+    }
+    for (const limit of [0, -1, 1.5, '5', null, 201, Number.NaN, Infinity]) {
+      expect(await rejectionCode(Promise.resolve().then(() => invoke.turns(chat.chatId, limit)))).toBe('gateway/bad-request')
+    }
+    for (const seq of [undefined, '1', null, 1.5, Number.NaN]) {
+      expect(await rejectionCode(Promise.resolve().then(() => invoke.turn(chat.chatId, seq)))).toBe('gateway/bad-request')
+    }
   })
 })
 

@@ -1,6 +1,6 @@
 /**
  * Copy owned by the persistent-chat panel, registered under {@link PANEL_LOCALE}.
- * Wording follows PANEL-DESIGN §2.2/§3.5.
+ * Wording follows PANEL-DESIGN §2.2/§3.5; the detail tab's copy follows §2.6 (D18).
  * @module dsh-acp-resume/client/locales
  */
 
@@ -38,6 +38,32 @@ export const zh = {
   releasedGroup: '已释放 ({count})',
   expand: '展开',
   collapse: '收起',
+  viewDetail: '查看 {chatId} 详情',
+  refreshDetail: '刷新',
+  turnsHeading: '轮次记录',
+  shownOf: '显示最近 {shown} / 共 {total} 条',
+  loadMore: '加载更早的记录',
+  noTurns: '暂无轮次记录(此前的轮次没有被记录)。',
+  question: '问',
+  answer: '答',
+  noAnswer: '(无回答文本)',
+  diagnostic: '诊断:{text}',
+  freshBadge: '新会话',
+  stopCompleted: '已完成',
+  stopAborted: '已取消',
+  stopError: '出错',
+  stopMaxTokens: '超出长度',
+  stopRefusal: '拒答',
+  eventSessionLost: '远端会话已丢失,已新开会话',
+  eventReconnectFailed: '重连失败:{error}',
+  failedMessage: '未能发送:{message}',
+  turnToggle: '第 {seq} 条记录',
+  loadingFull: '正在读取全文…',
+  fullFailed: '读取全文失败:{message}',
+  goneTitle: '该会话已删除',
+  goneBody: '它的记录已被删除,无法再查看或重连。',
+  closeTab: '关闭页签',
+  chatTitle: '首轮:{title}',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -74,6 +100,32 @@ export const en: Record<PanelCopyKey, string> = {
   releasedGroup: 'Released ({count})',
   expand: 'Expand',
   collapse: 'Collapse',
+  viewDetail: 'View details of {chatId}',
+  refreshDetail: 'Refresh',
+  turnsHeading: 'Turn history',
+  shownOf: 'Showing the latest {shown} of {total}',
+  loadMore: 'Load earlier entries',
+  noTurns: 'No turn history yet (turns before logging was added are not recorded).',
+  question: 'Q',
+  answer: 'A',
+  noAnswer: '(no answer text)',
+  diagnostic: 'Diagnostic: {text}',
+  freshBadge: 'fresh session',
+  stopCompleted: 'completed',
+  stopAborted: 'cancelled',
+  stopError: 'failed',
+  stopMaxTokens: 'out of room',
+  stopRefusal: 'declined',
+  eventSessionLost: 'The remote session was lost; a fresh one was started',
+  eventReconnectFailed: 'Reconnect failed: {error}',
+  failedMessage: 'Not sent: {message}',
+  turnToggle: 'Entry {seq}',
+  loadingFull: 'Loading the full text…',
+  fullFailed: 'Could not load the full text: {message}',
+  goneTitle: 'This chat was deleted',
+  goneBody: 'Its record is gone; it can no longer be viewed or reconnected.',
+  closeTab: 'Close tab',
+  chatTitle: 'First turn: {title}',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */

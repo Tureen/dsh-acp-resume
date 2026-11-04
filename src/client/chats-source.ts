@@ -25,7 +25,7 @@ export interface PanelRpc {
 }
 
 /** Host method names under the `acpResume` namespace (wire `purge`, not `remove`; §3.6.0 #2). */
-export type PanelMethod = 'list' | 'close' | 'purge'
+export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn'
 
 /**
  * Call one host panel method; carrier throws and `ok: false` both reject.

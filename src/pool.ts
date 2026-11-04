@@ -21,6 +21,10 @@
  * characters) as its `title`; `aborted` and `error` turns record neither.
  * `steer` forwards a private `_session/steer` to the live connection while a
  * turn is in flight. The reconnect fingerprint ignores `--agent-engine` (D19).
+ * Every settled turn and every reconnect event (`session-lost`,
+ * `reconnect-failed`) is also appended to the chat's turn log (`turns/<chatId>.jsonl`
+ * next to the registry, D18); the log is a mirror for the panel's detail page,
+ * its write failures only warn, and `remove` deletes it with the record.
  * Optional send observers ({@link PoolSendHooks}) receive the turn's text
  * chunks as they stream and learn of a fresh-session fallback before the
  * prompt goes out.
@@ -30,13 +34,14 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { AcpConnection, AcpSteerResult } from './connection.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { AcpRunSpec } from './run.js'
 import { stripAgentEngine } from './engine.js'
+import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -281,6 +286,7 @@ export class AcpSessionPool {
    */
   private readonly starting = new Map<string, OpenWindow>()
   private readonly registry: ChatRegistry
+  private readonly turnLog: TurnLog
   private disposed = false
 
   constructor(private readonly opts: PoolOptions) {
@@ -289,6 +295,7 @@ export class AcpSessionPool {
       throw new Error(`acp-resume: idleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`)
     }
     this.registry = new ChatRegistry(opts.registryPath, opts.onWarn)
+    this.turnLog = new TurnLog(join(dirname(opts.registryPath), 'turns'), opts.onWarn)
   }
 
   /** Registry rows (durable chats, live or released). */
@@ -303,6 +310,16 @@ export class AcpSessionPool {
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
+  }
+
+  /** One chat's registry projection, or undefined when the chatId is unknown. */
+  chatInfo(chatId: string): PooledChatInfo | undefined {
+    return this.listChats().find(chat => chat.chatId === chatId)
+  }
+
+  /** The chat's retained turn-log entries, oldest first (empty for an unknown chat or a chat with no log). */
+  turnEntries(chatId: string): readonly LogEntry[] {
+    return this.registry.get(chatId) === undefined ? [] : this.turnLog.read(chatId)
   }
 
   /** Does the chatId exist in the durable registry? */
@@ -381,7 +398,12 @@ export class AcpSessionPool {
     let freshSession = false
     if (existing === undefined) {
       const entry = this.registry.get(chatId) as RegistryEntry
-      this.assertSameAgent(entry)
+      try {
+        this.assertSameAgent(entry)
+      } catch (error: unknown) {
+        this.logReconnectFailed(chatId, message, error)
+        throw error
+      }
       const released = `acp-resume: chat ${chatId} was released before the prompt started`
       // Claim the open window BEFORE awaiting: a concurrent send on this chat
       // must be rejected above, not leak a second connection.
@@ -394,6 +416,7 @@ export class AcpSessionPool {
         if (current === undefined) await this.discard(opened.conn, `acp-resume: chat ${chatId} was removed while reconnecting`)
         else if (opened.fresh) {
           this.registry.upsert({ ...current, remoteSessionId: opened.conn.remoteSessionId, lastActive: Date.now() })
+          this.logEntry(chatId, { kind: 'event', event: 'session-lost', at: Date.now(), ...(opened.lost === undefined ? {} : { error: opened.lost.message }) })
         }
         this.track(chatId, opened.conn)
         return opened.fresh
@@ -405,6 +428,7 @@ export class AcpSessionPool {
         // A teardown-aborted window reports the teardown, not the startup race's abort text.
         this.assertLive()
         if (controller.signal.aborted && !isAborted(signal)) throw new Error(released, { cause: error })
+        this.logReconnectFailed(chatId, message, error)
         throw error
       } finally {
         this.starting.delete(chatId)
@@ -422,13 +446,20 @@ export class AcpSessionPool {
     const conn = chat.conn
     chat.busy = true
     this.clearIdleTimer(chat)
+    const startedAt = Date.now()
     const turnPromise = conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal, hooks.onText)
     chat.busyPromise = turnPromise
     try {
       const turn = await turnPromise
       // Re-read: a purge during the turn must not be resurrected by this update.
       const current = this.registry.get(chatId)
-      if (current !== undefined) this.registry.upsert(settledEntry(current, turn.stopReason, message, Date.now()))
+      const settledAt = Date.now()
+      const output = blockText(turn.output)
+      if (current !== undefined) this.registry.upsert(settledEntry(current, turn.stopReason, message, settledAt))
+      this.logEntry(chatId, {
+        kind: 'turn', startedAt, at: settledAt, message, output, stopReason: turn.stopReason, freshSession,
+        ...(turn.diagnostic === undefined ? {} : { diagnostic: turn.diagnostic }),
+      })
       // A cancelled turn leaves the connection's stream state indeterminate: ACP
       // updates carry no turn identity, so a late chunk from the cancelled turn
       // would pollute the next turn on the SAME connection. A failed turn usually
@@ -441,7 +472,7 @@ export class AcpSessionPool {
       return {
         chatId,
         remoteSessionId: conn.remoteSessionId,
-        output: blockText(turn.output),
+        output,
         stopReason: turn.stopReason,
         freshSession,
         diagnostic: turn.diagnostic,
@@ -500,6 +531,7 @@ export class AcpSessionPool {
       throw new Error(`acp-resume: releasing chat ${chatId} failed; its record is kept: ${toError(error).message}`, { cause: error })
     }
     this.registry.remove(chatId)
+    this.turnLog.remove(chatId)
   }
 
   /**
@@ -577,7 +609,7 @@ export class AcpSessionPool {
   }
 
   /** Reconnect a saved remote session; only a protocol-level load rejection degrades to a fresh one. */
-  private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined): Promise<{ conn: AcpConnection; fresh: boolean }> {
+  private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined): Promise<{ conn: AcpConnection; fresh: boolean; lost?: Error }> {
     const spec = { ...this.opts.specBase, cwd: entry.cwd }
     try {
       const conn = await openAcpConnection(spec, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
@@ -589,7 +621,7 @@ export class AcpSessionPool {
       if (!sessionGone) throw error
       this.assertLive()
       const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
-      return { conn, fresh: true }
+      return { conn, fresh: true, lost: error }
     }
   }
 
@@ -597,6 +629,16 @@ export class AcpSessionPool {
   private async discard(conn: AcpConnection, reason: string): Promise<never> {
     await conn.dispose().catch((error: unknown) => { this.report(error) })
     throw new Error(reason)
+  }
+
+  /** Mirror an entry into the chat's turn log, unless the chat was purged meanwhile (no log may outlive its record). */
+  private logEntry(chatId: string, input: LogEntryInput): void {
+    if (this.registry.get(chatId) === undefined) return
+    this.turnLog.append(chatId, input)
+  }
+
+  private logReconnectFailed(chatId: string, message: string, error: unknown): void {
+    this.logEntry(chatId, { kind: 'event', event: 'reconnect-failed', at: Date.now(), message, error: toError(error).message })
   }
 
   private report(error: unknown): void {

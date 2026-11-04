@@ -8,7 +8,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 官方 ACP 后端每次委派启动新进程、单轮执行、结束即销毁——远端会话虽在对方侧落盘(kiro 实测 `session/load` 可用),但永不复用。本包补上这一层:
 
-- 外部 agent 的会话号持久化在 `$DSH_HOME/storages/acp-resume/registry.json`;
+- 外部 agent 的会话号持久化在 `$DSH_HOME/storages/acp-resume/registry.json`;每个会话的轮次记录(消息与回答文本,明文)另存于同目录 `turns/<chatId>.jsonl`,最近 200 条,供面板详情页查看,删除会话时一并删除;
 - 会话进程空闲保活(超时释放,会话记录保留);
 - 下次对话自动重连:重新 spawn → `initialize` → `session/load(原会话号 + 原 cwd)` → 继续;仅当远端在协议层拒绝 load 时降级为新会话并明确告知,其余失败本次报错、会话记录不动(D6)。
 
@@ -31,7 +31,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | `acp_chat_list` | 列出活跃与持久化会话 |
 | `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
 | `acp_chat_steer` | 给**在途轮**插话:排队的消息在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。没有在途轮时报错(改用 send);agent 不实现私有扩展 `_session/steer` 时报「当前 agent 不支持插话」(D19) |
-| **持久会话面板**(右侧栏,D15) | 按会话聚合的只读视图:状态/轮数/摘要,释放与删除操作——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
+| **持久会话面板**(右侧栏,D15/D18) | 按会话聚合的视图:状态/轮数/摘要,释放与删除;点卡片打开该会话的详情页签(元信息 + 每轮问答、结局、重连事件)——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
 
 ## 配置
 
@@ -95,7 +95,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;192 绿 = 官方协议面 67 + connection 24 + pool 39 + tools 12 + jobs 12 + panel 8 + client 18 + steer 5 + engine 7
+pnpm test                      # vitest;259 绿 = 官方协议面 67 + connection 24 + pool 52 + tools 12 + jobs 12 + panel 16 + client 50 + steer 5 + engine 7 + turn-log 14
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;
