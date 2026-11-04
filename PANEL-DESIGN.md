@@ -76,7 +76,7 @@
 dsh-acp-resume
 ├─ node 半(现有插件扩展)
 │   ├─ 现有:池 + 四工具 + one-shot provider
-│   ├─ sidebarRightTabs 注册(经 ctx.get 条件探测,同 D13 模式;缺服务的上下文跳过)
+│   ├─ sidebarRightTabs 注册(经 ctx.inject 响应式注册,同 D13 修订后模式(D16 第 9 条);服务晚到/重载均正确,缺服务的上下文跳过)
 │   └─ 面板数据 remote:list / close / remove(参照 dat-lequoc 的 settings-remote 模式)
 └─ client 半(新增,./client 导出)
     └─ 页签组件:slots 注入 sidebar.right.pane.tab;挂载时拉取 + 轮询;操作回写后刷新
@@ -90,8 +90,8 @@ client 不直接读注册表文件;单一事实源在池。
 
 ### 3.3 注册表增强(v1 兼容,可选字段)
 
-`title`(首轮摘要,send 首轮时写入,≤40 字)、`turnCount`(每轮结算递增)。
-旧注册表无这两个字段 → 面板显示占位("—"),不迁移。
+`title`(首轮摘要:该 chat 第一条 **completed** 轮的消息文本,截断 40 字)、`turnCount`(仅 **completed** 轮结算后递增;aborted/error 轮不计)。两字段均为可选、version 不动。
+旧注册表无这两个字段 → 面板显示占位("—"),不迁移。增强作为独立前置改动先行落地(带回归),面板实施不再触碰 pool.ts。
 
 ### 3.4 包与构建
 

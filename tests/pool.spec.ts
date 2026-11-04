@@ -82,6 +82,13 @@ function registryRemote(registryPath: string, chatId: string): string | undefine
   return file.sessions.find(s => s.chatId === chatId)?.remoteSessionId
 }
 
+interface RegistryRow { chatId: string; remoteSessionId: string; title?: string; turnCount?: number }
+
+function registryRow(registryPath: string, chatId: string): RegistryRow | undefined {
+  const file = JSON.parse(readFileSync(registryPath, 'utf8')) as { sessions: RegistryRow[] }
+  return file.sessions.find(s => s.chatId === chatId)
+}
+
 async function until(predicate: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!predicate()) {
@@ -141,6 +148,7 @@ describe('AcpSessionPool', () => {
     const { pool, registryPath } = makePool({ env })
     const chat = await pool.start(process.cwd())
     await pool.send(chat.chatId, '记住暗号G')
+    expect(pool.listChats()[0]?.turnCount).toBe(1)
     // 进程释放 + 会话存储被删:load 被远端在协议层拒绝 → 降级新会话
     await pool.close(chat.chatId)
     rmSync(join(dir, 's.json'))
@@ -150,10 +158,13 @@ describe('AcpSessionPool', () => {
     expect(after.output).toBe('remember:none')
     expect(after.remoteSessionId).not.toBe(chat.remoteSessionId)
     expect(registryRemote(registryPath, chat.chatId)).toBe(after.remoteSessionId)
+    // A completed fallback turn continues the same chat: it counts, and the title stays.
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 2, title: '记住暗号G' })
     // The fresh session is now the chat's session: the next send stays on it.
     const next = await pool.send(chat.chatId, '再问')
     expect(next.freshSession).toBe(false)
     expect(next.output).toBe('remember:还在吗')
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ turnCount: 3, title: '记住暗号G' })
   })
 
   it('falls back to a fresh session when session/load is rejected (MOCK_LOAD_MISSING)', async () => {
@@ -251,6 +262,7 @@ describe('AcpSessionPool', () => {
     const chat = await pool.start(process.cwd())
     // 先完成一轮成功对话,确保暗号已落地
     await pool.send(chat.chatId, '记住暗号E')
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 1, title: '记住暗号E' })
     writeFileSync(hold, 'holding')
     // 取消轮发送与成功轮相同的文本:取消轮的消息是否被远端落地是竞速
     // (取消即打断,不承诺副作用),同文本使断言与竞速结果无关。
@@ -258,10 +270,13 @@ describe('AcpSessionPool', () => {
     const cancelled = pool.send(chat.chatId, '记住暗号E', controller.signal)
     controller.abort()
     await expect(cancelled).resolves.toMatchObject({ stopReason: 'aborted' })
+    // The aborted turn neither counts nor touches the title.
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 1, title: '记住暗号E' })
     rmSync(hold)
     const after = await pool.send(chat.chatId, '暗号是什么')
     expect(after.stopReason).toBe('completed')
     expect(after.output).toBe('remember:记住暗号E')
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 2, title: '记住暗号E' })
   }, 15000)
 
   it('invalidates the connection after a cancelled turn: the next send reconnects in a new process', async () => {
@@ -293,6 +308,7 @@ describe('AcpSessionPool', () => {
     const failed = await pool.send(chat.chatId, 'crash')
     expect(failed.stopReason).toBe('error')
     expect(failed.diagnostic).toMatch(/process-exit/)
+    expect(pool.listChats()[0]?.turnCount).toBe(1)
     expect(pool.listChats()[0]?.active).toBe(false)
     const after = await pool.send(chat.chatId, '暗号是什么')
     expect(spawns.children).toHaveLength(2)
@@ -498,6 +514,53 @@ describe('AcpSessionPool', () => {
     const second = makePool({ registryPath: first.registryPath })
     expect(second.pool.listChats().find(c => c.chatId === labelled.chatId)?.label).toBe('重构评审')
     expect(second.pool.listChats().find(c => c.chatId === plain.chatId)).not.toHaveProperty('label')
+  })
+
+  it('counts completed turns and titles the chat with its first message, cut to 40 characters', async () => {
+    const { pool, registryPath } = makePool({ env: { MOCK_REMEMBER: '1' } })
+    const chat = await pool.start(process.cwd())
+    expect(pool.listChats()[0]).not.toHaveProperty('turnCount')
+    expect(pool.listChats()[0]).not.toHaveProperty('title')
+    // 45 code points after trim, including an astral character at position 40 (must not be split).
+    const body = `${'甲'.repeat(39)}😀${'乙'.repeat(5)}`
+    await pool.send(chat.chatId, `  ${body}  `)
+    await pool.send(chat.chatId, '第二条消息不改标题')
+    const expected = `${'甲'.repeat(39)}😀`
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 2, title: expected })
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ turnCount: 2, title: expected })
+  })
+
+  it('leaves the title unset for a whitespace-only first message, and the next completed turn sets it', async () => {
+    const { pool } = makePool({ env: { MOCK_REMEMBER: '1' } })
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '   ')
+    expect(pool.listChats()[0]?.turnCount).toBe(1)
+    expect(pool.listChats()[0]).not.toHaveProperty('title')
+    await pool.send(chat.chatId, '真正的问题')
+    expect(pool.listChats()[0]).toMatchObject({ turnCount: 2, title: '真正的问题' })
+  })
+
+  it('reads a registry entry without title/turnCount and starts counting from its first completed turn', async () => {
+    const { env } = storeEnv('acp-resume-legacy-')
+    const first = makePool({ env })
+    const created = await first.pool.start(process.cwd())
+    await first.pool.disposeAll()
+    // Hand-written legacy entry (no label/title/turnCount) pointing at the real remote session.
+    const { registryPath } = first
+    writeFileSync(registryPath, JSON.stringify({
+      version: 1,
+      sessions: [{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), command: process.execPath, args: [mockServer], lastActive: 1 }],
+    }))
+    const warnings: string[] = []
+    const second = makePool({ env, registryPath, onWarn: (m) => { warnings.push(m) } })
+    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), active: false, lastActive: 1 }])
+    const after = await second.pool.send('chat-legacy', '  旧条目的第一轮  ')
+    expect(after.stopReason).toBe('completed')
+    expect(after.freshSession).toBe(false)
+    expect(second.pool.listChats()[0]).toMatchObject({ turnCount: 1, title: '旧条目的第一轮' })
+    const row = registryRow(registryPath, 'chat-legacy')
+    expect(row).toMatchObject({ remoteSessionId: created.remoteSessionId, turnCount: 1, title: '旧条目的第一轮' })
+    expect(warnings).toEqual([])
   })
 
   it('refuses to reconnect a chat recorded for a different agent command, without spawning', async () => {

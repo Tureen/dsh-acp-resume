@@ -13,6 +13,9 @@
  * Teardown (`close`, `disposeAll`) aborts open windows and cancels in-flight
  * turns, each wait bounded by `disposeGraceMs`, so a hung `session/load`
  * cannot stall it and no process outlives the pool.
+ * Each `completed` turn bumps the entry's `turnCount` and, while the entry
+ * has no title yet, records the turn's message (trimmed, first 40
+ * characters) as its `title`; `aborted` and `error` turns record neither.
  *
  * @module dsh-acp-resume/pool
  */
@@ -33,6 +36,10 @@ export interface PooledChatInfo {
   readonly cwd: string
   /** Caller-chosen display label, when one was given at start. */
   readonly label?: string
+  /** First completed turn's message, trimmed and cut to 40 characters; absent until one exists. */
+  readonly title?: string
+  /** Completed turns so far; absent until the first one (registries written before turn counting omit it). */
+  readonly turnCount?: number
   /** A live process is attached (false once idle-released or after a restart). */
   readonly active: boolean
   readonly lastActive: number
@@ -68,6 +75,10 @@ interface RegistryEntry {
   cwd: string
   /** Optional; registries written before labels existed omit it. */
   label?: string
+  /** Optional; set once by the first completed turn with non-empty message text. */
+  title?: string
+  /** Optional; completed turns only. Older registries omit it and count from 0. */
+  turnCount?: number
   command: string
   args: readonly string[]
   lastActive: number
@@ -100,6 +111,27 @@ interface LiveChat {
   busyPromise: Promise<unknown> | undefined
   /** Set once a release started; concurrent closes share it. */
   closing: Promise<void> | undefined
+}
+
+/** Maximum `title` length, in characters (code points, so a surrogate pair is never split). */
+const TITLE_MAX_CHARS = 40
+
+/**
+ * The registry entry after a settled turn. Only `completed` turns count and
+ * may set the title. An entry written before these fields existed (no
+ * `turnCount`, no `title`) is the established case of "no completed turn
+ * recorded yet": its first completed turn counts as 1 and writes the title.
+ * A non-numeric `turnCount` (hand-edited file) is treated the same way.
+ */
+function settledEntry(entry: RegistryEntry, stopReason: string, message: string, now: number): RegistryEntry {
+  if (stopReason !== 'completed') return { ...entry, lastActive: now }
+  const prior = typeof entry.turnCount === 'number' && Number.isFinite(entry.turnCount) ? entry.turnCount : 0
+  const next: RegistryEntry = { ...entry, turnCount: prior + 1, lastActive: now }
+  if (typeof entry.title !== 'string' || entry.title === '') {
+    const title = Array.from(message.trim()).slice(0, TITLE_MAX_CHARS).join('')
+    if (title !== '') next.title = title
+  }
+  return next
 }
 
 function emptyRegistry(): RegistryFile {
@@ -248,6 +280,8 @@ export class AcpSessionPool {
       remoteSessionId: e.remoteSessionId,
       cwd: e.cwd,
       ...(typeof e.label === 'string' && e.label !== '' ? { label: e.label } : {}),
+      ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
+      ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
@@ -371,7 +405,7 @@ export class AcpSessionPool {
       const turn = await turnPromise
       // Re-read: a purge during the turn must not be resurrected by this update.
       const current = this.registry.get(chatId)
-      if (current !== undefined) this.registry.upsert({ ...current, lastActive: Date.now() })
+      if (current !== undefined) this.registry.upsert(settledEntry(current, turn.stopReason, message, Date.now()))
       // A cancelled turn leaves the connection's stream state indeterminate: ACP
       // updates carry no turn identity, so a late chunk from the cancelled turn
       // would pollute the next turn on the SAME connection. A failed turn usually
