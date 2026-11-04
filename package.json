@@ -21,6 +21,7 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "rm -rf lib && tsc -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
@@ -60,11 +61,6 @@
   },
   "engines": {
     "node": ">=24"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   },
   "dsh": {
     "bundle": {

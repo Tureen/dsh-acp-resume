@@ -4,6 +4,9 @@
  * the subagent service supplies the captured child working directory. This plugin uses
  * named exports only; a default would hide its
  * loader metadata (see `docs/postmortem/0001-acp-default-export-drops-inject.md`).
+ * When `enableChatTools` is on, the persistent-chat tools register while a `tools`
+ * service is present (revoked when it leaves); their session pool lives on the
+ * plugin fiber and is drained on plugin teardown.
  * @module @deepseek-ai/dsh-subagent-acp
  */
 
@@ -15,20 +18,19 @@ import type {
   SubagentProvider,
 } from '@deepseek-ai/dsh-subagent'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
-import { defaultDshHome } from '@deepseek-ai/dsh-home-paths'
-import { join } from 'node:path'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool } from './pool.js'
 import { registerChatTools } from './tools.js'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export const name = 'acp-resume'
 export const inject = ['subagents', 'subprocess']
 
 /** Config: how to spawn and drive the child ACP agent process. */
 export interface Config {
-  /** Provider name on `ctx.subagents` (default `acp`). */
+  /** Provider name on `ctx.subagents` (default `acp-resume`). */
   providerName: string
   /** The executable to spawn for each run (the child ACP agent). */
   command: string
@@ -142,31 +144,42 @@ export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
   assertPositiveFinite('disposeEofGraceMs', resolved.disposeEofGraceMs)
   assertPositiveFinite('disposeGraceMs', resolved.disposeGraceMs)
-  ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved))
-
-  const tools = ctx.get('tools') as { register: (definition: ReturnType<typeof defineTool>) => () => void } | undefined
-  if (!resolved.enableChatTools || tools === undefined) return
-  const registryPath = resolved.registryPath === ''
-    ? join(defaultDshHome(), 'storages', 'acp-resume', 'registry.json')
-    : resolved.registryPath
   assertPositiveFinite('idleTimeoutMs', resolved.idleTimeoutMs)
-  const pool = new AcpSessionPool({
-    specBase: {
-      command: resolved.command,
-      args: resolved.args,
-      permission: resolved.permission,
-      env: resolved.env,
-      disposeEofGraceMs: resolved.disposeEofGraceMs,
-      disposeGraceMs: resolved.disposeGraceMs,
-      spawn: spec => ctx.subprocess.spawn(spec),
-      onError: (error, stopReason) => {
-        ctx.logger.warn(`acp-resume "${resolved.providerName}": chat child failed (${stopReason}): ${error.message}`)
+  if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
+    throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
+  }
+  ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved))
+  if (!resolved.enableChatTools) return
+
+  const registryPath = resolved.registryPath === ''
+    ? dshHomePath('storages', 'acp-resume', 'registry.json')
+    : resolved.registryPath
+  // The pool lives on the plugin fiber, not the tools scope: a tools-service
+  // reload re-registers the tools without killing chat processes. It is built
+  // on the first tools arrival, so a host without a tools service touches no registry file.
+  let pool: AcpSessionPool | undefined
+  // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled
+  // and every live chat process released; the registry file survives (D14).
+  ctx.effect(() => () => pool?.disposeAll())
+  ctx.inject(['tools'], (scope) => {
+    pool ??= new AcpSessionPool({
+      specBase: {
+        command: resolved.command,
+        args: resolved.args,
+        permission: resolved.permission,
+        env: resolved.env,
+        disposeEofGraceMs: resolved.disposeEofGraceMs,
+        disposeGraceMs: resolved.disposeGraceMs,
+        spawn: spec => ctx.subprocess.spawn(spec),
+        onError: (error, stopReason) => {
+          ctx.logger.warn(`acp-resume "${resolved.providerName}": chat child failed (${stopReason}): ${error.message}`)
+        },
       },
-    },
-    registryPath,
-    idleTimeoutMs: resolved.idleTimeoutMs,
+      registryPath,
+      idleTimeoutMs: resolved.idleTimeoutMs,
+      onWarn: message => { ctx.logger.warn(message) },
+    })
+    // Registered in the tools scope: the tools are revoked when the service goes away.
+    registerChatTools(scope, scope.tools, pool, resolved.toolPrefix)
   })
-  registerChatTools(ctx, tools, pool, resolved.toolPrefix)
-  // Plugin-fiber teardown releases every live chat process; the registry file survives.
-  ctx.effect(() => () => { void pool.disposeAll() })
 }

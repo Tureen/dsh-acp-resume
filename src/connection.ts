@@ -1,10 +1,13 @@
 /**
- * Reusable ACP connection primitives over a spawned agent process: open
- * (`session/new` or `session/load` reconnect), one prompt turn with the
- * official settlement semantics (streamed-text fold, stop-reason mapping,
- * unattended permission policy, cancellation), and the official teardown
- * ladder. Extracted from the baseline one-shot driver so both the one-shot
- * path and the persistent session pool share one implementation.
+ * ACP connection primitives for the persistent session pool: spawn an agent
+ * process, open its remote session (`session/new`, or `session/load` reconnect
+ * gated on the advertised `loadSession` capability), run prompt turns with the
+ * official settlement semantics (stop-reason mapping, unattended permission
+ * policy, cancellation), and tear down with the official ladder. Startup
+ * failures reject with {@link AcpConnectionError} carrying fixed safe facts.
+ * This is the pool's sister implementation of run.ts; the one-shot provider
+ * keeps using run.ts verbatim (D11), so roughly 200 lines are deliberately
+ * duplicated.
  *
  * @module dsh-acp-resume/connection
  */
@@ -16,6 +19,7 @@ import {
   methods,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type ContentBlock as AcpContentBlock,
   type StopReason,
   type ToolKind,
@@ -23,16 +27,45 @@ import {
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { AssistantOutputFold } from '@deepseek-ai/dsh-subagent'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
 import { acpStopReason, acpContentText, disposeAcpChild, type AcpRunSpec, type PermissionPolicy } from './run.js'
 
 export type { PermissionPolicy }
 
+/** Startup step that failed. */
+export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
+
+/** Failure class of a startup error. */
+export type AcpFailureCategory = 'protocol' | 'transport' | 'process-exit' | 'process-start' | 'unknown'
+
+/**
+ * Structured startup failure. `message` holds only fixed safe facts; the
+ * internal error, when any, is kept in `cause`.
+ */
+export class AcpConnectionError extends Error {
+  /** Startup step that failed. */
+  readonly stage: AcpStartupStage
+  /** Failure class (`protocol` = the agent rejected the request). */
+  readonly category: AcpFailureCategory
+  /** JSON-RPC error code of an agent rejection, when one was received. */
+  readonly jsonRpcCode?: number
+
+  constructor(
+    message: string,
+    options: { stage: AcpStartupStage; category: AcpFailureCategory; jsonRpcCode?: number; cause?: unknown },
+  ) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause })
+    this.name = 'AcpConnectionError'
+    this.stage = options.stage
+    this.category = options.category
+    if (options.jsonRpcCode !== undefined) this.jsonRpcCode = options.jsonRpcCode
+  }
+}
+
 /** Terminal elements of one settled prompt turn. */
 export interface AcpTurnResult {
-  /** Accumulated assistant text blocks of this connection (not just the turn). */
+  /** Assistant text blocks of this turn only. */
   readonly output: readonly ContentBlock[]
   readonly stopReason: SubagentStopReason
   /** Fixed safe diagnostic line, when the turn needs one. */
@@ -45,21 +78,22 @@ export interface AcpConnection {
   readonly id: SessionId
   /** The remote session id inside the child server. */
   readonly remoteSessionId: string
-  /** Snapshot of the accumulated assistant text fold. */
-  collectOutput(): readonly ContentBlock[]
+  /** True once the child's fate is known (exited, or `done` rejected); false while live. */
+  readonly processSettled: boolean
   /**
    * Run one prompt turn to its terminal. Never rejects on a child-level
    * failure: a cancelled turn settles `aborted`, a remote failure settles
    * `error` with the safe diagnostic, mirroring the one-shot contract.
    * @param blocks - ACP prompt content blocks (text only today).
    * @param signal - cancellation channel for this turn.
+   * @returns this turn's text, stop reason, and optional diagnostic.
    */
   prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal): Promise<AcpTurnResult>
   /** Observe the process outcome for failure classification (bounded by the spec grace). */
   observeOutcome(signal?: AbortSignal): Promise<SubprocessOutcome | undefined>
   /** Best-effort `session/cancel` notification for the remote session. */
   notifyCancel(): void
-  /** Tear the process down with the official ladder. Idempotent. */
+  /** Send `session/cancel`, then tear the process down with the official ladder. Idempotent. */
   dispose(): Promise<void>
 }
 
@@ -83,6 +117,38 @@ function failureDiagnostic(facts: { stage: string; category: string; stopReason?
     fields.push(`signal: ${facts.outcome.signal}`)
   }
   return `Subagent failure (${fields.join('; ')})`
+}
+
+/** Build a startup error whose message is the fixed safe facts line. */
+function connectionError(
+  facts: { stage: AcpStartupStage; category: AcpFailureCategory; outcome?: SubprocessOutcome; jsonRpcCode?: number },
+  cause?: unknown,
+): AcpConnectionError {
+  return new AcpConnectionError(
+    `acp-resume: ${failureDiagnostic({ stage: facts.stage, category: facts.category, ...(facts.outcome === undefined ? {} : { outcome: facts.outcome }) })}`,
+    {
+      stage: facts.stage,
+      category: facts.category,
+      ...(facts.jsonRpcCode === undefined ? {} : { jsonRpcCode: facts.jsonRpcCode }),
+      ...(cause === undefined ? {} : { cause }),
+    },
+  )
+}
+
+/** Whether an error's message, `data`, or `details` mentions "session not found" (case-insensitive). */
+function mentionsSessionNotFound(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const parts: string[] = [error.message]
+  for (const key of ['data', 'details']) {
+    const value: unknown = Reflect.get(error, key)
+    if (value === undefined) continue
+    if (typeof value === 'string') {
+      parts.push(value)
+      continue
+    }
+    try { parts.push(JSON.stringify(value)) } catch { /* unserializable detail carries no signal */ }
+  }
+  return parts.some(part => part.toLowerCase().includes('session not found'))
 }
 
 /** Permission decision fact (mirrors run.ts). */
@@ -131,23 +197,15 @@ function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value))
 }
 
-/** Observe the managed-range exit within `ms` (mirrors run.ts rangeExitsWithin). */
-async function rangeExitsWithin(child: SubprocessHandle, ms: number): Promise<boolean> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, ms)
-  try {
-    return await child.waitForExit(controller.signal)
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 /**
  * Open one ACP connection: spawn the child, wire the client app, run the
  * startup transaction (`initialize` then `session/new` or `session/load`),
- * and return the live connection. Rejects with fixed safe facts after
- * provider-owned cleanup on any startup failure — including a `load` of an
- * unknown remote session.
+ * and return the live connection. Any startup failure first cleans up the
+ * process, then rejects with an {@link AcpConnectionError}: an agent rejection
+ * (including `load` of an unknown remote session) or a `load` against an agent
+ * without the `loadSession` capability is `protocol`; a closed stream is
+ * `transport` or `process-exit`; a failed spawn is `process-start`. Local
+ * cancellation rejects with a plain abort error.
  * @param spec - resolved spawn spec (command/args/cwd, env, permission policy, graces).
  * @param open - establish a fresh session or reconnect a saved one.
  * @param signal - optional cancellation for the startup window.
@@ -167,10 +225,19 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     })
   } catch (error: unknown) {
     try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
-    throw new Error(`acp-resume: ${failureDiagnostic({ stage: 'process', category: 'process-start' })}`, { cause: error })
+    throw connectionError({ stage: 'initialize', category: 'process-start' }, error)
   }
   if (child.stdin === undefined || child.stdout === undefined) {
-    throw new Error('acp-resume: subprocess implementation dropped a piped protocol stream')
+    const error = new Error('subprocess implementation dropped a piped protocol stream')
+    try { spec.onError?.(error, 'error') } catch { /* sink cannot replace the failure */ }
+    // The child is already running: release it through the dispose ladder before rejecting.
+    // Nothing else observes `done` on this path; keep its rejection from going unhandled.
+    child.done.catch(() => { /* the startup rejection below already reports this attempt */ })
+    await disposeAcpChild(child, spec.disposeEofGraceMs).catch((cleanupError: unknown) => {
+      // Startup classification owns the rejection; a failed cleanup is still reported.
+      try { spec.onError?.(toError(cleanupError), 'error') } catch { /* sink cannot replace the failure */ }
+    })
+    throw connectionError({ stage: 'initialize', category: 'process-start' }, error)
   }
 
   let processOutcome: SubprocessOutcome | undefined
@@ -208,23 +275,8 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     }
   }
 
-  let processDisposal: Promise<void> | undefined
-  const dispose = (): Promise<void> => (processDisposal ??= (async () => {
-    try {
-      await disposeAcpChild(child, spec.disposeEofGraceMs)
-    } catch (error: unknown) {
-      try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
-      throw new Error(
-        `acp-resume: ${failureDiagnostic({ stage: 'teardown', category: processOutcome === undefined ? 'unknown' : 'process-exit', ...(processOutcome === undefined ? {} : { outcome: processOutcome }) })}`,
-        { cause: error },
-      )
-    }
-  })())
-
-  const fold = new AssistantOutputFold()
   // Turn-scoped text: reset at each prompt start so a pooled connection reports
-  // THIS turn's answer, not the connection's accumulated history. The fold
-  // above keeps the connection-level accumulation for one-shot consumers.
+  // THIS turn's answer, not the connection's accumulated history.
   let turnText = ''
   // Turn isolation: ACP update notifications carry no turn identity, so chunks
   // arriving AFTER a settled turn (a cancelled turn's late tail) must not enter
@@ -236,10 +288,8 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   const clientApp = createAcpClientApp({ name: 'dsh-acp-resume' })
     .onNotification(methods.client.session.update, ({ params }) => {
       const update = params.update
-      if (update.sessionUpdate === 'agent_message_chunk') {
-        const piece = acpContentText(update.content)
-        fold.pushText(piece)
-        if (acceptingUpdates) turnText += piece
+      if (update.sessionUpdate === 'agent_message_chunk' && acceptingUpdates) {
+        turnText += acpContentText(update.content)
       }
       // Other updates (thoughts, tool calls, plans) are consumed but not
       // surfaced — the connection returns only the final answer text.
@@ -268,26 +318,44 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   const agent = connection.agent
 
   let remoteSessionId: string | undefined
-  let startupStage: 'initialize' | 'new-session' | 'load-session' = 'initialize'
+  let startupStage: AcpStartupStage = 'initialize'
   let signalCancelSettled!: () => void
   const cancelSettled = new Promise<void>((resolve) => { signalCancelSettled = resolve })
+  // Raw best-effort `session/cancel`; no flag gate, so dispose can always send it.
+  const sendRemoteCancel = (): void => {
+    if (remoteSessionId === undefined) return
+    try {
+      void agent.notify(methods.agent.session.cancel, { sessionId: remoteSessionId }).catch(() => { /* child gone / no session */ })
+    } catch { /* connection already closed */ }
+  }
   const requestCancel = (): void => {
     if (flags.cancelled) return
     flags.cancelled = true
     signalCancelSettled()
-    if (remoteSessionId !== undefined) {
-      void agent.notify(methods.agent.session.cancel, { sessionId: remoteSessionId }).catch(() => { /* child gone / no session */ })
-    }
+    sendRemoteCancel()
   }
   const onAbort = (): void => { requestCancel() }
   signal?.addEventListener('abort', onAbort, { once: true })
 
-  const collectOutput = (): readonly ContentBlock[] => fold.collect() ?? []
+  let processDisposal: Promise<void> | undefined
+  const dispose = (): Promise<void> => (processDisposal ??= (async () => {
+    // Cooperative cancel first (official dispose order); the ladder stays authoritative.
+    sendRemoteCancel()
+    try {
+      await disposeAcpChild(child, spec.disposeEofGraceMs)
+    } catch (error: unknown) {
+      try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
+      throw new Error(
+        `acp-resume: ${failureDiagnostic({ stage: 'teardown', category: processOutcome === undefined ? 'unknown' : 'process-exit', ...(processOutcome === undefined ? {} : { outcome: processOutcome }) })}`,
+        { cause: error },
+      )
+    }
+  })())
 
   try {
     await Promise.race([
       (async (): Promise<void> => {
-        await agent.request(methods.agent.initialize, {
+        const init = await agent.request(methods.agent.initialize, {
           protocolVersion: PROTOCOL_VERSION,
           clientCapabilities: {},
         })
@@ -296,11 +364,20 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
           const session = await agent.request(methods.agent.session.new, { cwd: spec.cwd, mcpServers: [] })
           const returned: unknown = Reflect.get(session, 'sessionId')
           if (typeof returned !== 'string') {
-            throw new Error('acp-resume: ACP child published without a session id')
+            throw connectionError(
+              { stage: 'new-session', category: 'protocol' },
+              new Error('ACP child published without a session id'),
+            )
           }
           remoteSessionId = returned
         } else {
           startupStage = 'load-session'
+          if (init.agentCapabilities?.loadSession !== true) {
+            throw connectionError(
+              { stage: 'load-session', category: 'protocol' },
+              new Error('ACP agent does not advertise the loadSession capability'),
+            )
+          }
           remoteSessionId = open.sessionId
           // Reconnect a persisted remote session. The load call repeats the
           // client-owned session inputs (cwd), matching the measured kiro-cli
@@ -318,35 +395,58 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     ])
   } catch (error: unknown) {
     signal?.removeEventListener('abort', onAbort)
-    const observedOutcome = !flags.cancelled ? await observeOutcome() : undefined
+    const cancelledBeforeCleanup = flags.cancelled
+    // Protocol failures are classified from the reply itself; only stream or
+    // process failures wait (bounded by the grace) for exit facts.
+    let failure: AcpConnectionError | undefined
+    if (!cancelledBeforeCleanup) {
+      if (error instanceof AcpConnectionError) {
+        failure = error
+      } else if (error instanceof RequestError) {
+        failure = connectionError({ stage: startupStage, category: 'protocol', jsonRpcCode: error.code }, error)
+      } else if (mentionsSessionNotFound(error)) {
+        failure = connectionError({ stage: startupStage, category: 'protocol' }, error)
+      } else if (processFailure !== undefined) {
+        failure = connectionError({ stage: startupStage, category: 'process-start' }, processFailure)
+      } else {
+        const observedOutcome = await observeOutcome()
+        failure = processFailure !== undefined
+          ? connectionError({ stage: startupStage, category: 'process-start' }, processFailure)
+          : observedOutcome === undefined
+            ? connectionError({ stage: startupStage, category: 'transport' }, error)
+            : connectionError({ stage: startupStage, category: 'process-exit', outcome: observedOutcome }, error)
+      }
+    }
     try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
     await dispose().catch((cleanupError: unknown) => {
       // Startup classification owns the rejection; a failed cleanup is still reported.
       try { spec.onError?.(toError(cleanupError), 'error') } catch { /* sink cannot replace the failure */ }
     })
-    if (flags.cancelled) {
+    if (failure === undefined) {
       throw new Error('subagent request was aborted before the ACP child started')
     }
-    const message = error instanceof Error && error.message.startsWith('acp-resume:')
-      ? error.message
-      : `acp-resume: ${failureDiagnostic({
-        stage: startupStage,
-        category: error instanceof Error && error.message.includes('session not found') ? 'protocol' : observedOutcome === undefined ? 'transport' : 'process-exit',
-        ...(observedOutcome === undefined ? {} : { outcome: observedOutcome }),
-      })}`
-    throw new Error(message, { cause: error })
+    throw failure
   }
   signal?.removeEventListener('abort', onAbort)
   if (remoteSessionId === undefined) throw new Error('unreachable: ACP startup fulfilled without a session id')
+  const sessionId = remoteSessionId
 
   return {
     id,
-    remoteSessionId,
-    collectOutput,
+    remoteSessionId: sessionId,
+    get processSettled(): boolean {
+      return processOutcome !== undefined || processFailure !== undefined
+    },
     observeOutcome,
     notifyCancel: requestCancel,
     dispose,
     async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal): Promise<AcpTurnResult> {
+      // Per-turn state: a notifyCancel between turns or a previous turn's
+      // permission decision must not leak into this turn.
+      flags.cancelled = false
+      latestPermission = undefined
+      turnText = ''
+      acceptingUpdates = true
       let turnCancelled = false
       let turnCancelSettled!: () => void
       const turnCancel = new Promise<void>((resolve) => { turnCancelSettled = resolve })
@@ -356,15 +456,16 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
         requestCancel()
       }
       promptSignal.addEventListener('abort', onTurnAbort, { once: true })
-      turnText = ''
-      acceptingUpdates = true
+      if (promptSignal.aborted) onTurnAbort()
       const settleTurn = (): void => { acceptingUpdates = false }
       const turnOutput = (): readonly ContentBlock[] => turnText === '' ? [] : [{ type: 'text', text: turnText }]
       let diagnostic: string | undefined
       try {
+        // An already-aborted turn never reaches the agent.
+        if (turnCancelled) throw new Error('subagent cancelled before the ACP prompt was sent')
         const promptResult = (await Promise.race([
           agent.request(methods.agent.session.prompt, {
-            sessionId: remoteSessionId,
+            sessionId,
             prompt: [...blocks],
           }),
           turnCancel.then((): never => { throw new Error('subagent cancelled while the ACP prompt was running') }),
@@ -374,25 +475,23 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
         diagnostic = terminalDiagnostic(promptResult.stopReason, latestPermission)
         return { output: turnOutput(), stopReason, diagnostic }
       } catch (error: unknown) {
-        if (!turnCancelled && !flags.cancelled) {
-          const outcome = await observeOutcome(promptSignal)
-          diagnostic = failureDiagnostic(outcome === undefined
-            ? { stage: 'prompt', category: 'transport' }
-            : { stage: 'process', category: 'process-exit', outcome })
-            + (latestPermission === undefined ? '' : `\n${permissionDiagnostic(latestPermission)}`)
-        }
+        settleTurn()
         if (turnCancelled || flags.cancelled) {
-          settleTurn()
           return { output: turnOutput(), stopReason: 'aborted', diagnostic }
         }
-        settleTurn()
+        const outcome = await observeOutcome(promptSignal)
+        // A cancel arriving while exit facts were awaited still owns the turn.
+        if (turnCancelled || flags.cancelled) {
+          return { output: turnOutput(), stopReason: 'aborted', diagnostic }
+        }
+        diagnostic = failureDiagnostic(outcome === undefined
+          ? { stage: 'prompt', category: 'transport' }
+          : { stage: 'process', category: 'process-exit', outcome })
+          + (latestPermission === undefined ? '' : `\n${permissionDiagnostic(latestPermission)}`)
+        try { spec.onError?.(processFailure ?? toError(error), 'error') } catch { /* sink cannot replace the failure */ }
         return { output: turnOutput(), stopReason: 'error', diagnostic }
       } finally {
         promptSignal.removeEventListener('abort', onTurnAbort)
-        // A cancelled turn must not poison later turns on this connection:
-        // the pooled connection outlives one turn, so clear the connection-level
-        // flag once the turn has settled.
-        flags.cancelled = false
       }
     },
   }

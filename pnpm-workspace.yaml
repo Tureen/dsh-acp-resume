@@ -1,7 +1,7 @@
 allowBuilds:
-  '@deepseek-ai/dsh-subprocess-local': set this to true or false
-  esbuild: set this to true or false
-  koffi: set this to true or false
-  node-pty: set this to true or false
+  '@deepseek-ai/dsh-subprocess-local': false
+  esbuild: true
+  koffi: false
+  node-pty: false
 onlyBuiltDependencies:
   - esbuild

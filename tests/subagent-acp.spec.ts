@@ -17,7 +17,19 @@ import * as acp from '../src/index.ts'
 import * as acpRun from '../src/run.ts'
 import { acpStopReason, acpContentText, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, disposeAcpChild, startAcpRun, toAcpPrompt, type AcpRunSpec } from '../src/run.ts'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { spawnSubprocess } from '@deepseek-ai/dsh-subprocess-local'
+import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+
+// dsh-acp-resume (D8): the npm build of dsh-subprocess-local does not export
+// spawnSubprocess, so the real-subprocess cases import it from the official
+// source checkout (override with DSH_OFFICIAL_CHECKOUT). Without the checkout
+// those cases skip.
+const officialCheckout = process.env.DSH_OFFICIAL_CHECKOUT ?? '/Users/Tulane/Developer/open-source-projects/deepseek-harness'
+const officialSpawnModule = join(officialCheckout, 'packages/subprocess/subprocess-local/src/spawn.ts')
+const officialSpawnAvailable = existsSync(officialSpawnModule)
+const spawnSubprocess: (spec: SubprocessSpawnSpec) => SubprocessHandle = officialSpawnAvailable
+  ? ((await import(officialSpawnModule)) as { spawnSubprocess: (spec: SubprocessSpawnSpec) => SubprocessHandle }).spawnSubprocess
+  : () => { throw new Error(`official spawnSubprocess unavailable: ${officialSpawnModule} not found`) }
+const itOfficialSpawn = officialSpawnAvailable ? it : it.skip
 
 /**
  * Keyless integration tests for the ACP subagent backend. Each spawns a REAL
@@ -216,7 +228,7 @@ describe('acpContentText / toAcpPrompt', () => {
 })
 
 describe('child env layering (through the subprocess seam)', () => {
-  it('drops credential-shaped ambient vars but keeps the explicit extras', async () => {
+  itOfficialSpawn('drops credential-shaped ambient vars but keeps the explicit extras', async () => {
     process.env.ACP_TEST_AMBIENT_SECRET_TOKEN = 'leak-me'
     try {
       // The spec.env layer merges after the seam's scrub, so the child's own
@@ -273,7 +285,7 @@ describe('disposeAcpChild (the backend-owned teardown ladder over seam verbs)', 
     }
   }
 
-  it('tier 1: a cooperative child exits on stdin EOF without any signal', async () => {
+  itOfficialSpawn('tier 1: a cooperative child exits on stdin EOF without any signal', async () => {
     const child = node('process.stdin.resume(); process.stdin.on("end", () => process.exit(0))')
     await disposeAcpChild(child, 5_000)
     const outcome = await child.done
@@ -281,14 +293,14 @@ describe('disposeAcpChild (the backend-owned teardown ladder over seam verbs)', 
     expect(outcome.signal).toBeNull()
   })
 
-  it('tier 2: an EOF-deaf child reaches the host terminate outcome', async () => {
+  itOfficialSpawn('tier 2: an EOF-deaf child reaches the host terminate outcome', async () => {
     const child = node('setInterval(() => {}, 60_000)')
     await disposeAcpChild(child, 100)
     const outcome = await child.done
     expectHostTermination(outcome, 'SIGTERM')
   })
 
-  it('tier 3: a TERM-trapping child reaches the host force-termination outcome', async () => {
+  itOfficialSpawn('tier 3: a TERM-trapping child reaches the host force-termination outcome', async () => {
     const child = node('process.on("SIGTERM", () => {}); process.stdout.write("armed\\n"); setInterval(() => {}, 60_000)', 'ignore')
     // Wait for the trap to arm so SIGTERM cannot race the default handler.
     while (!child.collected.stdout!.readFrom(0).text.includes('armed')) {
@@ -350,7 +362,7 @@ describe('disposeAcpChild (the backend-owned teardown ladder over seam verbs)', 
     }
   })
 
-  it('observes a spawn-level rejection and returns without a process to reap', async () => {
+  itOfficialSpawn('observes a spawn-level rejection and returns without a process to reap', async () => {
     const child = spawnSubprocess({
       argv: [process.execPath, '--input-type=module', '--eval', ''],
       cwd: '/nonexistent-dir-dsh-acp-ladder-test',
@@ -484,7 +496,8 @@ describe('cwd resolution', () => {
 
   it('resolves a relative override against the parent current directory', async () => {
     const ctx = await setup({ MOCK_ECHO_CWD: '1' })
-    const cwd = 'packages/subagent/subagent-acp'
+    // dsh-acp-resume: a directory of this repository (the official spec used a monorepo path).
+    const cwd = 'tests/fixtures'
     const run = await startExternalActivation(ctx, 'acp', { ...request('p'), cwd })
     const result = await run.result
     await run.dispose()
@@ -646,7 +659,7 @@ describe('dsh-subagent-acp', () => {
     }))).rejects.toThrow('aborted before the ACP child started')
   })
 
-  it('reports an initialize-stage process exit without copying the transport error', async () => {
+  itOfficialSpawn('reports an initialize-stage process exit without copying the transport error', async () => {
     const error = await startAcpRun(request(), {
       command: process.execPath,
       args: [mockServer],
@@ -663,7 +676,7 @@ describe('dsh-subagent-acp', () => {
     )
   })
 
-  it('reports initialize-stage transport when the child closes the protocol but stays alive', async () => {
+  itOfficialSpawn('reports initialize-stage transport when the child closes the protocol but stays alive', async () => {
     const error = await startAcpRun(request(), {
       command: process.execPath,
       args: [mockServer],
@@ -711,7 +724,7 @@ describe('dsh-subagent-acp', () => {
     )
   })
 
-  it('reaps a child whose session/new response omits the session id', async () => {
+  itOfficialSpawn('reaps a child whose session/new response omits the session id', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'acp-malformed-session-'))
     const flushed = join(tmp, 'flushed')
     let boundedWaits = 0
@@ -741,7 +754,7 @@ describe('dsh-subagent-acp', () => {
     }
   })
 
-  it('aggregates safe startup and teardown facts when rollback itself fails', async () => {
+  itOfficialSpawn('aggregates safe startup and teardown facts when rollback itself fails', async () => {
     const rawCleanup = 'rollback leaked /private/path SECRET_TOKEN'
     let realChild: SubprocessHandle | undefined
     const errors: string[] = []
@@ -770,7 +783,7 @@ describe('dsh-subagent-acp', () => {
     await realChild?.done
   })
 
-  it('reports only the safe teardown failure when cancelled startup rollback fails', async ({ task }) => {
+  itOfficialSpawn('reports only the safe teardown failure when cancelled startup rollback fails', async ({ task }) => {
     const tmp = mkdtempSync(join(tmpdir(), 'acp-cancelled-rollback-'))
     const ready = join(tmp, 'ready')
     const go = join(tmp, 'go')
@@ -810,7 +823,7 @@ describe('dsh-subagent-acp', () => {
     }
   })
 
-  it('dispose reaps a child that ignores EOF with the host force-termination outcome', async ({ onTestFinished, task }) => {
+  itOfficialSpawn('dispose reaps a child that ignores EOF with the host force-termination outcome', async ({ onTestFinished, task }) => {
     // POSIX must escalate past the armed SIGTERM trap; Windows force-terminates
     // the process tree without delivering a catchable signal.
     let child: ReturnType<typeof spawnSubprocess> | undefined
@@ -861,7 +874,7 @@ describe('dsh-subagent-acp', () => {
     }
   })
 
-  it('dispose gives the child an EOF window that outlasts the SIGTERM grace (graceful flush)', async ({ task }) => {
+  itOfficialSpawn('dispose gives the child an EOF window that outlasts the SIGTERM grace (graceful flush)', async ({ task }) => {
     // The real acp-agent flushes ASYNCHRONOUSLY on stdin EOF (its bridge tears
     // down on connection close, NOT on a signal) — and it has no SIGTERM handler.
     // Its EOF teardown can itself await a signal-trapping grandchild (a bash
@@ -905,7 +918,7 @@ describe('dsh-subagent-acp', () => {
     }
   })
 
-  it('terminates a child that ignores EOF using the host platform semantics', async ({ task }) => {
+  itOfficialSpawn('terminates a child that ignores EOF using the host platform semantics', async ({ task }) => {
     // POSIX uses the catchable SIGTERM tier and records the marker. Windows has
     // no distinct graceful signal, so disposal skips directly to forced exit.
     const tmp = mkdtempSync(join(tmpdir(), 'acp-ignore-eof-'))
@@ -1088,7 +1101,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('classifies a prompt transport failure without copying SDK text', async () => {
+  itOfficialSpawn('classifies a prompt transport failure without copying SDK text', async () => {
     const run = await startAcpRun(request('private prompt text'), {
       command: process.execPath,
       args: [mockServer],
@@ -1109,7 +1122,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('lets local cancellation interrupt prompt-failure process observation', async () => {
+  itOfficialSpawn('lets local cancellation interrupt prompt-failure process observation', async () => {
     const controller = new AbortController()
     const protocolEnded = Promise.withResolvers<undefined>()
     let boundedExitWaits = 0
@@ -1142,7 +1155,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('preserves partial output and structured process facts when the child exits', async () => {
+  itOfficialSpawn('preserves partial output and structured process facts when the child exits', async () => {
     const run = await startAcpRun(request(), {
       command: process.execPath,
       args: [mockServer],
@@ -1162,7 +1175,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('classifies a rejected direct result as the active prompt transport failure', async () => {
+  itOfficialSpawn('classifies a rejected direct result as the active prompt transport failure', async () => {
     const processFailure = new Error('remote provider failed after returning a handle')
     const direct = Promise.withResolvers<SubprocessOutcome>()
     let realChild: SubprocessHandle | undefined
@@ -1201,7 +1214,7 @@ describe('dsh-subagent-acp', () => {
     await realChild?.done
   })
 
-  it('reports a signal-only process outcome', async () => {
+  itOfficialSpawn('reports a signal-only process outcome', async () => {
     const run = await startAcpRun(request(), {
       command: process.execPath,
       args: [mockServer],
@@ -1224,7 +1237,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('rejects a returned-handle startup failure after provider-owned cleanup', async () => {
+  itOfficialSpawn('rejects a returned-handle startup failure after provider-owned cleanup', async () => {
     const privateCommand = '/nonexistent/private/SECRET_TOKEN/acp-agent'
     const error = await startAcpRun(
       request(),
@@ -1342,7 +1355,7 @@ describe('dsh-subagent-acp', () => {
     )
   })
 
-  it('keeps permission diagnostics isolated across concurrent runs', async () => {
+  itOfficialSpawn('keeps permission diagnostics isolated across concurrent runs', async () => {
     const start = (permission: 'allow' | 'reject', kind: 'edit' | 'execute') => startAcpRun(
       request(),
       {
@@ -1373,7 +1386,7 @@ describe('dsh-subagent-acp', () => {
     await Promise.all([allowed.dispose(), denied.dispose()])
   })
 
-  it('wraps a teardown rejection with safe facts and keeps the raw cause in Host diagnostics', async () => {
+  itOfficialSpawn('wraps a teardown rejection with safe facts and keeps the raw cause in Host diagnostics', async () => {
     const rawMessage = 'teardown leaked /private/path SECRET_TOKEN'
     const errors: string[] = []
     let realChild: SubprocessHandle | undefined
@@ -1403,7 +1416,7 @@ describe('dsh-subagent-acp', () => {
     await expect(run.result).resolves.toEqual({ output: [], stopReason: 'aborted' })
   })
 
-  it('adds an observed process outcome to a teardown failure', async () => {
+  itOfficialSpawn('adds an observed process outcome to a teardown failure', async () => {
     let realChild: SubprocessHandle | undefined
     const run = await startAcpRun(request(), {
       command: process.execPath,
@@ -1428,7 +1441,7 @@ describe('dsh-subagent-acp', () => {
     await realChild?.done
   })
 
-  it('reports a flattened child failure through onError (preserved, not silently lost)', async () => {
+  itOfficialSpawn('reports a flattened child failure through onError (preserved, not silently lost)', async () => {
     // The seam forbids `result` rejecting, so a child-level failure is flattened
     // to a stop reason — onError must still surface the original error so a real
     // fault is logged, not swallowed. The child exits after its session is
@@ -1477,7 +1490,7 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
-  it('resolves error (never rejects) even when the onError sink itself throws', async () => {
+  itOfficialSpawn('resolves error (never rejects) even when the onError sink itself throws', async () => {
     // onError is a caller-supplied callback boundary: its own exception must be
     // contained, or it would reject `result` and break the seam's "result never
     // rejects" contract that the flattening above exists to uphold.

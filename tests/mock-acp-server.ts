@@ -47,6 +47,28 @@
  *                        The mock keeps an in-memory session table: `new` registers
  *                        {cwd, prompts[]}, `load` reactivates a registered id,
  *                        and `prompt` appends the prompt text per session.
+ * - `MOCK_NO_LOAD_CAPABILITY` — if `1`, `initialize` omits
+ *                        `agentCapabilities.loadSession` (default advertises
+ *                        `true`), so the client's load gate must refuse.
+ * - `MOCK_HANG_PROMPTS` — comma list of 1-based prompt ordinals (per process)
+ *                        that hang until `session/cancel`, like MOCK_HANG; the
+ *                        other prompts answer normally.
+ * - `MOCK_CRASH_PROMPTS` — comma list of 1-based prompt ordinals (per process)
+ *                        on which the agent exits (code 1) before answering.
+ * - `MOCK_PERMISSION_PROMPTS` — comma list of 1-based prompt ordinals that ask
+ *                        for permission (as MOCK_PERMISSION, only on those turns).
+ * - `MOCK_CANCEL_FILE` — if set, every received `session/cancel` appends one
+ *                        line (`cancel <sessionId>`) to this file.
+ * - `MOCK_LOAD_READY` / `MOCK_LOAD_GO` — `session/load` touches READY, then
+ *                        blocks until GO exists (a deterministic reconnect window).
+ * - `MOCK_LOAD_REPLAY` — if `1`, `session/load` first streams the session's
+ *                        history back as `agent_message_chunk` updates
+ *                        (`replay:<prompt>`), as kiro does, then responds.
+ * - `MOCK_CRASH_ON_INITIALIZE_FILE` / `MOCK_LOAD_MISSING_FILE` /
+ *   `MOCK_CRASH_ON_LOAD_FILE` — runtime switches: the behavior applies while
+ *                        the named file exists, so one pool's processes can
+ *                        differ between start and reconnect. CRASH_ON_LOAD exits
+ *                        (code 13) inside `session/load`.
  * - `MOCK_FLUSH_ON_EOF` — if set, on stdin EOF the agent takes an async beat
  *                         (MOCK_FLUSH_DELAY_MS, default 150) simulating the real
  *                         acp-agent's EOF-driven quiesce+flush, then touches this
@@ -70,7 +92,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
@@ -108,6 +130,28 @@ const IGNORE_PERMISSION_DECISION = process.env.MOCK_PERMISSION_IGNORE_DECISION =
 const NO_ALLOW = process.env.MOCK_NO_ALLOW === '1'
 const THOUGHT = process.env.MOCK_THOUGHT === '1'
 const CRASH_ON_INITIALIZE = process.env.MOCK_CRASH_ON_INITIALIZE === '1'
+const NO_LOAD_CAPABILITY = process.env.MOCK_NO_LOAD_CAPABILITY === '1'
+const CANCEL_FILE = process.env.MOCK_CANCEL_FILE
+const LOAD_REPLAY = process.env.MOCK_LOAD_REPLAY === '1'
+const LOAD_GATE = process.env.MOCK_LOAD_READY !== undefined && process.env.MOCK_LOAD_GO !== undefined
+  ? { ready: process.env.MOCK_LOAD_READY, go: process.env.MOCK_LOAD_GO }
+  : undefined
+
+/** 1-based prompt ordinals listed in a comma-separated env var. */
+function ordinals(name: string): ReadonlySet<number> {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return new Set()
+  return new Set(raw.split(',').map(part => Number(part.trim())))
+}
+const HANG_PROMPTS = ordinals('MOCK_HANG_PROMPTS')
+const CRASH_PROMPTS = ordinals('MOCK_CRASH_PROMPTS')
+const PERMISSION_PROMPTS = ordinals('MOCK_PERMISSION_PROMPTS')
+
+/** A runtime switch: on while the file named by `env[name]` exists. */
+function switchOn(name: string): boolean {
+  const path = process.env[name]
+  return path !== undefined && existsSync(path)
+}
 const CRASH_ON_CANCEL = process.env.MOCK_CRASH_ON_CANCEL === '1'
 const CRASH_ON_PROMPT = process.env.MOCK_CRASH_ON_PROMPT === '1'
 const CRASH_AFTER_CHUNK = process.env.MOCK_CRASH_AFTER_CHUNK === '1'
@@ -127,6 +171,8 @@ function makeAgent() {
   let resolveCancel: ((reason: StopReason) => void) | undefined
   // The cwd the client announced in `session/new`, echoed under MOCK_ECHO_CWD.
   let sessionCwd: string | undefined
+  // Per-process prompt ordinal (1-based) for the *_PROMPTS switches.
+  let promptCount = 0
   // In-memory session table: `new` registers, `load` reactivates, `prompt`
   // appends per-session prompt text (the MOCK_REMEMBER evidence). When
   // MOCK_SESSION_STORE names a file, the table persists there so a SECOND
@@ -146,10 +192,13 @@ function makeAgent() {
 
   return {
     initialize(_params: InitializeRequest): Promise<InitializeResponse> {
-      if (CRASH_ON_INITIALIZE) process.exit(11)
+      if (CRASH_ON_INITIALIZE || switchOn('MOCK_CRASH_ON_INITIALIZE_FILE')) process.exit(11)
       return Promise.resolve({
         protocolVersion: PROTOCOL_VERSION,
-        agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+        agentCapabilities: {
+          ...(NO_LOAD_CAPABILITY ? {} : { loadSession: true }),
+          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        },
         authMethods: [],
       })
     },
@@ -168,22 +217,40 @@ function makeAgent() {
       saveTable(sessions)
       return { sessionId: id }
     },
-    loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-      const known = !LOAD_MISSING && sessions.has(params.sessionId)
+    async loadSession(params: LoadSessionRequest, conn: AgentContext): Promise<LoadSessionResponse> {
+      if (LOAD_GATE !== undefined) {
+        writeFileSync(LOAD_GATE.ready, 'at-load')
+        while (!existsSync(LOAD_GATE.go)) await new Promise(r => setTimeout(r, 10))
+      }
+      if (switchOn('MOCK_CRASH_ON_LOAD_FILE')) process.exit(13)
+      const known = !LOAD_MISSING && !switchOn('MOCK_LOAD_MISSING_FILE') && sessions.has(params.sessionId)
       if (!known) throw new Error(`mock: session not found: ${params.sessionId}`)
       const entry = sessions.get(params.sessionId) as { cwd: string; prompts: string[] }
       entry.cwd = params.cwd
-      return Promise.resolve({
+      sessionCwd = params.cwd
+      if (LOAD_REPLAY) {
+        // Replay history the way kiro does: as ordinary update notifications
+        // delivered before the load response.
+        for (const prior of entry.prompts) {
+          await conn.notify(methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `replay:${prior}` } },
+          })
+        }
+      }
+      return {
         sessionId: params.sessionId,
         modes: { currentModeId: 'mock', availableModes: [] },
-      })
+      }
     },
     authenticate(_params: AuthenticateRequest): Promise<void> {
       // No auth methods advertised; nothing to do.
       return Promise.resolve()
     },
     async prompt(params: PromptRequest, conn: AgentContext): Promise<PromptResponse> {
-      if (CRASH_ON_PROMPT) process.exit(1)
+      promptCount += 1
+      const ordinal = promptCount
+      if (CRASH_ON_PROMPT || CRASH_PROMPTS.has(ordinal)) process.exit(1)
       const hold = process.env.MOCK_PROMPT_HOLD
       if (hold !== undefined) {
         const released = Promise.withResolvers<undefined>()
@@ -197,7 +264,7 @@ function makeAgent() {
           watcher.close()
         }
       }
-      if (WANT_PERMISSION) {
+      if (WANT_PERMISSION || PERMISSION_PROMPTS.has(ordinal)) {
         // Ask the client to approve before answering; honor its decision. Under
         // MOCK_NO_ALLOW the only options are reject-shaped, so an `allow`-policy
         // client finds no allow option and must fall back to cancelled.
@@ -250,7 +317,7 @@ function makeAgent() {
       // can wait on a CONDITION (file exists) rather than an arbitrary timeout
       // before cancelling — deterministic regardless of subprocess cold-start.
       if (READY_FILE !== undefined) writeFileSync(READY_FILE, 'ready')
-      if (HANG) {
+      if (HANG || HANG_PROMPTS.has(ordinal)) {
         // Never resolve on our own: wait for session/cancel to settle us.
         return new Promise<PromptResponse>((resolve) => {
           resolveCancel = (reason) => { resolve({ stopReason: reason }) }
@@ -258,7 +325,8 @@ function makeAgent() {
       }
       return { stopReason: STOP }
     },
-    cancel(_params: CancelNotification): Promise<void> {
+    cancel(params: CancelNotification): Promise<void> {
+      if (CANCEL_FILE !== undefined) appendFileSync(CANCEL_FILE, `cancel ${params.sessionId}\n`)
       if (CRASH_ON_CANCEL) {
         // Exit hard instead of answering — tears the ACP pipe, so the client's
         // pending prompt REJECTS (exercises the backend's catch-while-cancelled
@@ -274,6 +342,7 @@ function makeAgent() {
         return Promise.resolve()
       }
       resolveCancel?.('cancelled')
+      resolveCancel = undefined
       return Promise.resolve()
     },
   }
@@ -287,7 +356,7 @@ createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
     return {}
   })
   .onRequest(methods.agent.session.new, ({ params }) => implementation.newSession(params))
-  .onRequest(methods.agent.session.load, ({ params }) => implementation.loadSession(params))
+  .onRequest(methods.agent.session.load, ({ params, client }) => implementation.loadSession(params, client))
   .onRequest(methods.agent.session.prompt, ({ params, client }) => implementation.prompt(params, client))
   .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
   .connect(ndJsonStream(

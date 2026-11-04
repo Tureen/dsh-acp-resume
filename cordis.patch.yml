@@ -1,6 +1,18 @@
-# Bundle layer: mounts the plugin when this layer is selected (Plugins page
-# toggle). Defaults target a PATH-resolvable kiro-cli; override by id from the
-# profile's cordis.patch.yml for a custom agent command or path.
+# Bundle layer: applied only when the profile lists this package under
+# `dsh.profile.bundles` (Plugins page toggle). It inserts the plugin with
+# defaults for a PATH-resolvable kiro-cli. Pick exactly ONE way to mount:
+#
+# 1. Bundle enabled: do NOT insert again from the profile. To change the
+#    command, path, or other config, add a top-level id-targeted override to
+#    the profile's cordis.patch.yml:
+#      - id: subagent-acp-resume
+#        name: 'dsh-acp-resume'
+#        config:
+#          command: /absolute/path/to/kiro-cli
+# 2. Bundle disabled: wire it by hand with an `- insert:` list in the
+#    profile's cordis.patch.yml (same shape as below).
+#
+# Doing both mounts the plugin twice and fails with DUPLICATE_PROVIDER.
 - insert:
     - id: subagent-acp-resume
       name: 'dsh-acp-resume'
