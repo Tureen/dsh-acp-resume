@@ -6,7 +6,8 @@
  * loader metadata (see `docs/postmortem/0001-acp-default-export-drops-inject.md`).
  * When `enableChatTools` is on, the persistent-chat tools register while a `tools`
  * service is present (revoked when it leaves); their session pool lives on the
- * plugin fiber and is drained on plugin teardown.
+ * plugin fiber and is drained on plugin teardown. The side-panel Remote service
+ * (`acpResume/list|close|purge`, see `./panel.ts`) registers alongside the tools.
  * @module @deepseek-ai/dsh-subagent-acp
  */
 
@@ -24,6 +25,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool } from './pool.js'
 import { registerChatTools } from './tools.js'
+import { AcpResumePanelService } from './panel.js'
 
 export const name = 'acp-resume'
 export const inject = ['subagents', 'subprocess']
@@ -181,5 +183,8 @@ export function apply(ctx: Context, config: Config): void {
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     registerChatTools(scope, scope.tools, pool, resolved.toolPrefix)
+    // The panel Remote service (D15) shares the pool's arrival point and the
+    // tools scope's lifetime: it is unregistered with that scope.
+    new AcpResumePanelService(scope, pool)
   })
 }

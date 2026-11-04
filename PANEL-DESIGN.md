@@ -20,7 +20,7 @@
 ### 2.1 入口与形态
 
 - 位置:**右侧栏新页签**,名"持久会话"(图标:对话气泡+链接);所有模式可见(与工具全局性一致)。
-- 形态:**常驻单页签**(不做每会话一个资源页;资源型有官方样例但对本需求过重)。
+- 形态:**右侧栏页签(向导入口形态,由用户在每个会话首次打开;2026-11-04 用户裁定)**(不做每会话一个资源页;资源型有官方样例但对本需求过重)。
 
 ### 2.2 页签内容
 
@@ -118,3 +118,208 @@ client 不直接读注册表文件;单一事实源在池。
 2. 模型 `acp_chat_start` 后卡片出现(摘要/轮数随 send 增长;**续聊轮次不新增卡片**);
 3. 释放/删除操作与 `acp_chat_list` 结果一致;
 4. 插件关闭(GUID 插件页开关)后页签消失。
+
+## 3.6 技术补强(spike 定稿)
+
+2026-11-04 spike。依据全部取自官方只读 checkout `/Users/Tulane/Developer/open-source-projects/deepseek-harness`(分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`),下文 `file:line` 均相对该仓库根;另引第三方先例 `dat-lequoc/dsh-kiro`(commit `c9a397f`,标注 `dsh-kiro:`)。每条结论标明 **[实测]**(在 `/tmp` 下跑过探针,不在本仓库)、**[读码]**(读源码得出)或 **[未验证]**(待装机确认)。
+
+### 3.6.0 对 §3.1–§3.5 的修正(以本节为准)
+
+- **`sidebarRightTabs` 是浏览器端服务,不在 node 半。** 官方页签插件都在 client 半 inject 它并注册(`packages/client/ui-sidebar-terminal/src/client/index.ts:23,71-74`;服务声明见 `packages/client/ui-sidebar-right/src/client/index.ts:92`)。node 半只负责暴露 list/close/purge 三个远程方法。[读码]
+- **远程方法名 `remove` 改为 `purge`。** 若走 `ctx.remote` 通道,`remove` 与客户端命名空间服务自带的 `remove()` 方法冲突,挂载直接报错(`packages/api/gateway/src/client/index.ts:642-645,707`)。[实测] 即使本设计推荐的通道 B 不受此限,也统一用 `purge`,与 `acp_chat_close` 的 `purge` 参数同名,并给日后切换到通道 A 留余地。池内方法仍是 `pool.remove()`,只改线上名。
+- **dat-lequoc/dsh-kiro 不是 remote 先例。** 它的设置页走 `webServer.register({ kind: 'prefix', path: '/kiro/api' })` 裸 HTTP 路由加浏览器 `fetch`(`dsh-kiro: src/web.ts:518-524`、`client/index.cjs:323-330`)。该路由不经过 `/api` 的浏览器信任围栏(`packages/host/webserver/src/index.ts:366-373` 注册时无任何鉴权;对照 `/api` 围栏 `packages/client/connection/src/api-request-trust.ts:1-13`)。本设计不照抄,只借它的打包形态作参考。[读码]
+- **"常驻单页签"没有直接机制。** `SidebarRightTabDefinition` 没有"自动打开"字段,页签类型的入口是向导页的 `guide` 条目,由用户按会话打开(`packages/client/ui-sidebar-right/src/client/tab-registry.ts:94-136`)。v1 落地为:注册一个页面型页签(不带 `patterns`,不设 `multiple`,每个窗格一页)+ 一个向导条目。§2.1 的"常驻"语义需用户确认是否接受。[读码]
+- **官方 `clientBundle` 预设不能直接引用。** 它导入了 monorepo 内部脚本(`packages/client/tsdown.client.ts:21-25`),独立仓库需自写等效配置(见 3.6.3)。[读码]
+
+### 3.6.1 未知一:host→client 方法通道
+
+**结论:GO。** 第三方 host 插件让一个 Cordis Service 继承 `TypertRemoteService` 并给方法加 `@Remote`,官方 Gateway 的源码回退(SRC 模式)就会认领 `<namespace>/<method>` 端点,不需要 Typert 生成器,也不需要改官方的集中装配。浏览器侧有两条调用路,推荐 B。
+
+**Host 侧依据**
+
+- 官方注册姿势(`remote.workspaceFiles` 的 host 侧):`class WorkspaceFiles extends TypertRemoteService`,构造时 `super(ctx, 'workspaceFiles')`,方法加 `@Remote`(`packages/api/workspace-files/src/index.ts:183,200,233`)。`TypertRemoteService` 在构造时把 service key 绑定为 wire namespace(`packages/typert/protocol/src/index.ts:246-260`)。[读码]
+- 官方生成产物(`./typert`、`./remote`)只在严格模式下需要。没有产物时,Gateway 扫描所有带 `typertRemote` 绑定和 `@Remote` 标记的活 Service 认领端点(`packages/api/gateway/src/index.ts:363-368` claimsEndpoint、`384-399` collectSrcClaims),从方法源码读参数名生成描述(`861-872` resolveDescriptor、`874-899` resolveSrcDescriptor、`1569-1600` methodParameterNames)。loader 文档也写明"受限的无描述符源码回退仍由 Gateway 负责"(`packages/typert/loader/README.zh.md:49`)。[读码]
+- 有新 Service 注册时认领缓存会清空(`packages/api/gateway/src/index.ts:239`),插件晚于 Gateway 激活也能被认领。[读码+实测]
+- 线路:Gateway 拦截 Connection 的 `/api` 通道(`packages/api/gateway/src/index.ts:243`),载荷必须恰好是 `{ args: {...} }`(`1258-1264`)。[实测]
+- 访问控制:owner Peer(本机 GUI 用户)直接放行;非 owner 走 `remoteAccess.decide`(`packages/api/gateway/src/index.ts:787-808`),未登记的动作默认拒绝(`packages/api/remote-access/src/index.ts:46` 的 `no-allow`)。[实测]
+- 参数名坑:SRC 模式按参数名匹配 lookup,已注册的名字有 `agent`、`session`、`workspaceFileScope`(`packages/core/agent/src/index.ts:259`、`packages/core/session/src/index.ts:1080`、`packages/api/workspace-files/src/index.ts:204`)。参数名避开它们,用 `chatId`。[读码]
+- 缺参不报错:SRC 参数允许 `undefined`(`packages/api/gateway/src/index.ts:1626-1631`),`close({})` 会以 `chatId === undefined` 进入方法体。业务方法必须自己校验。多传字段会报 `gateway/arguments-invalid`。[实测]
+
+**浏览器侧两条路**
+
+- **B(推荐):直接 `ctx.connection.rpc.call('/api', 'acpResume/<m>', { args })`。** `connection` 是浏览器端公开 Cordis 服务(`packages/client/connection/src/client/index.ts:143-157,330`),`rpc.call` 的签名见 `packages/client/connection/src/rpc.ts:295-310`。浏览器传输与桌面端自定义传输都经这一个接口(`client/index.ts:227` 的 `transport?.rpc ?? createWebConnectionRpc(...)`),因此不像 dsh-kiro 那样依赖页面能直连 HTTP。返回 `{ ok, value } | { ok: false, error }`;传输层失败时直接 throw(`packages/client/connection/src/client/rpc.ts:58-60`)。代价:官方业务包无人直接调用 `rpc.call`(只有 gateway 自身,`packages/api/gateway/src/client/index.ts:458`),属于越过 `ctx.remote` 的基础设施边;但只依赖两个公开约定:`rpc.call` 和 `{ args }` 信封。
+- **A(备选):`ctx.remote.$mount(手写 contribution)`。** 官方 contribution 由 `@deepseek-ai/dsh-api-remotes/client` 集中挂载(`packages/api/remotes/src/client/index.ts:185-198`),但 `$mount` 本身是公开方法(`packages/api/gateway/src/client/index.ts:214-222`)。客户端要求每个参数都带 `mode: 'strict'` 的 codec(`803-818`),`src-json` 会被拒;手写一个带 `typeSymbol` 和 `create` 的 strict codec 能通过挂载,挂载和调用时 `create` 都不会被调用。[实测] 换来的是 `RemoteResult` 统一错误与卸载时自动取消在途调用;风险是伪造的 strict 元数据可能在官方升级后被实际执行,且方法名受命名空间保留字限制(`remove`、`has`、`ctx`、`name` 等,`763` 与 `664-707`)。
+
+**实测记录**(`/tmp/spike-probe`,用本仓库的 tsc 5.9 编译,`target ES2023`,标准 TC39 装饰器,未开 `experimentalDecorators`;加载官方 checkout 已构建的 `vendor/cordis`、`typert/registry`、`api/remote-access`、`api/gateway` 的 lib):
+- `typertGateway.invoke` 调 `acpResume/list|close|remove` 均返回预期值;非 owner 得到 `remote-access/denied (no-allow)`;多余字段得到 `gateway/arguments-invalid`。
+- 模拟 Connection 拦截:Service 注册前 `claims('acpResume/list') = false`,注册后为 `true`;`dispatch('acpResume/list', { args: {} })` 得到 `{"ok":true,"value":[...]}`;方法体内 throw 的 `TypeError` 得到 `{"ok":false,"error":{"code":"gateway/internal",...}}`;方法返回 `undefined` 时线上为 `{"ok":true}`(没有 value 键)。
+- 浏览器 Gateway(`lib/client.node.js`)用手写 contribution 挂载:`remove` 被拒(namespace 冲突),`src-json` 参数被拒,strict 桩通过;线上实际发出 `["/api","acpResume/purge",{"args":{"chatId":"chat-a"}}]`,与通道 B 的报文一字不差。
+
+**最小代码形状**
+
+node 半(`src/panel.ts`):
+
+```ts
+import type { Context } from '@deepseek-ai/cordis'
+import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { AcpSessionPool, PooledChatInfo } from './pool.js'
+
+/** wire namespace = Cordis service key;端点为 acpResume/list|close|purge */
+export class AcpResumePanelService extends TypertRemoteService {
+  constructor(ctx: Context, private readonly pool: AcpSessionPool) {
+    super(ctx, 'acpResume')
+  }
+
+  @Remote
+  list(): readonly PooledChatInfo[] {
+    return this.pool.listChats()
+  }
+
+  @Remote
+  async close(chatId: string): Promise<null> {
+    await this.pool.close(requireChatId(chatId))
+    return null
+  }
+
+  @Remote
+  async purge(chatId: string): Promise<null> {
+    await this.pool.remove(requireChatId(chatId))
+    return null
+  }
+}
+
+function requireChatId(value: unknown): string {
+  // SRC 模式缺参时传 undefined(gateway/src/index.ts:1626-1631),必须在这里校验
+  if (typeof value !== 'string' || value === '') {
+    throw new RemoteError('gateway/bad-request', 'chatId must be a non-empty string', {})
+  }
+  return value
+}
+```
+
+- 参数必须是简单标识符,不能解构、不能有默认值、不能用 rest,否则 `gateway/signature-invalid`(`packages/api/gateway/src/index.ts:1592-1611`)。tsc 编译后方法源码保留 `close(chatId) {`,已实测。
+- 接线(`src/index.ts`):池只在 tools 作用域里创建,面板服务跟它同处:在现有 `ctx.inject(['tools'], scope => { pool ??= ...; registerChatTools(...) })` 回调里追加 `new AcpResumePanelService(scope, pool)`,服务随 tools 作用域撤销。在 inject 回调内直接 `new` Service 的生命周期行为 [未验证],实施时以 `tests/panel.spec.ts` 覆盖;不行就改为 `scope.plugin({ name: 'acp-resume-panel', apply: c => { new AcpResumePanelService(c, pool) } })`(插件内构造已实测)。
+- receiver 是 `extend({ invocation })` 派生出的对象(`packages/api/gateway/src/index.ts:841`),`this.pool` 经原型链可读。[读码,探针用的是闭包,未直接测 `this.pool`]
+- package.json:`@deepseek-ai/dsh-typert-protocol` 加进 `peerDependencies` 与 `devDependencies`,版本 `~0.2.1-rc.5`(npm `next` 标签已发布,自身 peer cordis,`packages/typert/protocol/package.json:40-48`)。理由:现有 peer(cordis、dsh-subagent 等)不在 profile 的 `node_modules`,运行时由 App 的 profile 解析拦截提供(`packages/boot/app-boot/src/profile-resolution/resolver.ts:1`;0.1.3 装机已跑通,D16)。typert-protocol 是否同样由 App 提供 [未验证];若装机时报找不到,改放 `dependencies`(标记靠稳定字符串属性跨副本可读,`packages/typert/protocol/src/index.ts:220`、架构 note `2026-08-02-typert-remote-method-calls.zh.md:92`)。
+
+client 半调用(通道 B):
+
+```ts
+type RpcResult = { ok: true; value?: unknown } | { ok: false; error: { code: string; message: string } }
+interface PanelConnection { rpc: { call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<RpcResult> } }
+
+async function callPanel<T>(connection: PanelConnection, method: 'list' | 'close' | 'purge',
+  args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const result = await connection.rpc.call('/api', `acpResume/${method}`, { args }, signal) // 传输失败会 throw
+  if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+  return result.value as T
+}
+```
+
+### 3.6.2 未知二:`dsh.client` manifest 与 externals
+
+**结论:GO。** manifest 只有四个字段,我们只需 `platform`(可加 informational 的 `inject`),不需要 `external`。
+
+- **字段全集**:`platform`(必填字符串)、`inject?`、`external?`(字符串数组)、`immediately?`(布尔)(校验 `packages/client/modules/src/client/manifest.ts:173-193`;类型 `packages/util/package-manifest/src/types.ts:81-94`)。[读码]
+- **发现规则**:host 从 Loader 已挂载的行找到包的 `package.json`,`platform !== 'web'` 就不算 client 行;声明了却没有 `exports["./client"]` 时,启动即抛错(`packages/client/modules/src/index.ts:844-879`,第 868 行)。`./client` 必须是字符串,或带字符串 `default` 的对象(`196-206`);文件缺失时抛 `MissingClientBundleError`(`979-991`)。client 行挂在 host 行上,所以现有 bundle 装机通道不变,插件关闭后 client 行随之消失(满足 §4 验收 4,[读码推断])。包元数据按进程永久缓存(`844-856`),升级后必须重启 App(README 升级步骤 6 已有)。
+- **`inject`**:只作提示信息,不决定激活顺序(`packages/client/AGENTS.md:148`);图里不存在的包名会被静默跳过(`packages/client/modules/src/client/system.ts:273-276`)。
+- **externals 白名单**:每个动态 bundle 隐式共享这些基线模块:`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`zod`、`@tanstack/react-virtual`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`(`packages/client/web/src/platform.ts:8-15`)。React 和 ui-primitives 能直接 import,不要写进 `external`(`packages/client/AGENTS.md:82`)。`external` 只留给基础设施(`:83`),功能插件不得借它拿别的插件的值(`:40`),基线以外的第三方库各自打包私有副本(`:84`)。
+- **`./client` 导出形状**:只导出 `apply`、`inject`(有配置时加 `Config`)(`packages/client/AGENTS.md:38`)。官方产物末尾即 `exports.apply = apply; exports.inject = inject;`(`packages/client/ui-deliverables/lib/client.js` 尾部)。
+- 跨包协作一律走 Cordis 服务(`connection`、`slots`、`sidebarRightTabs`)。官方包的类型只用 `import type`,构建时被擦除,不产生模块请求(`packages/util/package-manifest/src/types.ts:91`)。
+
+package.json 片段:
+
+```jsonc
+{
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./client": "./lib/client.js",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": ["cordis.patch.yml", "lib/*.js", "lib/client.js.map", "lib/types/**/*.d.ts"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right"] }
+  }
+}
+```
+
+client 半最小导出(`src/client/index.tsx`,注册写法照 `ui-sidebar-terminal/src/client/index.ts:71-74,94-98`):
+
+```tsx
+const PANEL_ID = 'dsh-acp-resume'          // 页签实现 id = slot key
+const PANEL_KIND = 'acp-resume.chats'
+export const inject = ['slots', 'sidebarRightTabs', 'connection']
+export function apply(ctx: PanelContext): void {   // PanelContext:本地结构化类型
+  ctx.effect(() => ctx.sidebarRightTabs.register({
+    id: PANEL_ID, kind: PANEL_KIND, title: () => '持久会话',
+    guide: [{ id: 'open', order: 90, title: () => '持久会话' }],
+  }))
+  ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
+    { name: 'sidebar.right.pane.tab', key: PANEL_ID,
+      inject: () => ({ list: s => callPanel(ctx.connection, 'list', {}, s),
+                       close: id => callPanel(ctx.connection, 'close', { chatId: id }),
+                       purge: id => callPanel(ctx.connection, 'purge', { chatId: id }) }) },
+    ChatsPanel)))
+}
+```
+
+- `sidebar.right.pane.tab` 是按 key 分发、按会话作用域的 slot(`packages/client/ui-sidebar-right/src/client/contract/slots.ts:59-64`),inject 回调收到 `sessionId`。面板数据是全局的,忽略该参数即可。
+- 类型:v1 在本仓库写局部结构类型(`PanelContext`、`PanelConnection`),不依赖官方 client 包的 `.d.ts`。官方 client 包在 npm 有 `0.2.1-rc.5`(`next` 标签),但它们的类型依赖链能否在独立仓库完整解析 [未验证]。
+
+### 3.6.3 未知三:构建模板
+
+**结论:GO。** 官方产物是单个 CJS 工厂脚本 `lib/client.js`(外加 `.map`),由 tsdown 产出。独立仓库用下面的自写配置能产出同构文件。[实测]
+
+- **官方配置**:`ui-deliverables` 只调用 `clientBundle(import.meta.dirname, ['lib/types/index.js'])`(`packages/client/ui-deliverables/tsdown.config.ts:1-3`)。`ui-sidebar-documentpreview` 在同一预设上加了 PDF/Excel worker 插件(`packages/client/ui-sidebar-documentpreview/tsdown.config.ts`)。预设核心是 `clientConfig`(`packages/client/tsdown.client.ts:499-672`):`format: 'cjs'`、`platform: 'browser'`(`515-516`);基线模块 `neverBundle`,其余全部 `alwaysBundle`(`523-531`);`@deepseek-ai/*` 纯度门(`567-578`);`banner`/`intro`/`footer` 包成 `window.__ModuleLoader__.load({ id, factory: (require) => {...} })`(`663-669`);入口文件名 `client.js`(`650`)。tsdown 版本 `0.22.2`(根 `package.json:281`,本机 node_modules 同版本)。JSX 用 `react-jsx`(`tsconfig.base.client.json:7`)。
+- **产物形态**:`packages/client/ui-deliverables/lib/client.js` 以 `window.__ModuleLoader__.load({ id, factory: (require) => { var module = { exports: {} }; ...` 开头,外部依赖写成 `require("react/jsx-runtime")` 这类调用,结尾 `return module.exports; } });`。宿主按 `id` 注册工厂(`packages/client/modules/src/client/manifest.ts:355-368`)。
+- **实测**:在 `/tmp/spike-build` 用官方 checkout 的 tsdown 0.22.2 和下面的配置,构建一个含 JSX 与 `useState` 的 `src/client.tsx`,产物 1.53 kB,结构与官方产物一致:CJS 工厂包装,`require("react")`、`require("react/jsx-runtime")`,末尾 `exports.apply/inject`。
+- 打包器在构建时不解析 externals,react 只为类型检查和测试需要安装。
+
+`tsdown.config.ts`(独立仓库版):
+
+```ts
+// 镜像官方 PLATFORM_MODULES(packages/client/web/src/platform.ts:8-15);升级 DSH 时核对
+const SHARED = new Set(['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', 'zod',
+  '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit'])
+const ID = 'dsh-acp-resume' // 必须等于 package.json name(宿主按包名注册工厂)
+export default {
+  entry: { client: 'src/client/index.tsx' },
+  outDir: 'lib', format: 'cjs', platform: 'browser', target: 'es2024',
+  dts: false, sourcemap: true, clean: false,           // clean:false,不能删掉 tsc 产出的 node 半
+  deps: { neverBundle: (s: string) => SHARED.has(s), alwaysBundle: (s: string) => !SHARED.has(s) },
+  define: { 'process.env.NODE_ENV': '"production"' },
+  outputOptions: {
+    entryFileNames: 'client.js', chunkFileNames: 'client.[name].js',
+    intro: 'var module = { exports: {} }; var exports = module.exports;',
+    banner: (chunk: { isEntry: boolean; fileName: string }) =>
+      `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, ${chunk.isEntry ? '' : `chunk: ${JSON.stringify(chunk.fileName)}, `}factory: (require) => {`,
+    footer: 'return module.exports; } });',
+  },
+}
+```
+
+配套改动:
+
+- devDependencies:`tsdown@^0.22.2`、`react@^18.2.0`、`@types/react`;client 测试另加 `jsdom`、`@testing-library/react`(官方用 `^16.3.3`,`packages/client/ui-sidebar-terminal/package.json` devDependencies)。
+- 脚本:`"build": "tsc -p tsconfig.json && tsdown"`。`prepack` 必须同步改为 `rm -rf lib && tsc -p tsconfig.json && tsdown`:现有 `prepack` 先清空 `lib/` 再只跑 tsc,会把 `client.js` 删掉,打出缺浏览器半的包,宿主启动时报 `MissingClientBundleError`。
+- tsconfig 拆分:node 半的 `tsconfig.json` 当前 `include: ["src/**/*.ts"]`,要 `exclude: ["src/client/**"]`(client 需要 DOM lib,node 半用的是 `types: ["node"]`)。新增 `tsconfig.client.json`(`jsx: "react-jsx"`、`lib: ["ES2024","DOM"]`、`noEmit`、`include: ["src/client/**"]`),只用于类型检查。tsdown 是否会读到根 `tsconfig.json` 的设置并改变 JSX 处理 [未验证]:探针目录里没有 tsconfig。首次构建时检查 `lib/client.js` 里是 `require("react/jsx-runtime")`,而不是裸的 `React.createElement`。
+- 不要用动态 `import()` 拆 chunk。若要拆,`require.async` 改写需要官方的 `asyncChunkRequirePlugin`(`packages/client/tsdown.client.ts:446-479`),否则会留下宿主不支持的同步 `require("./client.x.js")`(`packages/client/AGENTS.md:87`)。v1 保持单文件。
+- 不能用 CSS Modules:官方用 lightningcss 插件内联(`packages/client/tsdown.client.ts:580-603`),自写配置没有这一步。v1 用组件内 `<style>` 或行内样式,颜色取 `--dsw-*` 变量。
+
+### 3.6.4 go/no-go
+
+| 未知 | 判定 | 依据强度 | 装机时必须确认的残余点 |
+|---|---|---|---|
+| 1. 方法通道 | **GO**(host:TypertRemoteService + `@Remote`,SRC 认领;client:通道 B) | host 认领、`{args}` 信封、owner/非 owner、浏览器侧报文:均已实测 | ① App 运行时能解析 peer `@deepseek-ai/dsh-typert-protocol`;② 桌面端 client 存在 `ctx.connection.rpc`;③ 真 App 里完整往返一次 `acpResume/list` |
+| 2. manifest / externals | **GO**(`platform: 'web'` + `./client` 字符串导出;无需 `external`) | 读码(校验函数、发现规则、白名单常量) | 升级后重启 App,client 行才出现(元数据缓存) |
+| 3. 构建 | **GO**(自写 tsdown 0.22.2 配置,单个 CJS 工厂 `lib/client.js`) | 实测产物与官方同构 | 本仓库 tsconfig 下 JSX 编译结果;`prepack` 带上 tsdown |
+
+替代路径(仅在残余点失败时启用):
+
+- 残余点 ①(peer 解析不到):把 `@deepseek-ai/dsh-typert-protocol` 移进 `dependencies`。标记跨副本可读(`packages/typert/protocol/src/index.ts:220`);但它的 `Service` 基类来自它解析到的 cordis,所以要确认 pnpm 把 peer cordis 链到与宿主同一份。
+- 残余点 ②(client 没有 `connection` 服务):改用通道 A(`ctx.remote.$mount` + 手写 strict 桩,已实测可挂载),inject 改为 `['remote', ...]`。
+- 通道 A、B 都不通时的兜底:照 dsh-kiro 注册 `webServer` 裸路由加 `fetch`。该路由没有 `/api` 信任围栏,必须自己校验 `Host`/`Origin` 只放行本机来源,并且 `purge` 只接受 POST;只在桌面端页面能直连 HTTP 时有效。
+- 构建兜底:照 `dsh-kiro: client/index.cjs:1-5,1142-1185` 手写 CJS 工厂(用 `React.createElement`,不经打包器)。可用,但失去 TSX 和类型检查。

@@ -57,6 +57,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: ~0.2.1-rc.5
         version: 0.2.1-rc.5(838c99649576d6611fa9994cb21a266c)
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: ~0.2.1-rc.5
+        version: 0.2.1-rc.5(@deepseek-ai/cordis@4.0.5)
       '@types/node':
         specifier: ^24
         version: 24.19.2
