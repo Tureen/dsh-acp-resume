@@ -38,6 +38,15 @@
  *                        it releases the response without a timing assumption.
  * - `MOCK_MISSING_SESSION_ID` — if `1`, return a malformed empty `session/new`
  *                        response to exercise startup rollback.
+ * - `MOCK_LOAD_MISSING` — if `1`, `session/load` ALWAYS fails (unknown-session
+ *                        error), exercising the pool's fresh-session fallback.
+ * - `MOCK_REMEMBER`   — if `1`, the answer to each prompt echoes the PREVIOUS
+ *                        prompt text of that session as `remember:<text>` (or
+ *                        `remember:none`), so a test can assert that context
+ *                        survived a same-process follow-up or a load reconnect.
+ *                        The mock keeps an in-memory session table: `new` registers
+ *                        {cwd, prompts[]}, `load` reactivates a registered id,
+ *                        and `prompt` appends the prompt text per session.
  * - `MOCK_FLUSH_ON_EOF` — if set, on stdin EOF the agent takes an async beat
  *                         (MOCK_FLUSH_DELAY_MS, default 150) simulating the real
  *                         acp-agent's EOF-driven quiesce+flush, then touches this
@@ -61,7 +70,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
@@ -74,6 +83,8 @@ import {
   type AuthenticateRequest,
   type InitializeRequest,
   type InitializeResponse,
+  type LoadSessionRequest,
+  type LoadSessionResponse,
   type NewSessionRequest,
   type NewSessionResponse,
   type PromptRequest,
@@ -116,6 +127,22 @@ function makeAgent() {
   let resolveCancel: ((reason: StopReason) => void) | undefined
   // The cwd the client announced in `session/new`, echoed under MOCK_ECHO_CWD.
   let sessionCwd: string | undefined
+  // In-memory session table: `new` registers, `load` reactivates, `prompt`
+  // appends per-session prompt text (the MOCK_REMEMBER evidence). When
+  // MOCK_SESSION_STORE names a file, the table persists there so a SECOND
+  // process can `session/load` what the first one created — the cross-process
+  // reconnect the pool tests assert on.
+  const STORE = process.env.MOCK_SESSION_STORE
+  const loadTable = (): Map<string, { cwd: string; prompts: string[] }> => {
+    if (STORE === undefined || !existsSync(STORE)) return new Map()
+    return new Map(Object.entries(JSON.parse(readFileSync(STORE, 'utf8')) as Record<string, { cwd: string; prompts: string[] }>))
+  }
+  const saveTable = (table: Map<string, { cwd: string; prompts: string[] }>): void => {
+    if (STORE !== undefined) writeFileSync(STORE, JSON.stringify(Object.fromEntries(table)))
+  }
+  const sessions = loadTable()
+  const REMEMBER = process.env.MOCK_REMEMBER === '1'
+  const LOAD_MISSING = process.env.MOCK_LOAD_MISSING === '1'
 
   return {
     initialize(_params: InitializeRequest): Promise<InitializeResponse> {
@@ -136,7 +163,20 @@ function makeAgent() {
         while (!existsSync(NEWSESSION_GATE.go)) await new Promise(r => setTimeout(r, 10))
       }
       if (process.env.MOCK_MISSING_SESSION_ID === '1') return {} as NewSessionResponse
-      return { sessionId: process.env.MOCK_SESSION_ID ?? randomUUID() }
+      const id = process.env.MOCK_SESSION_ID ?? randomUUID()
+      sessions.set(id, { cwd: params.cwd, prompts: [] })
+      saveTable(sessions)
+      return { sessionId: id }
+    },
+    loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+      const known = !LOAD_MISSING && sessions.has(params.sessionId)
+      if (!known) throw new Error(`mock: session not found: ${params.sessionId}`)
+      const entry = sessions.get(params.sessionId) as { cwd: string; prompts: string[] }
+      entry.cwd = params.cwd
+      return Promise.resolve({
+        sessionId: params.sessionId,
+        modes: { currentModeId: 'mock', availableModes: [] },
+      })
     },
     authenticate(_params: AuthenticateRequest): Promise<void> {
       // No auth methods advertised; nothing to do.
@@ -188,13 +228,18 @@ function makeAgent() {
           update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking…' } },
         })
       }
+      const entry = sessions.get(params.sessionId)
+      if (entry === undefined) throw new Error(`mock: prompt for unknown session: ${params.sessionId}`)
+      entry.prompts.push(params.prompt.map(b => (b as { text?: string }).text ?? '').join(''))
+      saveTable(sessions)
+      const answer = REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
       // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
       // the observable process cwd + announced session cwd).
       await conn.notify(methods.client.session.update, {
         sessionId: params.sessionId,
         update: {
           sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : TEXT },
+          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : answer },
         },
       })
       if (CRASH_AFTER_CHUNK) {
@@ -242,6 +287,7 @@ createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
     return {}
   })
   .onRequest(methods.agent.session.new, ({ params }) => implementation.newSession(params))
+  .onRequest(methods.agent.session.load, ({ params }) => implementation.loadSession(params))
   .onRequest(methods.agent.session.prompt, ({ params, client }) => implementation.prompt(params, client))
   .onNotification(methods.agent.session.cancel, ({ params }) => implementation.cancel(params))
   .connect(ndJsonStream(
