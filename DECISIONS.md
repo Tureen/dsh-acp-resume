@@ -112,7 +112,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 结构化错误契约:连接启动失败统一抛 `AcpConnectionError`,带 `stage`(`initialize` / `new-session` / `load-session`)、`category`(`protocol` / `transport` / `process-exit` / `process-start` / `unknown`)与可选 `jsonRpcCode`(远端 JSON-RPC 拒绝时的错误码)。`message` 只含固定安全事实,原始错误放 `cause`。spawn 本身抛错诊断为 `stage: initialize; category: process-start`。池的降级判定只读这两个字段,不解析文案。
 
-能力门控:`session/load` 前检查 `initialize` 响应的 `agentCapabilities.loadSession`,不为 `true` 即按 `load-session` + `protocol` 失败处理(从而降级新会话)。**遗留**:kiro-cli 是否在 initialize 中声明 `loadSession` 尚未真机确认(D7 只实测了 load 调用本身可用);若 kiro 不声明,每次重连都会降级,续聊失效。真机冒烟前必须先抓 initialize 响应确认。
+能力门控:`session/load` 前检查 `initialize` 响应的 `agentCapabilities.loadSession`,不为 `true` 即按 `load-session` + `protocol` 失败处理(从而降级新会话)。**已真机确认(2026-11-04)**:kiro-cli 声明 `loadSession`——0.1.3 装机后行为验证,SIGKILL 进程后 `session/load` 重连恢复暗号上下文且无降级注记(若未声明,门控必触发降级,注记必现)。
 
 已知遗留(本轮不修):
 - 注册表仍是单写者设计,多个宿主进程共用同一路径无文件锁(D14 已记)。
