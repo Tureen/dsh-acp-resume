@@ -16,6 +16,8 @@
  * Each `completed` turn bumps the entry's `turnCount` and, while the entry
  * has no title yet, records the turn's message (trimmed, first 40
  * characters) as its `title`; `aborted` and `error` turns record neither.
+ * `steer` forwards a private `_session/steer` to the live connection while a
+ * turn is in flight. The reconnect fingerprint ignores `--agent-engine` (D19).
  * Optional send observers ({@link PoolSendHooks}) receive the turn's text
  * chunks as they stream and learn of a fresh-session fallback before the
  * prompt goes out.
@@ -26,11 +28,12 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { AcpConnection } from './connection.js'
+import type { AcpConnection, AcpSteerResult } from './connection.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { AcpRunSpec } from './run.js'
+import { stripAgentEngine } from './engine.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -177,7 +180,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
 }
 
-function sameArgs(a: readonly unknown[], b: readonly string[]): boolean {
+function sameArgs(a: readonly unknown[], b: readonly unknown[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index])
 }
 
@@ -465,6 +468,24 @@ export class AcpSessionPool {
   }
 
   /**
+   * Queue a steering message into the chat's in-flight turn. Needs a live
+   * connection with a turn in flight; it neither claims the chat nor touches
+   * the turn, so several steers may be sent while a turn runs (the agent
+   * queues them in order).
+   * @throws when the pool is disposed, the chat is unknown, or no turn is in
+   *   flight; {@link AcpSteerUnsupportedError} when the agent lacks `_session/steer`.
+   */
+  async steer(chatId: string, message: string): Promise<AcpSteerResult> {
+    this.assertLive()
+    if (this.registry.get(chatId) === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
+    const chat = this.live.get(chatId)
+    if (chat === undefined || !chat.busy || chat.closing !== undefined) {
+      throw new Error(`acp-resume: chat ${chatId} has no turn in flight, so there is nothing to steer; use send instead`)
+    }
+    return chat.conn.steer(message)
+  }
+
+  /**
    * Release the process AND delete the durable record (cannot reconnect
    * afterwards). If the release fails, the record is kept and the error says so.
    */
@@ -513,7 +534,8 @@ export class AcpSessionPool {
   /** A saved session is only reloaded by the agent that created it. */
   private assertSameAgent(entry: RegistryEntry): void {
     const { command, args } = this.opts.specBase
-    if (entry.command === command && Array.isArray(entry.args) && sameArgs(entry.args, args)) return
+    // The engine flag is not part of the fingerprint (D19): saved sessions load across engines.
+    if (entry.command === command && Array.isArray(entry.args) && sameArgs(stripAgentEngine(entry.args), stripAgentEngine(args))) return
     throw new Error(
       `acp-resume: chat ${entry.chatId} was recorded for agent ${JSON.stringify([entry.command, ...(Array.isArray(entry.args) ? entry.args : [])])}, `
       + `but the plugin is now configured for ${JSON.stringify([command, ...args])}; the saved session belongs to another agent and was not loaded. `

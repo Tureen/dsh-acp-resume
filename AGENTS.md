@@ -16,9 +16,10 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 src/
   index.ts       插件入口:Config(全字段见 README「配置」)+ provider 与工具注册
   run.ts         官方 one-shot 驱动(逐字基线,勿重构,D11)
-  connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / dispose
-  pool.ts        持久会话池:start/send/close、空闲释放、注册表原子落盘、重连与降级
-  tools.ts       四个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close
+  connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose
+  pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级
+  engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
+  tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
                  (defineTool + ctx.tools.register,不走 ctx.subagents);有 ctx.jobs 时 send 注册
                  acp-chat 后台任务并立即返回 jobId(D17),无 jobs 时同步等待、轮非 completed 抛工具错误
 tests/
@@ -26,6 +27,8 @@ tests/
   connection.spec.ts     连接原语
   pool.spec.ts           池生命周期
   jobs.spec.ts           后台任务模式 send(真 jobs-local 注册表)与 send 变体随 ctx.jobs 切换
+  steer.spec.ts          acp_chat_steer:插话快乐路 / 不支持降级 / 无在途轮拒绝
+  engine.spec.ts         --agent-engine 辅助函数与两条 spawn 路径的 argv
   mock-acp-server.ts     扩展了 session/load 的 mock;会话表落文件以支持跨进程重连(D9/D12)
   fixtures/  helpers/    loader 夹具与测试辅助
 lib/            tsc 产物(gitignored)
@@ -41,7 +44,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 172 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 32 + `tools.spec.ts` 12 + `jobs.spec.ts` 11 + `panel.spec.ts` 8 + `client.spec.tsx` 18;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 188 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 35 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 8 + `client.spec.tsx` 18 + `steer.spec.ts` 5 + `engine.spec.ts` 7;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(`/Users/Tulane/Developer/open-source-projects/deepseek-harness`,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

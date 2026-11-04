@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 agent(如 kiro-cli)持续多轮协作。
 
-状态:**开发中**。阶段二(连接原语、会话池、四个工具与接线)已实现,并完成一轮六维评审修复(D16);待真机 kiro-cli 冒烟与装机验收,进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
+状态:**开发中**。阶段二(连接原语、会话池、五个工具与接线)已实现,并完成一轮六维评审修复(D16);待真机 kiro-cli 冒烟与装机验收,进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
 ## 动机
 
@@ -30,6 +30,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | `acp_chat_send` | 向指定会话发消息;进程死后自动重连恢复上下文。宿主装有 jobs 服务时立即返回后台任务 id,回答流式写入该任务,完成后会话内通知,用 `job_output` 读、`job_kill` 停;无 jobs 服务时等待并返回最终回答(D17) |
 | `acp_chat_list` | 列出活跃与持久化会话 |
 | `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
+| `acp_chat_steer` | 给**在途轮**插话:排队的消息在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。没有在途轮时报错(改用 send);agent 不实现私有扩展 `_session/steer` 时报「当前 agent 不支持插话」(D19) |
 | **持久会话面板**(右侧栏,D15) | 按会话聚合的只读视图:状态/轮数/摘要,释放与删除操作——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
 
 ## 配置
@@ -43,16 +44,19 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
       config:
         command: /path/to/agent-cli  # 必填:子 agent 可执行文件
         args: [acp]                  # 默认 []
+        agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加(D19)
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
         permission: allow            # 默认 reject;同官方语义:allow / reject
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
         enableChatTools: true        # 默认 true;false 时只注册 one-shot provider
-        toolPrefix: acp_chat_        # 默认 acp_chat_;四个工具名的前缀
+        toolPrefix: acp_chat_        # 默认 acp_chat_;五个工具名的前缀
         idleTimeoutMs: 600000        # 默认 600000;空闲多久释放进程
         disposeEofGraceMs: 6000      # 默认 6000;关 stdin 后等子进程自行收尾的时间
         disposeGraceMs: 3000         # 默认 3000;观察失败/升级信号的宽限,也是 close 等在途轮结算的上限
         registryPath: ''             # 默认空串 = $DSH_HOME/storages/acp-resume/registry.json;自定义时必须是绝对路径
 ```
+
+`agentEngine` 对一次性 provider 与持久会话两条路径都生效,命令须认识 `--agent-engine`(kiro-cli 认识)。已知限制:不认该旗标的 agent 目前没有关闭追加的开关。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
 
 三个时长字段须为正数且不超过 Node 定时器上限,`registryPath` 为相对路径时插件启动即报错。
 
@@ -91,7 +95,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;172 绿 = 官方协议面 67 + connection 24 + pool 32 + tools 12 + jobs 11 + panel 8 + client 18
+pnpm test                      # vitest;188 绿 = 官方协议面 67 + connection 24 + pool 35 + tools 12 + jobs 12 + panel 8 + client 18 + steer 5 + engine 7
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

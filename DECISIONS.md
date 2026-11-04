@@ -26,6 +26,7 @@
 
 依据:D3 之下模型触达会话池的唯一途径;官方姿势 `defineTool`(@deepseek-ai/dsh-tools)+ `ctx.tools.register`,参照 tool-subagent 实现。
 后果:新增 dev/peer 依赖 dsh-tools;工具不走 `ctx.subagents`,不进委派目录 UI(与外部 one-shot 一致,可接受)。
+修订(2026-11-04,D19):工具增至五个,新增 `acp_chat_steer`(给在途轮插话,标并发安全)。
 修订(2026-11-04,D17):宿主装有 jobs 服务(`ctx.jobs`)时,`acp_chat_send` 不再等整轮回答,改为把这一轮注册成后台任务(job),立即返回 jobId;回答流式写进该 job 的输出,完成通知由宿主的 tool-jobs 在会话内送达,模型用 `job_output` 读、`job_kill` 停。无 jobs 服务时 send 保持原同步语义。其余三个工具不变。
 
 ## D6 池语义(2026-11-04;同日按六维评审修订,见 D16)
@@ -150,3 +151,24 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(`~0.2.1-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
 
 后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接。
+
+## D19 默认切 kiro v3 引擎 + 插话工具 `acp_chat_steer`(2026-11-04)
+
+问题:kiro-cli 已升到 2.37.1。v2 默认引擎下,会话进行中再发 prompt 会被拒("Prompt already in progress"),模型没有办法在长任务跑到一半时补一句指示;只能 `job_kill` 重来。同时想用上 v3(KAS 引擎)。
+
+依据(全部真机实测,kiro-cli 2.37.1):
+- `--agent-engine v3` 启用 KAS 引擎,`initialize` 声明 `sessionCapabilities{list,close,delete,fork}`。
+- 私有扩展请求 `_session/steer {sessionId, message}` 在 v2 / v3 都能用:v3 返回 `{queued:true, messageId}`,且回答流里出现 `[STEERING <id>: …]` 归因块。两个引擎的 `initialize` 都**不声明**它,ACP 规范里也没有 steer——所以只能按「方法是否存在」试探,不能按能力声明判断。
+- **v2 创建的会话可被 v3 `session/load`,上下文完好**(实测)。这是引擎默认值可以直接切、不会让旧会话作废的前提。
+
+决策:
+- **`agentEngine` 配置**:`v1 | v2 | v3`,默认 `v3`。启动子进程时在 args 末尾追加 `--agent-engine <值>`;池的 `specBase` 与 one-shot provider 两处都追加。用户的 `args` 里已含 `--agent-engine`(含 `--agent-engine=v2` 写法)时不追加,以用户显式为准。已知限制:不认这个旗标的 agent 没有关闭追加的开关(本包目前只面向 kiro-cli)。
+- **指纹放宽(修订 B12/D16 的重连校验)**:重连时 `command` 仍须严格相等;`args` 比较前**剔除 `--agent-engine` 及其值**(两种写法),其余差异照旧拒绝。理由:会话跨引擎可加载已实证;若某个引擎确实读不了,`session/load` 会被协议级拒绝,自然走 D6 的降级新会话兜底(注记照旧),不需要在指纹层提前拦。注册表记录的 args 含追加后的旗标,旧记录(无旗标)与新配置比较时同样等价。
+- **`acp_chat_steer(chatId, message)`**:
+  - 连接层 `AcpConnection.steer(message)` 对活连接发 `_session/steer {sessionId, message}`;`-32601 Method not found` 抛 `AcpSteerUnsupportedError`(按类识别,不解析文案);其他错误原样上抛。应答里 `queued` 缺省按 true 处理(请求成功即被接受),`messageId` 有则透传。
+  - 池层 `steer(chatId, message)` 要求会话有活连接且有在途轮(`busy`);否则报「没有在途轮,无可插话,改用 send」。未知 chatId 与 send/close 同格式。steer **不占轮、不改 busy**,同一会话可连续多条,先后顺序由 kiro 侧排队,因此不与 D6 的单飞冲突。
+  - 工具层标并发安全。成功返回 `queued`(有 `messageId` 一并给出)。说明文案写明:排队的插话在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。agent 不支持时抛「当前 agent 不支持插话」类工具错误,并提示改为等待或停止后重发。
+  - 与后台 job 并存:steer 不创建 job、不改 job 状态,在途 job 照常结算;插话在输出流里留下的归因块算作 agent 的回答文本,原样进入 job 输出(形态由 kiro 决定,本包不解析)。
+- 不做:不为 steer 增加「自动探测并缓存支持情况」;每次调用直接试,失败即降级文案,避免缓存过期。
+
+后果:`acp_chat_*` 工具从四个变五个;kiro 新建会话默认走 v3 引擎(`--agent-engine v3`),旧会话继续可续;测试 172 → 188(steer 5、engine 7、pool 指纹放宽 3、jobs 并存 1)。未验证:真机 v3 引擎下 `session/prompt` 的流式分块与 v2 的差异(本包的 mock 无法覆盖),留待装机冒烟。

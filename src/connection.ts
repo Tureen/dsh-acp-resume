@@ -64,6 +64,28 @@ export class AcpConnectionError extends Error {
   }
 }
 
+/**
+ * The agent does not implement the private `_session/steer` extension
+ * (JSON-RPC `-32601 Method not found`). Recognizable by class, not by message.
+ */
+export class AcpSteerUnsupportedError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('acp-resume: the agent does not implement _session/steer (method not found)', options)
+    this.name = 'AcpSteerUnsupportedError'
+  }
+}
+
+/** Reply to a queued steering message. */
+export interface AcpSteerResult {
+  /** The agent accepted the message into its queue. */
+  readonly queued: boolean
+  /** The agent's id for the queued message, when it returns one. */
+  readonly messageId?: string
+}
+
+/** JSON-RPC "Method not found". */
+const METHOD_NOT_FOUND = -32601
+
 /** Terminal elements of one settled prompt turn. */
 export interface AcpTurnResult {
   /** Assistant text blocks of this turn only. */
@@ -93,6 +115,13 @@ export interface AcpConnection {
    * @returns this turn's text, stop reason, and optional diagnostic.
    */
   prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult>
+  /**
+   * Queue a steering message into the running turn via the private
+   * `_session/steer` request (neither engine advertises it; ACP has no steer).
+   * Does not start or settle a turn.
+   * @throws {AcpSteerUnsupportedError} the agent answered `-32601 Method not found`.
+   */
+  steer(message: string): Promise<AcpSteerResult>
   /** Observe the process outcome for failure classification (bounded by the spec grace). */
   observeOutcome(signal?: AbortSignal): Promise<SubprocessOutcome | undefined>
   /** Best-effort `session/cancel` notification for the remote session. */
@@ -450,6 +479,24 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
     observeOutcome,
     notifyCancel: requestCancel,
     dispose,
+    async steer(message: string): Promise<AcpSteerResult> {
+      let reply: unknown
+      try {
+        reply = await agent.request('_session/steer', { sessionId, message })
+      } catch (error: unknown) {
+        if (error instanceof RequestError && error.code === METHOD_NOT_FOUND) {
+          throw new AcpSteerUnsupportedError({ cause: error })
+        }
+        throw error
+      }
+      const messageId: unknown = typeof reply === 'object' && reply !== null ? Reflect.get(reply, 'messageId') : undefined
+      const queued: unknown = typeof reply === 'object' && reply !== null ? Reflect.get(reply, 'queued') : undefined
+      return {
+        // A success reply without the field still means the request was accepted.
+        queued: queued !== false,
+        ...(typeof messageId === 'string' ? { messageId } : {}),
+      }
+    },
     async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult> {
       // Per-turn state: a notifyCancel between turns or a previous turn's
       // permission decision must not leak into this turn.

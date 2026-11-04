@@ -36,6 +36,7 @@ interface SpawnLog {
 }
 
 interface PoolSetup {
+  args?: string[]
   env?: Record<string, string>
   idleTimeoutMs?: number
   registryPath?: string
@@ -49,7 +50,7 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
   const options: PoolOptions = {
     specBase: {
       command: process.execPath,
-      args: [mockServer],
+      args: setup.args ?? [mockServer],
       permission: 'reject',
       env: setup.env ?? {},
       // 测试用短宽限:取消后连接作废会同步走一次销毁梯子,默认 6s EOF 窗口会超用例预算
@@ -590,6 +591,43 @@ describe('AcpSessionPool', () => {
     await expect(pool.send('chat-args', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(registryRemote(registryPath, 'chat-args')).toBe('remote-y')
+  })
+
+  it('reconnects across an engine-only args difference (D19): the session loads, context intact, no degrade note', async () => {
+    const { env } = storeEnv('acp-resume-engine-fp-')
+    const first = makePool({ env, args: [mockServer, '--agent-engine', 'v2'] })
+    const chat = await first.pool.start(process.cwd())
+    await first.pool.send(chat.chatId, 'first-secret')
+    await first.pool.disposeAll()
+
+    const second = makePool({ env, registryPath: first.registryPath, args: [mockServer, '--agent-engine', 'v3'] })
+    const turn = await second.pool.send(chat.chatId, 'second')
+    expect(turn.stopReason).toBe('completed')
+    expect(turn.freshSession).toBe(false)
+    expect(turn.output).toBe('remember:first-secret')
+    expect(registryRemote(first.registryPath, chat.chatId)).toBe(chat.remoteSessionId)
+  })
+
+  it('reconnects when the old record has no engine flag at all but the pool now appends one', async () => {
+    const { env } = storeEnv('acp-resume-engine-fp-legacy-')
+    const first = makePool({ env })
+    const chat = await first.pool.start(process.cwd())
+    await first.pool.disposeAll()
+    const second = makePool({ env, registryPath: first.registryPath, args: [mockServer, '--agent-engine=v3'] })
+    expect((await second.pool.send(chat.chatId, 'p')).freshSession).toBe(false)
+  })
+
+  it('still refuses when args differ beyond the engine flag', async () => {
+    const dir = tempDir('acp-resume-engine-fp-other-')
+    const registryPath = join(dir, 'registry.json')
+    writeFileSync(registryPath, JSON.stringify({
+      version: 1,
+      sessions: [{ chatId: 'chat-mix', remoteSessionId: 'remote-z', cwd: process.cwd(), command: process.execPath, args: [mockServer, '--other', '--agent-engine', 'v2'], lastActive: 1 }],
+    }))
+    const { pool, spawns } = makePool({ registryPath, args: [mockServer, '--agent-engine', 'v3'] })
+    await expect(pool.send('chat-mix', 'p')).rejects.toThrow(/belongs to another agent/)
+    expect(spawns.children).toHaveLength(0)
+    expect(registryRemote(registryPath, 'chat-mix')).toBe('remote-z')
   })
 
   it('sets a corrupt registry aside, warns, and starts empty', () => {

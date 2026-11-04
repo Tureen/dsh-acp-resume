@@ -84,7 +84,7 @@ async function jobsHost(options: { controller?: boolean; agents?: boolean } = {}
   return ctx
 }
 
-/** Register the four tools over a real pool with the given job registry. */
+/** Register the five tools over a real pool with the given job registry. */
 function mountTools(env: Record<string, string>, jobs: JobRegistry | undefined) {
   const tools = new Map<string, Definition>()
   const registry: ToolsRegistryFace = {
@@ -190,6 +190,29 @@ describe('job-backed send', () => {
     expect(pool.knows(chatId as string)).toBe(true)
     // The chat is free for the next send (reconnect after cancel: pool.spec).
     expect(() => { pool.assertSendable(chatId as string) }).not.toThrow()
+  })
+
+  it('steers the running job turn without touching job state, then the job still completes', async () => {
+    const ctx = await jobsHost()
+    const dir = tempDir('acp-resume-jobs-steer-')
+    const hold = join(dir, 'hold')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { call } = mountTools({ MOCK_TEXT: 'steered answer', MOCK_PROMPT_HOLD: hold, MOCK_STEER_FILE: steers }, ctx.jobs)
+    const { chatId } = await call('start', { cwd: process.cwd() })
+    const { jobId } = await call('send', { chatId, message: 'long task' }) as { jobId: JobId }
+    await until(() => ctx.jobs.get(jobId).status === 'running', 'the job to run')
+
+    const steered = await call('steer', { chatId, message: 'also check the tests' })
+    expect(steered).toMatchObject({ queued: true, messageId: 'steer-test' })
+    expect(readFileSync(steers, 'utf8')).toContain('also check the tests')
+    // Steering is not a turn: the job is still the same running job, no second one exists.
+    expect(ctx.jobs.get(jobId).status).toBe('running')
+    expect(ctx.jobs.list()).toHaveLength(1)
+
+    rmSync(hold)
+    expect((await ctx.jobs.wait(jobId, 5000)).status).toBe('completed')
+    expect(readAll(ctx.jobs, jobId)).toBe('steered answer')
   })
 
   it('keeps single flight: a second send while the job runs is a tool error and registers no job', async () => {
@@ -349,7 +372,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
     ctx.jobs.attachController('jobs-spec')
     await until(() => /background job id/.test(sendDescription(ctx) ?? ''), 'the job-backed send')
     const tools = (ctx.get('tools') as unknown as StubTools).registered
-    expect([...tools.keys()].sort()).toEqual(['acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start'])
+    expect([...tools.keys()].sort()).toEqual(['acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer'])
     const { chatId } = await tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
     const { jobId } = await tools.get('acp_chat_send')!.execute({ chatId, message: 'hi' }, exec()) as { jobId: JobId }
     expect((await ctx.jobs.wait(jobId, 5000)).status).toBe('completed')

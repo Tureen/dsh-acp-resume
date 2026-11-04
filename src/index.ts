@@ -29,6 +29,7 @@ import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS,
 import { AcpSessionPool } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
+import { type AgentEngine, withAgentEngine } from './engine.js'
 
 // cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
 // cannot read at runtime; `satisfies` pins the literal to the declared member.
@@ -45,6 +46,16 @@ export interface Config {
   command: string
   /** Arguments passed to {@link command}. */
   args: string[]
+  /**
+   * Agent engine the child is started with: `--agent-engine <engine>` is
+   * appended to {@link args} (default `v3`, kiro-cli's KAS engine, which also
+   * supports mid-turn steering). If {@link args} already contains
+   * `--agent-engine`, that explicit choice wins and nothing is appended.
+   * Reconnecting a saved chat ignores the engine (sessions load across
+   * engines); if the new engine cannot load it, the chat degrades to a fresh
+   * session as usual (D19). Applies to both the one-shot provider and the chats.
+   */
+  agentEngine: AgentEngine
   /**
    * How to auto-answer the child's `session/request_permission` prompts:
    * `reject` (default — decline every prompt) or `allow` (approve via the first
@@ -71,7 +82,7 @@ export interface Config {
   idleTimeoutMs?: number
   /** Registry file for durable chats; defaults to $DSH_HOME/storages/acp-resume/registry.json. */
   registryPath?: string
-  /** Name prefix for the four persistent-chat tools (default `acp_chat_`). */
+  /** Name prefix for the five persistent-chat tools (default `acp_chat_`). */
   toolPrefix?: string
   /** Register the persistent-chat tools alongside the one-shot provider (default true). */
   enableChatTools?: boolean
@@ -81,6 +92,7 @@ export const Config: z<Config> = z.object({
   providerName: z.string().default('acp-resume'),
   command: z.string().required(),
   args: z.array(z.string()).default([]),
+  agentEngine: z.union(['v1', 'v2', 'v3'] as const).default('v3'),
   permission: z.union(['allow', 'reject'] as const).default('reject'),
   env: z.dict(z.string()).default({}),
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
@@ -131,7 +143,7 @@ class AcpProvider implements SubagentProvider {
     }
     const spec: AcpRunSpec = {
       command: this.config.command,
-      args: this.config.args,
+      args: withAgentEngine(this.config.args, this.config.agentEngine),
       cwd,
       permission: this.config.permission,
       env: this.config.env,
@@ -174,7 +186,7 @@ export function apply(ctx: Context, config: Config): void {
     pool ??= new AcpSessionPool({
       specBase: {
         command: resolved.command,
-        args: resolved.args,
+        args: withAgentEngine(resolved.args, resolved.agentEngine),
         permission: resolved.permission,
         env: resolved.env,
         disposeEofGraceMs: resolved.disposeEofGraceMs,
@@ -191,8 +203,9 @@ export function apply(ctx: Context, config: Config): void {
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
     const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs)
-    const [start, list, close] = chatStaticTools(chatPool, resolved.toolPrefix)
+    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix)
     scope.effect(() => scope.tools.register(start))
+    scope.effect(() => scope.tools.register(steer))
     // Send follows the job registry, as the official bash tool does: the inline
     // variant registers now unless a registry is already composed, the
     // job-backed variant replaces it while `ctx.jobs` is present, and the inline

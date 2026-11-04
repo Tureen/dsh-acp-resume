@@ -2,7 +2,9 @@
  * Model-facing persistent-chat tools over the {@link AcpSessionPool}: start a
  * durable conversation, send follow-up messages (reconnecting or degrading to
  * a fresh session when the remote one is gone), list durable chats, and
- * release a chat's process while keeping its record. Tool copy speaks to the
+ * release a chat's process while keeping its record, and steer a running
+ * turn with a queued extra instruction (`steer`, over the private
+ * `_session/steer` request; an agent without it yields a clear tool error). Tool copy speaks to the
  * model, not to the UI. The send tool comes in two variants (D17): with a job
  * registry (`ctx.jobs`) it registers the turn as a background job and returns
  * the job id at once, streaming the answer into the job's output and settling
@@ -17,6 +19,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
+import { AcpSteerUnsupportedError } from './connection.js'
 import type { AcpSessionPool, PoolSendResult } from './pool.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
@@ -170,7 +173,7 @@ const SEND_OUTPUT = {
  * `session/cancel`, connection released (D6). Without `jobs` it awaits the
  * answer inline.
  * @param pool - the pool the tool drives.
- * @param toolPrefix - name prefix shared by the four tools.
+ * @param toolPrefix - name prefix shared by the five tools.
  * @param jobs - the job registry, when the host composes one.
  */
 export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace): ToolDefinitionOf {
@@ -241,9 +244,9 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
 }
 
 /**
- * The start, list, and close tools (send is built by {@link chatSendTool}).
+ * The start, list, close, and steer tools (send is built by {@link chatSendTool}).
  * @param pool - the pool the tools drive.
- * @param toolPrefix - name prefix shared by the four tools.
+ * @param toolPrefix - name prefix shared by the five tools.
  */
 export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolDefinitionOf[] {
   const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
@@ -353,21 +356,79 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolD
     },
   })
 
-  return [start, list, close]
+  const steer = defineTool({
+    name: `${toolPrefix}steer`,
+    description: 'Queue an extra instruction into a chat\'s RUNNING turn without waiting for it. '
+      + 'The agent takes the queued message in at its next tool or message boundary; it does not interrupt the current step. '
+      + `To stop the turn immediately use job_kill (when the send ran as a job) or ${toolPrefix}close instead. `
+      + `Only works while a turn is in flight (after ${toolPrefix}send, before it finishes); otherwise use ${toolPrefix}send. `
+      + 'Needs an agent that supports the private _session/steer extension (kiro-cli does on engines v2/v3); '
+      + 'if the agent lacks it, the tool fails and says so.',
+    parameters: {
+      chatId: {
+        type: 'string',
+        required: true,
+        description: `The chatId of a chat with a turn in flight (from ${toolPrefix}start).`,
+      },
+      message: {
+        type: 'string',
+        required: true,
+        description: 'The instruction to add to the running turn.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          text: { type: 'string', required: true },
+          queued: { type: 'boolean', required: true },
+          messageId: { type: 'string' },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    // Steering claims no turn and only appends to the agent's queue, so it may run beside other calls.
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      exec.signal.throwIfAborted()
+      if (!pool.knows(args.chatId)) throw unknownChat(args.chatId)
+      let result
+      try {
+        result = await pool.steer(args.chatId, args.message)
+      } catch (error: unknown) {
+        if (error instanceof AcpSteerUnsupportedError) {
+          throw new Error(
+            'the current agent does not support steering (it rejected _session/steer as an unknown method); '
+            + `wait for the turn to finish, or stop it with job_kill / ${toolPrefix}close and send again`,
+            { cause: error },
+          )
+        }
+        throw error
+      }
+      const id = result.messageId === undefined ? '' : ` (messageId ${result.messageId})`
+      const text = result.queued
+        ? `steering message queued for chat ${args.chatId}${id}; it takes effect at the next tool or message boundary of the running turn`
+        : `the agent did not queue the steering message for chat ${args.chatId}${id}`
+      return { text, queued: result.queued, ...(result.messageId === undefined ? {} : { messageId: result.messageId }) }
+    },
+  })
+
+  return [start, list, close, steer]
 }
 
 /**
- * Register the four chat tools under `toolPrefix` (`acp_chat_` by default:
- * acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close).
+ * Register the five chat tools under `toolPrefix` (`acp_chat_` by default:
+ * acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer).
  * @param ctx - host context; owns the registrations' lifetime via `ctx.effect`.
- * @param tools - the tools registry the four definitions are registered into.
+ * @param tools - the tools registry the five definitions are registered into.
  * @param pool - the pool the tools drive.
- * @param toolPrefix - name prefix for all four tools.
+ * @param toolPrefix - name prefix for all five tools.
  * @param jobs - the job registry; when given, send is the job-backed variant.
  */
 export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace): void {
-  const [start, list, close] = chatStaticTools(pool, toolPrefix)
-  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs), list, close]) {
+  const [start, list, close, steer] = chatStaticTools(pool, toolPrefix)
+  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs), list, close, steer]) {
     ctx.effect(() => tools.register(definition))
   }
 }

@@ -59,6 +59,13 @@
  *                        for permission (as MOCK_PERMISSION, only on those turns).
  * - `MOCK_CANCEL_FILE` — if set, every received `session/cancel` appends one
  *                        line (`cancel <sessionId>`) to this file.
+ * - `MOCK_STEER_FILE` — every received `_session/steer` appends one line
+ *                        (`steer <sessionId> <message>`) to this file and replies
+ *                        `{queued:true, messageId:'steer-test'}`.
+ * - `MOCK_NO_STEER`    — if `1`, `_session/steer` is not registered (the SDK
+ *                        answers -32601 Method not found), for the degrade path.
+ * - `MOCK_ECHO_ARGV`   — if `1`, the answer is the JSON of `process.argv.slice(2)`
+ *                        (the args the agent process was spawned with).
  * - `MOCK_LOAD_READY` / `MOCK_LOAD_GO` — `session/load` touches READY, then
  *                        blocks until GO exists (a deterministic reconnect window).
  * - `MOCK_LOAD_REPLAY` — if `1`, `session/load` first streams the session's
@@ -123,6 +130,9 @@ const TEXT = echoEnvName !== undefined
   ? process.env[echoEnvName] ?? `<${echoEnvName} unset>`
   : process.env.MOCK_TEXT ?? 'mock child answer'
 const ECHO_CWD = process.env.MOCK_ECHO_CWD === '1'
+const ECHO_ARGV = process.env.MOCK_ECHO_ARGV === '1'
+const STEER_FILE = process.env.MOCK_STEER_FILE
+const NO_STEER = process.env.MOCK_NO_STEER === '1'
 const STOP = (process.env.MOCK_STOP ?? 'end_turn') as StopReason
 const HANG = process.env.MOCK_HANG === '1'
 const WANT_PERMISSION = process.env.MOCK_PERMISSION === '1'
@@ -299,7 +309,7 @@ function makeAgent() {
       if (entry === undefined) throw new Error(`mock: prompt for unknown session: ${params.sessionId}`)
       entry.prompts.push(params.prompt.map(b => (b as { text?: string }).text ?? '').join(''))
       saveTable(sessions)
-      const answer = REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
+      const answer = ECHO_ARGV ? JSON.stringify(process.argv.slice(2)) : REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
       // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
       // the observable process cwd + announced session cwd).
       await conn.notify(methods.client.session.update, {
@@ -349,7 +359,19 @@ function makeAgent() {
 }
 
 const implementation = makeAgent()
-createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
+const agentApp = createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
+if (!NO_STEER) {
+  // Private extension, as kiro-cli's `_session/steer`: not advertised, only recorded and acknowledged.
+  agentApp.onRequest(
+    '_session/steer',
+    (params: unknown) => params as { sessionId: string; message: string },
+    ({ params }) => {
+      if (STEER_FILE !== undefined) appendFileSync(STEER_FILE, `steer ${params.sessionId} ${params.message}\n`)
+      return Promise.resolve({ queued: true, messageId: 'steer-test' })
+    },
+  )
+}
+agentApp
   .onRequest(methods.agent.initialize, ({ params }) => implementation.initialize(params))
   .onRequest(methods.agent.authenticate, async ({ params }) => {
     await implementation.authenticate(params)

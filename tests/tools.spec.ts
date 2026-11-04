@@ -1,5 +1,5 @@
 /**
- * Model-tool and plugin-wiring tests. The tool cases drive the four chat
+ * Model-tool and plugin-wiring tests. The tool cases drive the five chat
  * tools' `execute` bodies over a REAL pool and mock-server subprocesses
  * (error mapping, fresh-session note, unknown-chat wording, concurrency
  * flags). The `apply` cases mount the plugin under cordis with a stub
@@ -62,7 +62,7 @@ function exec(signal: AbortSignal = new AbortController().signal): ToolRunContex
   return { signal } as unknown as ToolRunContext
 }
 
-/** Register the four tools over a real pool with a fake host context. */
+/** Register the five tools over a real pool with a fake host context. */
 function mountTools(env: Record<string, string>, toolPrefix = 'acp_chat_') {
   const registry = collectingRegistry()
   const pool = new AcpSessionPool({
@@ -91,11 +91,12 @@ function mountTools(env: Record<string, string>, toolPrefix = 'acp_chat_') {
 }
 
 describe('chat tools', () => {
-  it('registers the four tools under the prefix with the documented concurrency flags', () => {
+  it('registers the five tools under the prefix with the documented concurrency flags', () => {
     const { registry, disposers } = mountTools({}, 'kc_')
-    expect([...registry.tools.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start'])
+    expect([...registry.tools.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
     expect(registry.tools.get('kc_send')?.isConcurrencySafe?.({ chatId: 'c', message: 'm' })).toBe(true)
     expect(registry.tools.get('kc_close')?.isConcurrencySafe?.({ chatId: 'c' })).toBe(false)
+    expect(registry.tools.get('kc_steer')?.isConcurrencySafe?.({ chatId: 'c', message: 'm' })).toBe(true)
     expect(registry.tools.get('kc_start')?.description).not.toMatch(/always/i)
     for (const dispose of disposers) dispose()
     expect(registry.tools.size).toBe(0)
@@ -204,14 +205,14 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
 }
 
 describe('apply (plugin wiring)', () => {
-  it('registers the provider under the default name and the four prefixed tools', async () => {
+  it('registers the provider under the default name and the five prefixed tools', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_' })
     cleanups.push(() => fiber.dispose())
     expect(ctx.subagents.list()).toEqual(['acp-resume'])
-    await until(() => stubTools(ctx).registered.size === 4, 'tool registration')
-    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start'])
+    await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
+    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
   })
 
   it('registers no tools when enableChatTools is false', async () => {
@@ -241,7 +242,7 @@ describe('apply (plugin wiring)', () => {
       registryPath: join(dir, 'registry.json'),
       env: { MOCK_FLUSH_ON_EOF: flushed },
     })
-    await until(() => stubTools(ctx).registered.size === 4, 'tool registration')
+    await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
     const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
     const { chatId } = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
