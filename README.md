@@ -50,11 +50,12 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;42 个协议面用例为回归门
+pnpm test                      # vitest;48 例回归面(官方协议面 42 + 连接原语 6)
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;
 - 测试豁免:真实子进程类 25 例依赖 npm 分发包不包含的内部模块,由官方仓库覆盖(见 DECISIONS D8);
+- 双实现并存:run.ts 保持官方原版不重构(D11);connection.ts 是池专用姊妹实现;
 - 参考用官方源码 checkout:分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`(只读对照)。
 
 ## License

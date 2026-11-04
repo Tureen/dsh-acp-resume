@@ -13,9 +13,9 @@
 
 | # | 步骤 | 产出 | 验收 | 状态 |
 |---|---|---|---|---|
-| 1 | 连接原语抽取 | `src/connection.ts`:`AcpConnection.openNew / openLoad / prompt / close`,素材自 run.ts | tsc 干净;新原语单测(spawn/握手/单轮/销毁,mock)绿 | ☐ |
-| 2 | run.ts 重构为薄包装 | `startAcpRun` = openNew + 一轮 + 结算 | **现有 42 例原样绿**(不回归门) | ☐ |
-| 3 | mock 扩展 load | mock-acp-server 内存会话表 + load 分支 | load 命中/未命中两用例绿 | ☐ |
+| 1 | 连接原语抽取 | `src/connection.ts`:`openAcpConnection(openNew/openLoad)` + `prompt`(轮粒度输出/取消/安全诊断)+ `dispose` | connection.spec 六用例绿(含跨进程 load 重连记忆) | ☑ 7b61bf9 |
+| 2 | ~~run.ts 重构为薄包装~~ **已评估并撤销(D11)** | run.ts 保持官方原版;connection.ts 为池专用姊妹实现 | 撤销后回归面 48 绿恢复(重构曾致 5 例退化) | ☑ 评估闭环 |
+| 3 | mock 扩展 load | 会话表(内存+文件持久)、load 分支、MOCK_REMEMBER / MOCK_SESSION_STORE / MOCK_LOAD_MISSING | 跨进程重连用例绿(随第 1 步交付) | ☑ 7b61bf9 |
 | 4 | 会话池 | `src/pool.ts`:acquire/send/close、空闲计时、注册表原子落盘、重连与降级 | `tests/pool.spec.ts` 全绿(同进程两轮/杀进程重连/降级/空闲释放/busy 拒绝/重启恢复) | ☐ |
 | 5 | 工具与接线 | `src/tools.ts` 四工具 + `index.ts` Config(idleTimeoutMs/registryPath/toolPrefix)与注册 | 工具 schema/行为测试绿;`--dump-config` 可见 | ☐ |
 | 6 | 真机与装机验收 | 真 kiro-cli 冒烟剧本 + pack 安装 desktop profile | GUI 中模型经四工具完成:建会话→两轮→杀进程→重连记得上文→空闲释放→再连 | ☐ |
