@@ -10,9 +10,12 @@
  * A reconnect whose registry entry was recorded under a different
  * command/args fails without loading: the saved session belongs to another
  * agent. A turn that settles `aborted` or `error` releases its process.
- * Teardown (`close`, `disposeAll`) aborts open windows and cancels in-flight
- * turns, each wait bounded by `disposeGraceMs`, so a hung `session/load`
- * cannot stall it and no process outlives the pool.
+ * Teardown (`close`, `disposeAll`) aborts open windows, each wait bounded by
+ * one full dispose ladder (`disposeEofGraceMs + 2 × disposeGraceMs`), and
+ * cancels in-flight turns (bounded by `disposeGraceMs`), so a hung
+ * `session/load` cannot stall it and no process outlives the pool. A chat
+ * stays live until its released process has exited: a send arriving while a
+ * release is underway waits for it, so two processes never serve one chat.
  * Each `completed` turn bumps the entry's `turnCount` and, while the entry
  * has no title yet, records the turn's message (trimmed, first 40
  * characters) as its `title`; `aborted` and `error` turns record neither.
@@ -272,8 +275,9 @@ export class AcpSessionPool {
    * Open windows in progress (`start` and reconnects), keyed by chatId. Each
    * promise settles only after its connection is tracked or disposed. Teardown
    * aborts the window's controller (the startup race then disposes the child)
-   * and waits at most `disposeGraceMs`; a window that settles later with a
-   * connection sees its aborted controller and discards it.
+   * and waits at most one dispose ladder (see {@link windowGraceMs}); a window
+   * that settles later with a connection sees its aborted controller and
+   * discards it.
    */
   private readonly starting = new Map<string, OpenWindow>()
   private readonly registry: ChatRegistry
@@ -500,10 +504,12 @@ export class AcpSessionPool {
 
   /**
    * Release the chat's process; the registry entry survives for reconnect.
-   * An open window in progress is aborted and awaited for up to
-   * `disposeGraceMs` (the aborted startup disposes its own child). An
-   * in-flight turn is cancelled (`session/cancel`) and given up to
-   * `disposeGraceMs` to settle before the process is torn down.
+   * An open window in progress is aborted and awaited for up to one dispose
+   * ladder, `disposeEofGraceMs + 2 × disposeGraceMs` (the aborted startup
+   * disposes its own child). An in-flight turn is cancelled
+   * (`session/cancel`) and given up to `disposeGraceMs` to settle before the
+   * process is torn down. The chat leaves the live table only once its
+   * process has exited; concurrent closes share one release.
    */
   async close(chatId: string): Promise<void> {
     const pending = this.starting.get(chatId)
@@ -515,8 +521,8 @@ export class AcpSessionPool {
   }
 
   /**
-   * Stop admission, abort open windows (each wait bounded by
-   * `disposeGraceMs`), cancel in-flight turns (bounded the same way), then
+   * Stop admission, abort open windows (each wait bounded by one dispose
+   * ladder), cancel in-flight turns (each bounded by `disposeGraceMs`), then
    * release every live process. Registry survives.
    */
   async disposeAll(): Promise<void> {
@@ -525,10 +531,21 @@ export class AcpSessionPool {
     await Promise.allSettled([...this.live.keys()].map(id => this.close(id)))
   }
 
-  /** Abort an open window and wait for it to settle, at most `disposeGraceMs`. */
+  /** Abort an open window and wait for it to settle, at most {@link windowGraceMs}. */
   private async abortWindow(window: OpenWindow): Promise<void> {
     window.controller.abort(new Error('acp-resume: open window aborted by pool teardown'))
-    await settleWithin(window.promise, this.opts.specBase.disposeGraceMs)
+    await settleWithin(window.promise, this.windowGraceMs())
+  }
+
+  /**
+   * Upper bound for an aborted window to settle: the window disposes its child
+   * through the full ladder (stdin-EOF grace, then SIGTERM and the grace
+   * before SIGKILL) before it settles, plus one more grace for the exit proof.
+   */
+  private windowGraceMs(): number {
+    const { disposeEofGraceMs, disposeGraceMs } = this.opts.specBase
+    // Each grace fits a Node timer on its own; their sum may not.
+    return Math.min(disposeEofGraceMs + 2 * disposeGraceMs, MAX_TIMER_DELAY_MS)
   }
 
   /** A saved session is only reloaded by the agent that created it. */
@@ -549,8 +566,14 @@ export class AcpSessionPool {
       chat.conn.notifyCancel()
       await settleWithin(chat.busyPromise, this.opts.specBase.disposeGraceMs)
     }
-    if (this.live.get(chatId) === chat) this.live.delete(chatId)
-    await chat.conn.dispose()
+    try {
+      await chat.conn.dispose()
+    } finally {
+      // Leave the live table only after the process is gone (or its teardown
+      // failed): until then a send sees `closing` and waits instead of opening
+      // a second process on the same remote session.
+      if (this.live.get(chatId) === chat) this.live.delete(chatId)
+    }
   }
 
   /** Reconnect a saved remote session; only a protocol-level load rejection degrades to a fresh one. */

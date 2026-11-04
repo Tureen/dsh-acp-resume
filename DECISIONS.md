@@ -38,7 +38,8 @@
 - 注册表:进程内串行写,临时文件+原子改名;记录 chatId/remoteSessionId/cwd/命令指纹;文件损坏(读不了、非 JSON、结构不符)时改名为 `<路径>.corrupt-<时间戳>` 留证,经 `onWarn` 告警后以空表继续;`registryPath` 须为绝对路径(空串取默认路径);
 - 取消:send 的工具取消信号让本轮在本地立即结算为 `aborted`,同时尽力发送 `session/cancel`(不等远端回应);随后作废该连接(关进程,注册表保留),下次 send 经 `session/load` 重建;
 - 失败轮:结算为 `error` 的轮同样作废连接,理由同取消(子进程多半已死或状态不明);
-- close:在途轮先协作取消(`session/cancel`),最多等 `disposeGraceMs` 让它结算,再释放进程;`purge` 额外删注册表条目,释放失败时保留条目并报错;拆卸/关闭对重连窗口有界:close 与 `disposeAll` 中止进行中的启动/重连窗口(池持有的 AbortController,启动竞速据此自行释放子进程),最多等 `disposeGraceMs`,超时即按已释放处理,窗口晚到的连接一律丢弃并关进程(2026-11-04 补);
+- close:在途轮先协作取消(`session/cancel`),最多等 `disposeGraceMs` 让它结算,再释放进程;`purge` 额外删注册表条目,释放失败时保留条目并报错;拆卸/关闭对重连窗口有界:close 与 `disposeAll` 中止进行中的启动/重连窗口(池持有的 AbortController,启动竞速据此自行释放子进程),最多等一整轮销毁梯子,即 `disposeEofGraceMs + 2 × disposeGraceMs`(EOF 宽限 + 2 × SIGTERM 宽限,超过 Node 定时器上限时取上限),超时即按已释放处理,窗口晚到的连接一律丢弃并关进程(2026-11-04 补;同日资源审计 P2-2 修订:原上限只有 `disposeGraceMs`,而被中止的窗口要先走完自己的销毁梯子才结算,默认配置下 close/dispose 会比窗口子进程退出早约 3 s 返回);
+- 释放:会话在旧进程真正退出(或其销毁报错)之后才离开活跃表,释放期间 `listChats`/面板仍显示 active;释放进行中到达的 send 先等释放完成,再走重连,同一会话不会有新旧两个进程同时挂在同一远端会话上。并发 close 共用同一次释放(2026-11-04 资源审计 P2-1 修订:原先释放一开始就移出活跃表,EOF 收尾窗口内的 send 会立即 spawn 新进程去 load 同一会话);
 - 环境:沿用官方凭据清洗 + 显式 env 叠加。
 
 修订(2026-11-04,D17,后台任务模式):
@@ -150,7 +151,9 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **降级**:无 jobs 服务的上下文(官方 spec 的 setup、未装 jobs-local 的宿主)保持原同步语义与原工具说明,既有用例不变。
 - **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(`~0.2.1-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
 
-后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接。
+后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接(2026-11-04:此描述自 D6 释放条 P2-1 修订起成立;此前释放一开始就移出活跃表,第一个 send 不等待直接重连)。
+
+已知差异(2026-11-04 资源审计 P3-1,不修行为,只记录):拆卸引起的 job 结局文案不统一。插件卸载、jobs 服务卸载或属主销毁时轮在途,job 为 `killed`,detail 是 `the agent stopped before finishing…`,读起来像 agent 自己停下;卡在重连窗口时被插件卸载,job 为 `failed: acp-resume: pool already disposed`;被面板/工具 close 或 purge 打断重连窗口,job 为 `failed: …was released before the prompt started`。三者都是安全失败(进程已释放、`done` 已结算),区别只在给模型的说法。
 
 ## D19 默认切 kiro v3 引擎 + 插话工具 `acp_chat_steer`(2026-11-04)
 

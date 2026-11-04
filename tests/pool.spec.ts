@@ -12,6 +12,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
@@ -37,6 +38,11 @@ interface SpawnLog {
 
 interface PoolSetup {
   args?: string[]
+  /** Override the suite's 500/500 dispose graces. */
+  disposeEofGraceMs?: number
+  disposeGraceMs?: number
+  /** Replace the node spawn (e.g. a handle that never exits). */
+  spawn?: (spec: SubprocessSpawnSpec) => SubprocessHandle
   env?: Record<string, string>
   idleTimeoutMs?: number
   registryPath?: string
@@ -54,10 +60,11 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
       permission: 'reject',
       env: setup.env ?? {},
       // 测试用短宽限:取消后连接作废会同步走一次销毁梯子,默认 6s EOF 窗口会超用例预算
-      disposeEofGraceMs: 500,
-      disposeGraceMs: 500,
+      disposeEofGraceMs: setup.disposeEofGraceMs ?? 500,
+      disposeGraceMs: setup.disposeGraceMs ?? 500,
       spawn: (spec: SubprocessSpawnSpec) => {
-        const child = nodeSpawn(spec)
+        const child = (setup.spawn ?? nodeSpawn)(spec)
+        void child.done.then(() => { exitedHandles.add(child) }, () => { exitedHandles.add(child) })
         spawns.children.push(child)
         return child
       },
@@ -96,6 +103,13 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
     await new Promise(r => setTimeout(r, 10))
   }
+}
+
+const exitedHandles = new WeakSet<SubprocessHandle>()
+
+/** Has this child's `done` already settled (as observed by the pool's spawn wrapper)? */
+function exitedNow(child: SubprocessHandle): boolean {
+  return exitedHandles.has(child)
 }
 
 /** Resolve true once every spawned child has exited, false after `timeoutMs`. */
@@ -428,8 +442,12 @@ describe('AcpSessionPool', () => {
     await until(() => existsSync(ready), 'reconnect inside session/load')
     const began = Date.now()
     await pool.disposeAll()
-    // disposeGraceMs is 500 in this suite; the window wait is capped by it.
-    expect(Date.now() - began).toBeLessThan(1500)
+    // The window wait is capped by one dispose ladder: 500 + 2 × 500 = 1500 ms
+    // in this suite (the mock dies on SIGTERM, so it actually takes ~500 ms);
+    // the extra second is CI slack.
+    expect(Date.now() - began).toBeLessThan(2500)
+    // The wait covers the window's own teardown: its child is gone on return.
+    expect(spawns.children.map(c => exitedNow(c))).toEqual([true, true])
     expect(await send).toMatch(/disposed/)
     expect(pool.listChats().every(c => !c.active)).toBe(true)
     expect(spawns.children).toHaveLength(2)
@@ -448,7 +466,9 @@ describe('AcpSessionPool', () => {
     await until(() => existsSync(ready), 'reconnect inside session/load')
     const began = Date.now()
     await pool.close(chat.chatId)
-    expect(Date.now() - began).toBeLessThan(1500)
+    // Ladder bound 1500 ms in this suite, plus CI slack (see the disposeAll case).
+    expect(Date.now() - began).toBeLessThan(2500)
+    expect(spawns.children.map(c => exitedNow(c))).toEqual([true, true])
     expect(await send).toMatch(/released before the prompt started/)
     expect(await allExited(spawns)).toBe(true)
     expect(pool.listChats()[0]?.active).toBe(false)
@@ -457,6 +477,104 @@ describe('AcpSessionPool', () => {
     const after = await pool.send(chat.chatId, '暗号是什么')
     expect(after.freshSession).toBe(false)
     expect(after.output).toBe('remember:记住暗号M')
+  })
+
+  it('a send during a release waits for the old process to exit before spawning, then reconnects (P2-1)', async () => {
+    const { env, dir } = storeEnv('acp-resume-release-wait-')
+    const flushed = join(dir, 'flushed')
+    const loadReady = join(dir, 'load-ready')
+    const go = join(dir, 'load-go')
+    writeFileSync(go, 'go')
+    // The old process takes 400 ms after stdin EOF to flush and exit on its own.
+    const { pool, spawns } = makePool({
+      env: { ...env, MOCK_FLUSH_ON_EOF: flushed, MOCK_FLUSH_DELAY_MS: '400', MOCK_LOAD_READY: loadReady, MOCK_LOAD_GO: go },
+    })
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '记住暗号R')
+    const closing = pool.close(chat.chatId)
+    // Releasing but not yet exited: still reported live.
+    expect(pool.listChats()[0]?.active).toBe(true)
+    const send = pool.send(chat.chatId, '暗号是什么')
+    // The send waits on the release instead of spawning beside the old process.
+    expect(spawns.children).toHaveLength(1)
+    await until(() => existsSync(loadReady), 'reconnect inside session/load')
+    // By the time the new process loads the session, the old one flushed and exited.
+    expect(existsSync(flushed)).toBe(true)
+    expect(exitedNow(spawns.children[0] as SubprocessHandle)).toBe(true)
+    expect(spawns.children).toHaveLength(2)
+    await closing
+    const after = await send
+    expect(after.freshSession).toBe(false)
+    expect(after.output).toBe('remember:记住暗号R')
+  })
+
+  it('two sends during a release: one reconnects, the other is refused as in flight, one new process (P2-1)', async () => {
+    const { env, dir } = storeEnv('acp-resume-release-race-')
+    const { pool, spawns } = makePool({ env: { ...env, MOCK_FLUSH_ON_EOF: join(dir, 'flushed'), MOCK_FLUSH_DELAY_MS: '300' } })
+    const chat = await pool.start(process.cwd())
+    const closing = pool.close(chat.chatId)
+    const outcomes = await Promise.allSettled([pool.send(chat.chatId, 'a'), pool.send(chat.chatId, 'b')])
+    await closing
+    expect(outcomes.map(o => o.status).sort()).toEqual(['fulfilled', 'rejected'])
+    const refused = outcomes.find(o => o.status === 'rejected') as PromiseRejectedResult
+    expect((refused.reason as Error).message).toContain('already has a prompt in flight')
+    expect(spawns.children).toHaveLength(2)
+  })
+
+  it('a failed teardown still leaves the live table: close reports it and the next send reconnects (P2-1)', async () => {
+    const { env } = storeEnv('acp-resume-release-fail-')
+    let first = true
+    // The first child's exit proof rejects after the process really exits, so its dispose throws.
+    const failingFirst = (spec: SubprocessSpawnSpec): SubprocessHandle => {
+      const child = nodeSpawn(spec)
+      if (!first) return child
+      first = false
+      return {
+        get stdin() { return child.stdin },
+        get stdout() { return child.stdout },
+        get stderr() { return child.stderr },
+        done: child.done,
+        terminate: () => { child.terminate() },
+        waitForExit: async (signal?: AbortSignal) => {
+          await child.waitForExit(signal)
+          throw new Error('probe: teardown proof failed')
+        },
+      } as unknown as SubprocessHandle
+    }
+    const { pool, spawns } = makePool({ env, spawn: failingFirst })
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '记住暗号F')
+    await expect(pool.close(chat.chatId)).rejects.toThrow(/teardown/)
+    expect(pool.listChats()[0]?.active).toBe(false)
+    const after = await pool.send(chat.chatId, '暗号是什么')
+    expect(after.output).toBe('remember:记住暗号F')
+    expect(spawns.children).toHaveLength(2)
+  })
+
+  it('bounds the wait on an aborted window by one dispose ladder: EOF grace + 2 × grace (P2-2)', async () => {
+    // A child whose teardown never finishes: initialize is never answered, the
+    // range never exits, terminate does nothing. Only the pool's bound ends the wait.
+    const hung = (): SubprocessHandle => ({
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: undefined,
+      done: new Promise<never>(() => {}),
+      waitForExit: (signal?: AbortSignal) => new Promise<boolean>((resolve) => {
+        if (signal === undefined) return
+        if (signal.aborted) resolve(false)
+        signal.addEventListener('abort', () => { resolve(false) }, { once: true })
+      }),
+      terminate: () => {},
+    }) as unknown as SubprocessHandle
+    const { pool, spawns } = makePool({ disposeEofGraceMs: 200, disposeGraceMs: 100, spawn: hung })
+    void pool.start(process.cwd()).catch(() => undefined)
+    await until(() => spawns.children.length === 1, 'the start window to spawn')
+    const began = Date.now()
+    await pool.disposeAll()
+    const elapsed = Date.now() - began
+    // 200 + 2 × 100 = 400 ms; the old bound (disposeGraceMs alone) returned at 100.
+    expect(elapsed).toBeGreaterThanOrEqual(390)
+    expect(elapsed).toBeLessThan(1400)
   })
 
   it('disposeAll cancels an in-flight turn and releases its process', async () => {

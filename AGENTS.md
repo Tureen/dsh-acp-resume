@@ -44,7 +44,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 188 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 35 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 8 + `client.spec.tsx` 18 + `steer.spec.ts` 5 + `engine.spec.ts` 7;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 192 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 39 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 8 + `client.spec.tsx` 18 + `steer.spec.ts` 5 + `engine.spec.ts` 7;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(`/Users/Tulane/Developer/open-source-projects/deepseek-harness`,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

@@ -28,7 +28,7 @@
 
 审计设计的每条交错都证实子进程最终恰好释放一次(见「已实证无泄漏」)。下面 P2 两条属于"释放偏晚或与新进程重叠",资源最终都回收了,不算泄漏。
 
-### P2-1 空闲/显式释放挡不住紧随其后的 send:新旧两个进程同时挂在同一远端会话上
+### P2-1(已修:2026-11-04,释放时序重排,见 pool.ts release) 空闲/显式释放挡不住紧随其后的 send:新旧两个进程同时挂在同一远端会话上
 
 - **位置**:`src/pool.ts:530`(`release` 在 `await chat.conn.dispose()` 之前就同步执行 `this.live.delete(chatId)`);`src/pool.ts:363`(send 里"等释放完成"的分支)。
 - **触发路径**:会话空闲、没有在途轮。这时发生 close,来源可以是空闲计时器到期、`acp_chat_close` 或面板的"释放"按钮。`release` 同步把会话移出 `live`,随后旧进程进入 EOF 收尾窗口:kiro 实测约 2 s,上限 `disposeEofGraceMs + disposeGraceMs`(默认 9 s)。窗口内到达的 send 看到的 `existing` 已经是 `undefined`,会直接走重连:spawn 新进程,对同一个 remoteSessionId 发 `session/load`。`:363` 的等待分支只有在 release 还在 `settleWithin` 等在途轮时才走得到;到那时 `busy` 仍为 true,send 在更前面的单飞检查就被拒了。所以这个分支实际上几乎不可达。
@@ -44,7 +44,7 @@
   - D17 的已知边界描述随之变得准确。
   改动需先按 AGENTS.md 修订 D6 的 close 条。
 
-### P2-2 `disposeAll` / `close` 对重连窗口的等待上限短于窗口自身的销毁梯子:先返回,子进程后退出
+### P2-2(已修:2026-11-04,等待上限=EOF+2×SIGTERM 宽限并封顶,见 windowGraceMs) `disposeAll` / `close` 对重连窗口的等待上限短于窗口自身的销毁梯子:先返回,子进程后退出
 
 - **位置**:`src/pool.ts:510`(`abortWindow` 用 `settleWithin(window.promise, disposeGraceMs)`);`src/index.ts:172`(插件 fiber 拆卸 await 的就是这个 promise)。
 - **触发路径**:send 或 start 正在重连/启动窗口里,例如 `session/load` 迟迟不答。这时插件卸载,或者对该会话调 close。窗口被中止后,`openAcpConnection` 会先跑完整销毁梯子再 reject:EOF 窗口 `disposeEofGraceMs`,然后 SIGTERM,再等 `disposeGraceMs`,再 SIGKILL。池却只等 `disposeGraceMs` 就返回。
