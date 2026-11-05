@@ -212,6 +212,8 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 D15 追注(2026-11-04):v2 增加会话详情页签,见 D18;D15 "只读视图 + 资源操作、不含输入框"的边界不变。
 
+D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 静默退 30 秒),并要求数据源快照引用稳定;详见 D21。数据/工具语义不变。
+
 ## D20 会话归属:元数据 + 视图过滤,不是访问控制(2026-11-05)
 
 问题:面板 / `acp_chat_list` 展示的是 profile 级全局注册表,同一台机器上所有 DSH 会话看到同一份持久会话。用户想知道"哪条是我这个会话开的",但不希望动跨会话续聊的能力(任何会话都能对任何 chat 续聊,是本包的立身特性,D3/D5)。
@@ -229,3 +231,23 @@ D15 追注(2026-11-04):v2 增加会话详情页签,见 D18;D15 "只读视图 + �
 旧记录语义:`ownerSessionId` 缺失恒为「来源未知」,永不猜测、永不回填。无会话在屏(`currentSessionId` 为 undefined)时,有主的 chat 也无从比对,一律显示为「其他会话」(没有"我"可对照),这是刻意的——避免把别的会话开的 chat 误标成本会话。
 
 后果:注册表多一个可选字段;`PooledChatInfo`/`PanelChat` 各加一字段;ChatsPanel 加过滤态与来源标注;测试 271 → 280(pool +5、client +5)。host 半与注册表 version 不变。已知局限:`ownerSessionId` 只在 `start` 落一次,事后无法为旧 chat 补齐;真机 GUI 中 `inject(sessionId)` 是否在无会话时确为 undefined [未验证],以 jsdom 测试与官方 seat 契约为据,装机冒烟确认。
+
+## D21 面板轮询降本:快照引用稳定 + 自适应节奏 + host 读缓存(2026-11-05)
+
+问题:用户反馈"跑起来 CPU 需求挺高"。现场测量(用户提供,不复测):kiro/KAS 引擎空闲 CPU 可忽略——排除;插件 node 半不在 top 榜——排除;嫌疑集中在 DSH 渲染管线(Renderer + GPU helper + WindowServer)周期性重绘。
+
+坐实的本插件可控病根:`chats-source` / `detail-source` 每 5 秒轮询后**无条件 `publish` 新对象**——`{status, chats, fetchedAt}` 每次新建,`chats` 每次 `[...].sort()` 新数组,且 `fetchedAt = now()` 必变。违反官方 client 反应式纪律(`packages/client/AGENTS.md`:observable 的 `getSnapshot` 在事实未变时须返回同一引用)。后果:`useSyncExternalStore` 每 5 秒判定"变了" → 面板整树重绘 → WindowServer 跟着重绘,形成每 5 秒一次的重绘脉冲,叠加动画即持续 CPU 占用。
+
+修复(三层,全在本插件可控面):
+1. **快照引用稳定**(`snapshot-equal.ts` + 两个源的 publish 守卫):响应到来后按字段逐 chat / 逐 entry 浅比较(小而扁平的 DTO,不是通用深比较)。内容等价则**保留上一次的快照对象**(连 `fetchedAt` 也不动——它只是相对时间基准,不该独自触发重绘),`publish` 不通知、引用不变;仅真实变化或 status 翻转才发布新引用。`fetchedAt` 从此标记"上次变化时刻"而非"上次拉取时刻",相对时间在静默期冻结,语义更准(数据确实没动)。
+2. **自适应节奏**:默认 5 秒(`POLL_INTERVAL_MS`);连续 3 次(`QUIET_POLLS_BEFORE_BACKOFF`)无变化退到 30 秒(`IDLE_POLL_INTERVAL_MS`);任何内容变化、面板 close/purge 操作、detail 的 loadMore 都重置回 5 秒。与「刷新」按钮不冲突——刷新是一次即时 `refresh()`,不改节奏状态。轮询仍只在有订阅者(页签挂载)时运行,无订阅即停(沿用既有订阅门)。
+3. **host 读缓存**(`turn-log.ts`):`read` 按文件 `mtimeMs:size` 缓存已解析 entries,文件未变返回**同一数组引用**(既省一次整文件 read+parse,又让 host `turns` 对未变日志回同构结果,配合第 1 层让 client 侧也不换引用)。`append`/`remove` 显式清缓存;外部改动经 stamp 不符自然失效。`list()` 是内存投影、无 IO,确认无需改。
+
+收益依据(改前 → 改后,单会话单面板打开、池静默):
+- 列表面板重绘:每 5 秒 1 次 → 内容不变时 **0 次**(仅首帧与真实变化时各 1 次)。
+- 详情页签重绘:同上,每 5 秒 1 次 → 0 次。
+- 轮询往返:5 秒一次恒定 → 静默期 30 秒一次(RPC 频次降至 1/6)。
+- host 文件 IO:`turns` 每次整读 jsonl → 文件未变时 **0 次 read/parse**(命中缓存)。
+- 不臆测 KAS/宿主渲染管线的绝对占用;本条只保证消除本插件产生的周期性重绘与冗余 IO。
+
+后果:新增 `src/client/snapshot-equal.ts`;两个源加 publish 守卫与 backoff 状态;`TurnLog` 加 mtime 缓存;测试 281 → 295(client +10、turn-log +4,另含 snapshot-equal 单测)。行为对用户可见的唯一变化:静默期相对时间不再每 5 秒刷新(冻结在上次变化),有变化立即恢复。已知边界:mtime 缓存的 `append`/`remove` 显式失效与 `:size` 分量是针对"同毫秒同长度"极端情形的防御(单写者 + append 必增长的前提下通常冗余);真机 GUI 重绘脉冲消除待装机用 Activity Monitor 复测确认。

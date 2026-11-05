@@ -9,7 +9,8 @@
  * @module dsh-acp-resume/client/detail-source
  */
 
-import { callPanel, POLL_INTERVAL_MS, type PanelRpc } from './chats-source.ts'
+import { callPanel, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc } from './chats-source.ts'
+import { detailSnapshotEqual } from './snapshot-equal.ts'
 import type { DetailSnapshot, DetailSource, EventItem, FullEntry, PanelChat, TurnItem } from './face.ts'
 
 /** Entries requested on open, and added by each "load earlier". */
@@ -21,7 +22,15 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Observable detail data of one chat plus its on-demand entry reads. */
+/**
+ * Observable detail data of one chat plus its on-demand entry reads.
+ *
+ * Snapshot reference is stable between content changes (D21): a poll whose
+ * `turns` payload equals the current snapshot keeps the existing object, so
+ * the open detail tab does not re-render on the poll interval. Polling backs
+ * off to {@link IDLE_POLL_INTERVAL_MS} after a run of unchanged polls and
+ * resets to fast on any change or on `loadMore`.
+ */
 export class ChatDetailSource implements DetailSource {
   private snapshot: DetailSnapshot = { status: 'loading', entries: [], total: 0 }
   private readonly listeners = new Set<() => void>()
@@ -29,19 +38,25 @@ export class ChatDetailSource implements DetailSource {
   private latest = 0
   private limit = DETAIL_PAGE
   private disposed = false
+  private quietPolls = 0
+  private currentInterval: number
 
   /**
    * @param rpc - Connection RPC caller.
    * @param chatId - the chat this source follows.
    * @param now - clock for `fetchedAt`.
-   * @param intervalMs - poll period while subscribed.
+   * @param intervalMs - fast poll period while subscribed.
+   * @param idleIntervalMs - idle poll period after a run of unchanged polls.
    */
   constructor(
     private readonly rpc: PanelRpc,
     private readonly chatId: string,
     private readonly now: () => number = Date.now,
     private readonly intervalMs: number = POLL_INTERVAL_MS,
-  ) {}
+    private readonly idleIntervalMs: number = IDLE_POLL_INTERVAL_MS,
+  ) {
+    this.currentInterval = intervalMs
+  }
 
   /** Current snapshot; the same reference until the data changes. */
   readonly getSnapshot = (): DetailSnapshot => this.snapshot
@@ -50,8 +65,9 @@ export class ChatDetailSource implements DetailSource {
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
     if (this.listeners.size === 1 && !this.disposed && this.snapshot.status !== 'gone') {
+      this.quietPolls = 0
       void this.refresh()
-      this.timer = setInterval(() => { void this.refresh() }, this.intervalMs)
+      this.arm(this.intervalMs)
     }
     return () => {
       if (!this.listeners.delete(listener) || this.listeners.size > 0) return
@@ -90,6 +106,9 @@ export class ChatDetailSource implements DetailSource {
   /** Request a longer history (up to the host ceiling) and refetch. */
   loadMore(): Promise<void> {
     this.limit = Math.min(this.limit + DETAIL_PAGE, DETAIL_MAX)
+    // A deliberate widening: poll fast again regardless of backoff.
+    this.quietPolls = 0
+    if (!this.disposed && this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
     return this.refresh()
   }
 
@@ -108,14 +127,32 @@ export class ChatDetailSource implements DetailSource {
   private stopPolling(): void {
     clearInterval(this.timer)
     this.timer = undefined
+    this.currentInterval = this.intervalMs
+    this.quietPolls = 0
   }
 
   private stale(id: number): boolean {
     return this.disposed || id !== this.latest
   }
 
+  /** Publish only when content changed; otherwise keep the reference and step the backoff. */
   private publish(next: DetailSnapshot): void {
+    if (detailSnapshotEqual(this.snapshot, next)) {
+      this.quietPolls += 1
+      if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
+        this.arm(this.idleIntervalMs)
+      }
+      return
+    }
+    this.quietPolls = 0
+    if (this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
     this.snapshot = next
     for (const listener of [...this.listeners]) listener()
+  }
+
+  private arm(intervalMs: number): void {
+    this.currentInterval = intervalMs
+    clearInterval(this.timer)
+    this.timer = setInterval(() => { void this.refresh() }, intervalMs)
   }
 }

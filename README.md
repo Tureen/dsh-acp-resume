@@ -99,7 +99,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;280 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 60 + steer 5 + engine 13 + turn-log 14
+pnpm test                      # vitest;295 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 13 + turn-log 18
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

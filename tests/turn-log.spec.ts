@@ -184,4 +184,44 @@ describe('TurnLog', () => {
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(/could not be read/)
   })
+
+  it('read caches against the file stamp: an unchanged file returns the SAME array reference (D21)', () => {
+    const { log } = setup()
+    log.append('chat-a', turn('one'))
+    const a = log.read('chat-a')
+    const b = log.read('chat-a')
+    expect(b).toBe(a)
+    expect(a.map(e => (e as { message: string }).message)).toEqual(['one'])
+  })
+
+  it('an own append invalidates the cache: the next read returns a new array with the new entry', () => {
+    const { log } = setup()
+    log.append('chat-a', turn('one'))
+    const before = log.read('chat-a')
+    log.append('chat-a', turn('two'))
+    const after = log.read('chat-a')
+    expect(after).not.toBe(before)
+    expect(after.map(e => (e as { message: string }).message)).toEqual(['one', 'two'])
+  })
+
+  it('a file changed on disk out from under the cache is re-read (stamp mismatch)', () => {
+    const { dir, log } = setup()
+    log.append('chat-a', turn('one'))
+    const before = log.read('chat-a')
+    // Append a line directly to the file, bypassing the log: mtime/size move.
+    appendFileSync(join(dir, 'chat-a.jsonl'), `${JSON.stringify({ v: 1, seq: 2, kind: 'event', event: 'session-lost', at: 1 })}\n`)
+    const after = log.read('chat-a')
+    expect(after).not.toBe(before)
+    expect(after.map(e => e.seq)).toEqual([1, 2])
+  })
+
+  it('remove invalidates the cache: a re-created log is read fresh, not from the stale cache', () => {
+    const { log } = setup()
+    log.append('chat-a', turn('one'))
+    log.read('chat-a')
+    log.remove('chat-a')
+    expect(log.read('chat-a')).toEqual([])
+    log.append('chat-a', turn('again'))
+    expect(log.read('chat-a').map(e => (e as { message: string }).message)).toEqual(['again'])
+  })
 })

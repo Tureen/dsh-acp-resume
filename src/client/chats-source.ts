@@ -10,9 +10,14 @@
  */
 
 import type { ChatsSnapshot, Observable, PanelChat } from './face.ts'
+import { listSnapshotEqual } from './snapshot-equal.ts'
 
-/** Poll period while the panel is open (§2.4). */
+/** Fast poll period while the panel is open and recently changing (§2.4). */
 export const POLL_INTERVAL_MS = 5000
+/** Idle poll period after {@link QUIET_POLLS_BEFORE_BACKOFF} unchanged polls (D21 backoff). */
+export const IDLE_POLL_INTERVAL_MS = 30_000
+/** Unchanged polls in a row before the source backs off to the idle period. */
+export const QUIET_POLLS_BEFORE_BACKOFF = 3
 
 /** Connection RPC result as the carrier returns it. */
 export type PanelRpcResult =
@@ -44,24 +49,43 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Observable panel data plus its commands. */
+/**
+ * Observable panel data plus its commands.
+ *
+ * The snapshot reference is stable between content changes (D21): a poll whose
+ * payload equals the current snapshot keeps the existing object, so
+ * `useSyncExternalStore` sees no change and the panel does not re-render. Only
+ * a real change (or a status flip) publishes a new reference, and `fetchedAt`
+ * then marks that change — it does not advance on unchanged polls. Polling runs
+ * fast while the data is moving and backs off to {@link IDLE_POLL_INTERVAL_MS}
+ * after {@link QUIET_POLLS_BEFORE_BACKOFF} unchanged polls; a change or a
+ * command resets it to fast.
+ */
 export class ChatsSource implements Observable<ChatsSnapshot> {
   private snapshot: ChatsSnapshot = { status: 'loading', chats: [] }
   private readonly listeners = new Set<() => void>()
   private timer: ReturnType<typeof setInterval> | undefined
   private latest = 0
   private disposed = false
+  /** Unchanged polls in a row; drives the backoff to the idle period. */
+  private quietPolls = 0
+  /** The interval the current timer runs at, so a backoff only reschedules on change. */
+  private currentInterval: number
 
   /**
    * @param rpc - Connection RPC caller.
    * @param now - clock for `fetchedAt`.
-   * @param intervalMs - poll period while subscribed.
+   * @param intervalMs - fast poll period while subscribed.
+   * @param idleIntervalMs - idle poll period after a run of unchanged polls.
    */
   constructor(
     private readonly rpc: PanelRpc,
     private readonly now: () => number = Date.now,
     private readonly intervalMs: number = POLL_INTERVAL_MS,
-  ) {}
+    private readonly idleIntervalMs: number = IDLE_POLL_INTERVAL_MS,
+  ) {
+    this.currentInterval = intervalMs
+  }
 
   /** Current snapshot; the same reference until the data changes. */
   readonly getSnapshot = (): ChatsSnapshot => this.snapshot
@@ -70,13 +94,13 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
     if (this.listeners.size === 1 && !this.disposed) {
+      this.quietPolls = 0
       void this.refresh()
-      this.timer = setInterval(() => { void this.refresh() }, this.intervalMs)
+      this.arm(this.intervalMs)
     }
     return () => {
       if (!this.listeners.delete(listener) || this.listeners.size > 0) return
-      clearInterval(this.timer)
-      this.timer = undefined
+      this.stopPolling()
     }
   }
 
@@ -110,8 +134,7 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
   /** Stop polling and drop every later answer. */
   dispose(): void {
     this.disposed = true
-    clearInterval(this.timer)
-    this.timer = undefined
+    this.stopPolling()
     this.listeners.clear()
   }
 
@@ -119,6 +142,9 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     try {
       await callPanel(this.rpc, method, { chatId })
     } finally {
+      // A command is a deliberate change: poll fast again regardless of backoff.
+      this.quietPolls = 0
+      if (!this.disposed && this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
       void this.refresh()
     }
   }
@@ -127,8 +153,31 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     return this.disposed || id !== this.latest
   }
 
+  /** Publish only when content changed; otherwise keep the reference and step the backoff. */
   private publish(next: ChatsSnapshot): void {
+    if (listSnapshotEqual(this.snapshot, next)) {
+      this.quietPolls += 1
+      if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
+        this.arm(this.idleIntervalMs)
+      }
+      return
+    }
+    this.quietPolls = 0
+    if (this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
     this.snapshot = next
     for (const listener of [...this.listeners]) listener()
+  }
+
+  private arm(intervalMs: number): void {
+    this.currentInterval = intervalMs
+    clearInterval(this.timer)
+    this.timer = setInterval(() => { void this.refresh() }, intervalMs)
+  }
+
+  private stopPolling(): void {
+    clearInterval(this.timer)
+    this.timer = undefined
+    this.currentInterval = this.intervalMs
+    this.quietPolls = 0
   }
 }

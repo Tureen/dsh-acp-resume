@@ -14,7 +14,7 @@
  * @module dsh-acp-resume/turn-log
  */
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Entries kept after a trim; reads never return more than the file holds. */
@@ -99,9 +99,19 @@ interface Counter {
   needsNewline: boolean
 }
 
+/** One chat's parsed log held against the file state it was parsed from. */
+interface CacheEntry {
+  /** `mtimeMs:size` of the file when parsed; a changed file misses the cache. */
+  readonly stamp: string
+  /** The parsed entries; the SAME array reference is returned on a cache hit (D21 snapshot stability). */
+  readonly entries: LogEntry[]
+}
+
 /** The per-chat logs of one pool, under one directory. */
 export class TurnLog {
   private readonly counters = new Map<string, Counter>()
+  /** Parsed-read cache keyed by chatId; the panel polls `read` every few seconds and the file rarely changes. */
+  private readonly cache = new Map<string, CacheEntry>()
 
   /**
    * @param dir - directory holding `<chatId>.jsonl`; created on first append.
@@ -120,29 +130,43 @@ export class TurnLog {
       counter.needsNewline = false
       counter.next += 1
       counter.count += 1
+      this.cache.delete(chatId)
       if (counter.count > TRIM_ABOVE) this.trim(file, counter)
     } catch (error: unknown) {
       this.warn(`acp-resume: turn log for ${chatId} could not be written: ${toError(error).message}`)
     }
   }
 
-  /** Every retained entry, oldest first; unparsable lines are skipped; an unreadable file reads as empty. */
+  /**
+   * Every retained entry, oldest first; unparsable lines are skipped; an
+   * unreadable file reads as empty. Cached against the file's `mtimeMs:size`:
+   * when the file has not changed since the last read, the SAME array is
+   * returned (D21), so the panel's periodic `turns` poll neither re-reads the
+   * file nor hands the client a fresh reference for identical content.
+   */
   read(chatId: string): LogEntry[] {
-    let raw: string
     try {
-      raw = readFileSync(this.fileFor(chatId), 'utf8')
+      const file = this.fileFor(chatId)
+      const stat = statSync(file)
+      const stamp = `${stat.mtimeMs}:${stat.size}`
+      const cached = this.cache.get(chatId)
+      if (cached !== undefined && cached.stamp === stamp) return cached.entries
+      const entries = this.parse(readFileSync(file, 'utf8')).entries
+      this.cache.set(chatId, { stamp, entries })
+      return entries
     } catch (error: unknown) {
       if (Reflect.get(toError(error), 'code') !== 'ENOENT') {
         this.warn(`acp-resume: turn log for ${chatId} could not be read: ${toError(error).message}`)
       }
+      this.cache.delete(chatId)
       return []
     }
-    return this.parse(raw).entries
   }
 
   /** Delete the chat's log; a missing file is fine, any other failure is a warning. */
   remove(chatId: string): void {
     this.counters.delete(chatId)
+    this.cache.delete(chatId)
     try {
       unlinkSync(this.fileFor(chatId))
     } catch (error: unknown) {

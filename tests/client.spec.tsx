@@ -17,10 +17,11 @@ import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as client from '../src/client/index.ts'
 import { ChatsPanel, relativeTime, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
-import { ChatsSource, POLL_INTERVAL_MS, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
+import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
 import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
+import { chatEqual, chatsEqual, detailSnapshotEqual, listSnapshotEqual } from '../src/client/snapshot-equal.ts'
 import type {
   ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
   PanelChat, TabInfoHook, TurnItem,
@@ -335,13 +336,78 @@ describe('ChatsSource', () => {
     const before = source.getSnapshot()
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBe(2)
-    expect(source.getSnapshot()).not.toBe(before)
+    // Content unchanged → same snapshot reference (D21), so no re-render pulse.
+    expect(source.getSnapshot()).toBe(before)
     stopA()
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBe(3)
     stopB()
     await vi.advanceTimersByTimeAsync(3 * POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBe(3)
+  })
+
+  it('keeps the same snapshot reference across unchanged polls and publishes a new one only on change (D21)', async () => {
+    vi.useFakeTimers()
+    let rows: PanelChat[] = [chat()]
+    const rpc = mockRpc(() => rows)
+    const notified: number[] = []
+    const source = new ChatsSource(rpc, () => NOW)
+    source.subscribe(() => { notified.push(1) })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = source.getSnapshot()
+    expect(notified).toHaveLength(1)
+    // Two unchanged polls: no new reference, no listener call.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+    // A content change publishes a new reference and notifies once.
+    rows = [chat({ turnCount: 7 })]
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).not.toBe(first)
+    expect(source.getSnapshot().chats[0]?.turnCount).toBe(7)
+    expect(notified).toHaveLength(2)
+  })
+
+  it('backs off to the idle interval after a run of unchanged polls, and resets to fast on a change', async () => {
+    vi.useFakeTimers()
+    let rows: PanelChat[] = [chat()]
+    const rpc = mockRpc(() => rows)
+    const source = new ChatsSource(rpc, () => NOW, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    // Fast polls until QUIET_POLLS_BEFORE_BACKOFF unchanged ones have passed.
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF; i += 1) await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    const afterBackoff = listCalls(rpc)
+    // Now on the idle cadence: a fast interval no longer triggers a fetch.
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(afterBackoff)
+    // The idle interval does.
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS - POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(afterBackoff + 1)
+    // A change resets to the fast cadence.
+    rows = [chat({ turnCount: 9 })]
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS)
+    const afterChange = listCalls(rpc)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(afterChange + 1)
+  })
+
+  it('a command resets the poll cadence to fast', async () => {
+    vi.useFakeTimers()
+    const rpc = mockRpc(() => [chat()])
+    const source = new ChatsSource(rpc, () => NOW, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF; i += 1) await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    // Backed off: a fast tick does nothing on its own.
+    const idle = listCalls(rpc)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(idle)
+    // A command refreshes now and restores the fast cadence.
+    await source.close('chat-x')
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBeGreaterThan(idle + 1)
   })
 
   it('sorts newest first, sends close/purge with the chatId, and refreshes after each command', async () => {
@@ -1042,5 +1108,100 @@ describe('ChatDetailSource', () => {
     answers[3]?.({ ok: true, value: { chat: chat({ cwd: '/late' }), entries: [], total: 0 } })
     await fourth
     expect(source.getSnapshot().chat?.cwd).toBe('/new')
+  })
+})
+
+describe('ChatDetailSource snapshot stability (D21)', () => {
+  it('keeps the same snapshot reference across unchanged polls and publishes a new one on change', async () => {
+    vi.useFakeTimers()
+    let value: { chat: PanelChat; entries: (TurnItem | EventItem)[]; total: number } = { chat: chat(), entries: [turn(1)], total: 1 }
+    const rpc = detailRpc({ turns: () => ({ ok: true, value }) })
+    const notified: number[] = []
+    const source = new ChatDetailSource(rpc, `chat-${UUID_A}`, () => NOW)
+    source.subscribe(() => { notified.push(1) })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = source.getSnapshot()
+    expect(notified).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+    // A new turn changes the content → new reference, one notification.
+    value = { chat: chat({ turnCount: 2 }), entries: [turn(1), turn(2)], total: 2 }
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).not.toBe(first)
+    expect(source.getSnapshot().entries).toHaveLength(2)
+    expect(notified).toHaveLength(2)
+  })
+
+  it('backs off to the idle interval after unchanged polls and resets to fast on a change', async () => {
+    vi.useFakeTimers()
+    let value: { chat: PanelChat; entries: (TurnItem | EventItem)[]; total: number } = { chat: chat(), entries: [turn(1)], total: 1 }
+    const rpc = detailRpc({ turns: () => ({ ok: true, value }) })
+    const source = new ChatDetailSource(rpc, 'chat-x', () => NOW, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF; i += 1) await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    const idle = rpc.calls.filter(c => c[1] === 'acpResume/turns').length
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(rpc.calls.filter(c => c[1] === 'acpResume/turns')).toHaveLength(idle)
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS - POLL_INTERVAL_MS)
+    expect(rpc.calls.filter(c => c[1] === 'acpResume/turns')).toHaveLength(idle + 1)
+    // loadMore is a deliberate widen: fast cadence resumes.
+    value = { chat: chat(), entries: [turn(1), turn(2)], total: 2 }
+    await source.loadMore()
+    const afterLoad = rpc.calls.filter(c => c[1] === 'acpResume/turns').length
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(rpc.calls.filter(c => c[1] === 'acpResume/turns')).toHaveLength(afterLoad + 1)
+  })
+
+  it('publishes the gone status even though its content differs from a prior ready snapshot', async () => {
+    vi.useFakeTimers()
+    let gone = false
+    const rpc = detailRpc({ turns: () => gone
+      ? { ok: false, error: { code: 'acp-resume/unknown-chat', message: 'gone' } }
+      : { ok: true, value: { chat: chat(), entries: [turn(1)], total: 1 } } })
+    const source = new ChatDetailSource(rpc, 'chat-x', () => NOW)
+    source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(source.getSnapshot().status).toBe('ready')
+    gone = true
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot().status).toBe('gone')
+  })
+})
+
+describe('snapshot-equal (D21)', () => {
+  it('chatEqual compares every rendered field, including ownerSessionId', () => {
+    const base = chat({ label: 'x', title: 't', turnCount: 3, ownerSessionId: 's1' })
+    expect(chatEqual(base, { ...base })).toBe(true)
+    for (const diff of [{ label: 'y' }, { title: 'u' }, { turnCount: 4 }, { active: false }, { lastActive: base.lastActive + 1 }, { cwd: '/z' }, { remoteSessionId: 'r2' }, { ownerSessionId: 's2' }] as Partial<PanelChat>[]) {
+      expect(chatEqual(base, { ...base, ...diff })).toBe(false)
+    }
+  })
+
+  it('chatsEqual is order- and length-sensitive', () => {
+    const a = chat({ chatId: 'c1' })
+    const b = chat({ chatId: 'c2' })
+    expect(chatsEqual([a, b], [a, b])).toBe(true)
+    expect(chatsEqual([a, b], [b, a])).toBe(false)
+    expect(chatsEqual([a], [a, b])).toBe(false)
+  })
+
+  it('listSnapshotEqual ignores fetchedAt but tracks status, error, and rows', () => {
+    const rows = [chat()]
+    expect(listSnapshotEqual({ status: 'ready', chats: rows, fetchedAt: 1 }, { status: 'ready', chats: [chat()], fetchedAt: 999 })).toBe(true)
+    expect(listSnapshotEqual({ status: 'ready', chats: rows }, { status: 'error', chats: rows })).toBe(false)
+    expect(listSnapshotEqual({ status: 'error', chats: rows, error: 'a' }, { status: 'error', chats: rows, error: 'b' })).toBe(false)
+    expect(listSnapshotEqual({ status: 'ready', chats: [chat()] }, { status: 'ready', chats: [chat({ turnCount: 1 })] })).toBe(false)
+  })
+
+  it('detailSnapshotEqual ignores fetchedAt but tracks entries, chat, total, status', () => {
+    const base = { status: 'ready' as const, chat: chat(), entries: [turn(1)], total: 1 }
+    expect(detailSnapshotEqual({ ...base, fetchedAt: 1 }, { ...base, chat: chat(), entries: [turn(1)], fetchedAt: 2 })).toBe(true)
+    expect(detailSnapshotEqual(base, { ...base, total: 2 })).toBe(false)
+    expect(detailSnapshotEqual(base, { ...base, entries: [turn(1), turn(2)] })).toBe(false)
+    expect(detailSnapshotEqual(base, { ...base, entries: [turn(1, { output: 'changed' })] })).toBe(false)
+    expect(detailSnapshotEqual(base, { status: 'ready', entries: [turn(1)], total: 1 })).toBe(false)
   })
 })
