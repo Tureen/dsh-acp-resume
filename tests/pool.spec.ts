@@ -90,7 +90,7 @@ function registryRemote(registryPath: string, chatId: string): string | undefine
   return file.sessions.find(s => s.chatId === chatId)?.remoteSessionId
 }
 
-interface RegistryRow { chatId: string; remoteSessionId: string; title?: string; turnCount?: number }
+interface RegistryRow { chatId: string; remoteSessionId: string; title?: string; turnCount?: number; ownerSessionId?: string; label?: string }
 
 function registryRow(registryPath: string, chatId: string): RegistryRow | undefined {
   const file = JSON.parse(readFileSync(registryPath, 'utf8')) as { sessions: RegistryRow[] }
@@ -800,6 +800,59 @@ function logLines(registryPath: string, chatId: string): Record<string, unknown>
   if (!existsSync(file)) return []
   return readFileSync(file, 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Record<string, unknown>)
 }
+
+describe('AcpSessionPool owner attribution (D20)', () => {
+  it('records ownerSessionId when start is given one, in the registry and in listChats', async () => {
+    const { pool, registryPath } = makePool()
+    const chat = await pool.start(process.cwd(), undefined, { label: '审阅', ownerSessionId: 'session-abc' })
+    expect(chat.ownerSessionId).toBe('session-abc')
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ ownerSessionId: 'session-abc', label: '审阅' })
+    expect(pool.listChats()[0]).toMatchObject({ chatId: chat.chatId, ownerSessionId: 'session-abc' })
+  })
+
+  it('omits the field entirely when start is given no owner (or a blank one)', async () => {
+    const { pool, registryPath } = makePool()
+    const anon = await pool.start(process.cwd())
+    const blank = await pool.start(process.cwd(), undefined, { ownerSessionId: '   ' })
+    expect(anon).not.toHaveProperty('ownerSessionId')
+    expect(blank).not.toHaveProperty('ownerSessionId')
+    for (const id of [anon.chatId, blank.chatId]) {
+      expect(registryRow(registryPath, id)).not.toHaveProperty('ownerSessionId')
+      expect(pool.listChats().find(c => c.chatId === id)).not.toHaveProperty('ownerSessionId')
+    }
+  })
+
+  it('reads a pre-attribution registry (no ownerSessionId) without warning; the row has no owner', async () => {
+    const dir = tempDir('acp-resume-owner-legacy-')
+    const registryPath = join(dir, 'registry.json')
+    // A registry written before attribution existed: no ownerSessionId field.
+    writeFileSync(registryPath, JSON.stringify({
+      version: 1,
+      sessions: [{ chatId: 'chat-old', remoteSessionId: 'remote-x', cwd: process.cwd(), command: process.execPath, args: [mockServer], lastActive: 1 }],
+    }))
+    const warnings: string[] = []
+    const { pool } = makePool({ registryPath, onWarn: m => warnings.push(m) })
+    expect(warnings).toEqual([])
+    expect(pool.listChats()[0]).toMatchObject({ chatId: 'chat-old' })
+    expect(pool.listChats()[0]).not.toHaveProperty('ownerSessionId')
+    expect(pool.chatInfo('chat-old')).not.toHaveProperty('ownerSessionId')
+  })
+
+  it('keeps ownerSessionId across a settled turn and a reconnect (it is not a turn field)', async () => {
+    const { env } = storeEnv('acp-resume-owner-keep-')
+    const first = makePool({ env })
+    const chat = await first.pool.start(process.cwd(), undefined, { ownerSessionId: 'session-keep' })
+    await first.pool.send(chat.chatId, 'one')
+    expect(registryRow(first.registryPath, chat.chatId)).toMatchObject({ ownerSessionId: 'session-keep', turnCount: 1 })
+    await first.pool.close(chat.chatId)
+    await first.pool.disposeAll()
+    // Rebuilt pool over the same registry: the owner survives, and a reconnecting send keeps it.
+    const second = makePool({ env, registryPath: first.registryPath })
+    expect(second.pool.listChats()[0]).toMatchObject({ ownerSessionId: 'session-keep' })
+    await second.pool.send(chat.chatId, 'two')
+    expect(registryRow(first.registryPath, chat.chatId)).toMatchObject({ ownerSessionId: 'session-keep', turnCount: 2 })
+  })
+})
 
 describe('AcpSessionPool turn log (D18)', () => {
   it('logs each settled turn with its message, answer, stop reason, timestamps, and fresh flag', async () => {

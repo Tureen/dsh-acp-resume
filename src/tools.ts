@@ -283,7 +283,14 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolD
       exec.signal.throwIfAborted()
       const label = args.label?.trim() ?? ''
       if (label.length > LABEL_MAX) throw new Error(`label is ${label.length} characters; keep it at most ${LABEL_MAX}`)
-      const chat = await pool.start(args.cwd, exec.signal, label === '' ? {} : { label })
+      // Attribution only (D20): the calling DSH session, so the panel can filter
+      // "this session" vs "other sessions". Agent.id IS the session id (same
+      // source as the D17 job owner). It gates nothing — tools stay global.
+      const ownerSessionId = exec.agent?.id
+      const chat = await pool.start(args.cwd, exec.signal, {
+        ...(label === '' ? {} : { label }),
+        ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
+      })
       return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
     },
   })

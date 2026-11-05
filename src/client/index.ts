@@ -70,12 +70,15 @@ export function apply(ctx: Context): void {
   ctx.inject(['connection'], (scope) => {
     const source = new ChatsSource(scope.connection.rpc)
     scope.effect(() => () => { source.dispose() }, 'dsh-acp-resume.panel-source')
-    const injected: ChatsPanelInjected = {
+    const injectedFor = (sessionId: string | undefined): ChatsPanelInjected => ({
       hooks: { chats: source },
+      // The seat is session-scoped: `inject(sessionId)` names the on-screen
+      // session, used only for the panel's "this session" filter (D20).
+      currentSessionId: sessionId,
       refresh: () => { void source.refresh() },
       close: chatId => source.close(chatId),
       purge: chatId => source.purge(chatId),
-    }
+    })
     // One source per chat, shared by the tab body and its chip title; each
     // polls only while one of them is mounted.
     const details = new Map<string, ChatDetailSource>()
@@ -104,7 +107,7 @@ export function apply(ctx: Context): void {
       guide: [{ id: 'open', order: 90, title: () => t('title'), description: () => t('guideDescription') }],
     }), 'dsh-acp-resume.tab-type')
     scope.effect(() => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register(
-      { name: 'sidebar.right.pane.tab', key: PANEL_ID, locale: PANEL_LOCALE, inject: () => injected },
+      { name: 'sidebar.right.pane.tab', key: PANEL_ID, locale: PANEL_LOCALE, inject: (sessionId: string | undefined) => injectedFor(sessionId) },
       ChatsPanel,
     )), 'dsh-acp-resume.tab-body')
     scope.effect(() => scope.sidebarRightTabs.register({

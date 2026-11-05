@@ -162,6 +162,18 @@ describe('chat tools', () => {
     await expect(call('start', { cwd: process.cwd(), label: 'x'.repeat(81) })).rejects.toThrow(/at most 80/)
   })
 
+  it('records the owning agent session on start (D20)', async () => {
+    const { registry, pool, disposers } = mountTools({})
+    try {
+      const start = registry.tools.get('acp_chat_start') as Definition
+      const ownerExec = { signal: new AbortController().signal, agent: { id: 'sess-owner-42' } } as unknown as ToolRunContext
+      const { chatId } = await start.execute({ cwd: process.cwd() }, ownerExec) as { chatId: string }
+      expect(pool.listChats().find(c => c.chatId === chatId)?.ownerSessionId).toBe('sess-owner-42')
+    } finally {
+      for (const dispose of disposers) dispose()
+    }
+  })
+
   it('rejects an already-aborted call before touching the pool', async () => {
     const { call } = mountTools({})
     await expect(call('start', { cwd: process.cwd() }, AbortSignal.abort())).rejects.toThrow()

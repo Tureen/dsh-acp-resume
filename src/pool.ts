@@ -21,6 +21,9 @@
  * characters) as its `title`; `aborted` and `error` turns record neither.
  * `steer` forwards a private `_session/steer` to the live connection while a
  * turn is in flight. The reconnect fingerprint ignores `--agent-engine` (D19).
+ * `start` records the opening DSH session as `ownerSessionId` when given one
+ * (D20): attribution metadata the panel filters on, never access control — the
+ * registry stays profile-global and every method serves every chat.
  * Every settled turn and every reconnect event (`session-lost`,
  * `reconnect-failed`) is also appended to the chat's turn log (`turns/<chatId>.jsonl`
  * next to the registry, D18); the log is a mirror for the panel's detail page,
@@ -57,6 +60,8 @@ export interface PooledChatInfo {
   /** A live process is attached (false once idle-released or after a restart). */
   readonly active: boolean
   readonly lastActive: number
+  /** Session id of the DSH chat that opened this chat (D20); absent for chats started before attribution, or without a calling session. */
+  readonly ownerSessionId?: string
 }
 
 /** Terminal result of one pooled send. */
@@ -101,6 +106,8 @@ interface RegistryEntry {
   title?: string
   /** Optional; completed turns only. Older registries omit it and count from 0. */
   turnCount?: number
+  /** Optional (D20); the DSH session that opened the chat. Older registries omit it. */
+  ownerSessionId?: string
   command: string
   args: readonly string[]
   lastActive: number
@@ -110,6 +117,8 @@ interface RegistryEntry {
 export interface PoolStartOptions {
   /** Display label persisted with the chat (trimmed; empty means none). */
   readonly label?: string
+  /** The DSH session opening the chat, recorded for panel attribution (D20); empty/undefined means none. */
+  readonly ownerSessionId?: string
 }
 
 /** An open window (`start` or reconnect) and the controller teardown aborts it with. */
@@ -307,6 +316,7 @@ export class AcpSessionPool {
       ...(typeof e.label === 'string' && e.label !== '' ? { label: e.label } : {}),
       ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
       ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
+      ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
@@ -333,6 +343,7 @@ export class AcpSessionPool {
     // Fail loud at the earliest resolvable point, mirroring the official provider start.
     assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const label = options.label?.trim() ?? ''
+    const ownerSessionId = options.ownerSessionId?.trim() ?? ''
     const chatId = `chat-${randomUUID()}`
     const now = Date.now()
     const controller = new AbortController()
@@ -345,6 +356,7 @@ export class AcpSessionPool {
         remoteSessionId: conn.remoteSessionId,
         cwd,
         ...(label === '' ? {} : { label }),
+        ...(ownerSessionId === '' ? {} : { ownerSessionId }),
         command: this.opts.specBase.command,
         args: this.opts.specBase.args,
         lastActive: now,
@@ -363,7 +375,7 @@ export class AcpSessionPool {
       this.starting.delete(chatId)
     }
     this.assertLive()
-    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), active: true, lastActive: now }
+    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), active: true, lastActive: now }
   }
 
   /**

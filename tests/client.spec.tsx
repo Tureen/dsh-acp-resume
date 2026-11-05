@@ -79,6 +79,7 @@ function props(snapshot: ChatsSnapshot, overrides: Partial<ChatsPanelProps> = {}
   return {
     useChats: staticHook(snapshot),
     useTabInfo: tabInfo().hook,
+    currentSessionId: undefined,
     refresh: vi.fn(),
     close: vi.fn(async () => {}),
     purge: vi.fn(async () => {}),
@@ -117,14 +118,14 @@ describe('ChatsPanel', () => {
     expect(first.getByText('审阅')).toBeTruthy()
     expect(first.getByText('chat-a1b2c3d4')).toBeTruthy()
     expect(first.getByText('记住暗号P')).toBeTruthy()
-    expect(first.getByText('活跃 · 12 轮 · 3 分钟前')).toBeTruthy()
+    expect(first.getByText('活跃 · 12 轮 · 3 分钟前', { exact: false })).toBeTruthy()
     expect(first.getByText('cwd /tmp · 远端 4fb07582')).toBeTruthy()
 
     const second = within(cards[1] as HTMLElement)
     expect(second.getByText('○')).toBeTruthy()
     expect(second.getByText('chat-e5f6a7b8')).toBeTruthy()
     expect(second.getByText('—')).toBeTruthy()
-    expect(second.getByText('已释放(下次发送自动重连) · — 轮 · 2 小时前')).toBeTruthy()
+    expect(second.getByText('已释放(下次发送自动重连) · — 轮 · 2 小时前', { exact: false })).toBeTruthy()
     expect(second.getByText('cwd /work · 远端 9c0d1e2f')).toBeTruthy()
     // A released chat has nothing to release.
     expect((second.getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
@@ -218,6 +219,79 @@ describe('ChatsPanel', () => {
     expect(screen.getByRole('alert').textContent).toBe('操作失败:acp-resume/unknown-chat: gone')
     fireEvent.click(screen.getByRole('button', { name: '刷新' }))
     expect(p.refresh).toHaveBeenCalledTimes(1)
+  })
+})
+
+const MY_SESSION = 'session-mine-0001'
+const OTHER_SESSION = 'session-other-0002'
+
+describe('ChatsPanel attribution filter (D20)', () => {
+  const rows = (): PanelChat[] => [
+    chat({ chatId: 'chat-mine', ownerSessionId: MY_SESSION, lastActive: NOW - 1_000 }),
+    chat({ chatId: 'chat-other', ownerSessionId: OTHER_SESSION, lastActive: NOW - 2_000 }),
+    chat({ chatId: 'chat-legacy', lastActive: NOW - 3_000 }),
+  ]
+  const ids = (container: HTMLElement): (string | null)[] => [...container.querySelectorAll('li')].map(li => li.getAttribute('data-chat-id'))
+
+  it('marks each card with its origin: this session (unmarked), other session, unknown', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
+    const meta = (id: string): HTMLElement => container.querySelector(`[data-chat-id="${id}"] [data-origin]`) as HTMLElement
+    expect(meta('chat-mine').getAttribute('data-origin')).toBe('mine')
+    expect(meta('chat-mine').textContent).not.toContain('其他会话')
+    expect(meta('chat-mine').textContent).not.toContain('来源未知')
+    expect(meta('chat-mine').textContent).not.toContain('本会话')
+    expect(meta('chat-other').getAttribute('data-origin')).toBe('other')
+    expect(meta('chat-other').textContent).toContain('其他会话')
+    expect(meta('chat-legacy').getAttribute('data-origin')).toBe('unknown')
+    expect(meta('chat-legacy').textContent).toContain('来源未知')
+  })
+
+  it('defaults to "all"; toggling to "this session" shows only this session\'s chats and back', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
+    // Default view: all three, count says 共 3 条.
+    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
+    expect((container.querySelector('[data-count="all"]') as HTMLElement).textContent).toBe('共 3 条')
+    const toggle = screen.getByRole('button', { name: '过滤范围' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(toggle.textContent).toBe('全部')
+
+    fireEvent.click(toggle)
+    expect(ids(container)).toEqual(['chat-mine'])
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.textContent).toBe('本会话')
+    expect((container.querySelector('[data-count="mine"]') as HTMLElement).textContent).toBe('本会话 1 条 / 共 3 条')
+
+    fireEvent.click(toggle)
+    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
+  })
+
+  it('the "this session" filter shows a notice, not the empty state, when this session opened nothing', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: 'session-fresh-9999' })} />)
+    fireEvent.click(screen.getByRole('button', { name: '过滤范围' }))
+    expect(ids(container)).toEqual([])
+    expect(container.querySelector('[data-empty="mine"]')?.textContent).toBe('本会话 0 条 / 共 3 条')
+    // Not the "no persistent chats" empty state: the chats exist, just not this session's.
+    expect(screen.queryByText('暂无持久会话')).toBeNull()
+  })
+
+  it('offers no filter and no origin marks when no session is on screen', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: undefined })} />)
+    expect(screen.queryByRole('button', { name: '过滤范围' })).toBeNull()
+    // Owner is known but there is no viewer to compare against, so owned chats read as "other".
+    expect((container.querySelector('[data-chat-id="chat-mine"] [data-origin]') as HTMLElement).getAttribute('data-origin')).toBe('other')
+    expect((container.querySelector('[data-chat-id="chat-legacy"] [data-origin]') as HTMLElement).getAttribute('data-origin')).toBe('unknown')
+    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
+  })
+
+  it('has the filter and origin copy in both locales', () => {
+    for (const key of ['filterAll', 'filterMine', 'filterLabel', 'countAll', 'countMine', 'originOther', 'originUnknown'] as const) {
+      expect(zh[key]).toBeTruthy()
+      expect(en[key]).toBeTruthy()
+    }
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION, t: translator(en) })} />)
+    expect((container.querySelector('[data-chat-id="chat-other"] [data-origin]') as HTMLElement).textContent).toContain('other session')
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
+    expect((container.querySelector('[data-count="mine"]') as HTMLElement).textContent).toBe('This session 1 of 3')
   })
 })
 

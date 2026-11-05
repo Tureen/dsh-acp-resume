@@ -211,3 +211,21 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 后果:池多一个 `TurnLog` 成员与 `chatInfo` / `turnEntries` 两个只读方法;面板 host 半 3 → 5 个 Remote 方法;client 半新增 4 个文件;测试 192 → 259(见 AGENTS.md「期望测试基线」)。未验证:真机 GUI 中官方侧栏对第二个页签类型、chip 标题槽与"同地址聚焦"的实际表现(以官方源码与 jsdom 测试为依据,装机验收清单见 PANEL-DESIGN.md §2.6)。
 
 D15 追注(2026-11-04):v2 增加会话详情页签,见 D18;D15 "只读视图 + 资源操作、不含输入框"的边界不变。
+
+## D20 会话归属:元数据 + 视图过滤,不是访问控制(2026-11-05)
+
+问题:面板 / `acp_chat_list` 展示的是 profile 级全局注册表,同一台机器上所有 DSH 会话看到同一份持久会话。用户想知道"哪条是我这个会话开的",但不希望动跨会话续聊的能力(任何会话都能对任何 chat 续聊,是本包的立身特性,D3/D5)。
+
+用户裁定(轻量方案):注册表记录创建会话;面板加过滤;模型工具不设访问限制。
+
+决策:
+- **归属是元数据,不是权限边界。** 新增可选 `ownerSessionId` 记录"哪个 DSH 会话开的",仅供显示与视图过滤。池的每个方法、五个模型工具、host 的每个 Remote 方法都照旧服务每一条 chat——不按 owner 拦截任何读写。跨会话续聊不变。
+- **采集点(tools.ts)**:`acp_chat_start` 的 execute 里取 `exec.agent?.id` 作为 `ownerSessionId` 传给 `pool.start`。`Agent.id` 即 `SessionId`(`@deepseek-ai/dsh-agent` 契约),与 D17 后台任务的 `owner: exec.agent.id` 同源。无 agent 的上下文(官方 spec setup、无会话的直接调用)不带该字段。只有 `start` 采集;`send`/`list`/`close`/`steer` 不涉及。
+- **注册表(pool.ts)**:`RegistryEntry` 与 `PooledChatInfo` 增可选 `ownerSessionId`;`PoolStartOptions` 增该字段(trim,空串视为无)。注册表 **version 不动**;`settledEntry` 用 `...entry` 透传,续聊/重连/结算都保留它。`listChats` 照 `label` 的姿势透出——有才出键,无则省。旧注册表无此字段 = **「来源未知」**,读入不告警、不迁移。
+- **host 半(panel.ts)**:零改动。字段随 `PooledChatInfo` 流过 `list` 与 `turns.chat`。**不做服务端过滤**——过滤是纯视图关注,client 自己有会话身份,服务端按 owner 过滤反而会把"看得到但不是我开的"这一信息藏掉,与"全局可见、可溯源"的裁定相悖。
+- **client 半(ChatsPanel)**:会话型 seat 的 `inject(sessionId)` 提供当前会话 id(不引官方 client 类型,沿用结构化类型纪律)。头部加过滤切换「全部 / 本会话」,**默认「全部」**(理由见下)。无会话在屏时不提供该切换。每张卡片元信息行标来源:本会话=不标(常态、无需噪音)、其他会话=标「其他会话」、旧记录=标「来源未知」。计数随视角:全部态「共 N 条」,本会话态「本会话 M 条 / 共 N 条」;本会话态为空时显示该计数提示而非"暂无持久会话"空态(chat 存在,只是不属本会话)。文案中英齐全。
+- **默认过滤视角取「全部」**:新会话刚打开面板时,「本会话」视角必然为空(它还没开过任何 chat),默认到它会让用户以为"持久会话凭空消失了"。默认「全部」保证面板始终展示真实全貌,用户主动点「本会话」才收窄。这也符合"可见优先、过滤是叠加"的轻量定位。
+
+旧记录语义:`ownerSessionId` 缺失恒为「来源未知」,永不猜测、永不回填。无会话在屏(`currentSessionId` 为 undefined)时,有主的 chat 也无从比对,一律显示为「其他会话」(没有"我"可对照),这是刻意的——避免把别的会话开的 chat 误标成本会话。
+
+后果:注册表多一个可选字段;`PooledChatInfo`/`PanelChat` 各加一字段;ChatsPanel 加过滤态与来源标注;测试 271 → 280(pool +5、client +5)。host 半与注册表 version 不变。已知局限:`ownerSessionId` 只在 `start` 落一次,事后无法为旧 chat 补齐;真机 GUI 中 `inject(sessionId)` 是否在无会话时确为 undefined [未验证],以 jsdom 测试与官方 seat 契约为据,装机冒烟确认。

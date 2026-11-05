@@ -24,6 +24,8 @@ export interface PanelChat {
   readonly active: boolean
   /** Epoch milliseconds of the last settled turn. */
   readonly lastActive: number
+  /** The DSH session that opened this chat (D20); absent for chats started before attribution. */
+  readonly ownerSessionId?: string
 }
 
 /** The panel's published view of the pool. */
@@ -122,6 +124,8 @@ export interface ChatDetailInjected {
 /** What the slot registration injects (before the renderer binds `hooks`). */
 export interface ChatsPanelInjected {
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }
+  /** The DSH session viewing the panel (the seat's `inject` sessionId); `undefined` when none is on screen. */
+  readonly currentSessionId: string | undefined
   /** Fetch now; the result arrives through `chats`. */
   readonly refresh: () => void
   /** Release the chat's process (record kept); rejects with the failure text. */
