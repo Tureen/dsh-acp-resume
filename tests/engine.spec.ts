@@ -20,7 +20,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
-import { buildChildArgs, hasAgentEngineFlag, stripAgentEngine, stripVolatileFlags, withAgentEngine } from '../src/engine.ts'
+import { buildChildArgs, stripVolatileFlags } from '../src/engine.ts'
 import type { ToolsRegistryFace } from '../src/tools.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
@@ -110,19 +110,18 @@ async function oneShotArgv(config: Record<string, unknown>): Promise<string[]> {
 
 describe('engine flag helpers', () => {
   it('appends --agent-engine unless the user already set it (either form)', () => {
-    expect(withAgentEngine(['acp'], 'v3')).toEqual(['acp', '--agent-engine', 'v3'])
-    expect(withAgentEngine([], 'v2')).toEqual(['--agent-engine', 'v2'])
-    expect(withAgentEngine(['acp', '--agent-engine', 'v1'], 'v3')).toEqual(['acp', '--agent-engine', 'v1'])
-    expect(withAgentEngine(['acp', '--agent-engine=v2'], 'v3')).toEqual(['acp', '--agent-engine=v2'])
-    expect(hasAgentEngineFlag(['acp'])).toBe(false)
+    expect(buildChildArgs(['acp'], { engine: 'v3' })).toEqual(['acp', '--agent-engine', 'v3'])
+    expect(buildChildArgs([], { engine: 'v2' })).toEqual(['--agent-engine', 'v2'])
+    expect(buildChildArgs(['acp', '--agent-engine', 'v1'], { engine: 'v3' })).toEqual(['acp', '--agent-engine', 'v1'])
+    expect(buildChildArgs(['acp', '--agent-engine=v2'], { engine: 'v3' })).toEqual(['acp', '--agent-engine=v2'])
   })
 
-  it('strips the flag and its value, leaving every other arg in order', () => {
-    expect(stripAgentEngine(['a', '--agent-engine', 'v3', 'b'])).toEqual(['a', 'b'])
-    expect(stripAgentEngine(['a', '--agent-engine=v2', 'b'])).toEqual(['a', 'b'])
-    expect(stripAgentEngine(['a', '--agent-engine'])).toEqual(['a'])
-    expect(stripAgentEngine(['a', '--agent-engine-other', 'b'])).toEqual(['a', '--agent-engine-other', 'b'])
-    expect(stripAgentEngine(['a', 7, null])).toEqual(['a', 7, null])
+  it('strips --agent-engine and its value, leaving every other arg in order', () => {
+    expect(stripVolatileFlags(['a', '--agent-engine', 'v3', 'b'])).toEqual(['a', 'b'])
+    expect(stripVolatileFlags(['a', '--agent-engine=v2', 'b'])).toEqual(['a', 'b'])
+    expect(stripVolatileFlags(['a', '--agent-engine'])).toEqual(['a'])
+    expect(stripVolatileFlags(['a', '--agent-engine-other', 'b'])).toEqual(['a', '--agent-engine-other', 'b'])
+    expect(stripVolatileFlags(['a', 7, null])).toEqual(['a', 7, null])
   })
 
   it('appends --model / --effort only when configured and not already set (D19 2026-11-05)', () => {

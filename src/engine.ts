@@ -38,11 +38,6 @@ function hasFlag(args: readonly string[], flag: string): boolean {
   return args.some(arg => matchesFlag(arg, flag))
 }
 
-/** Does `args` already carry `--agent-engine` (separate or `=` form)? */
-export function hasAgentEngineFlag(args: readonly string[]): boolean {
-  return hasFlag(args, ENGINE_FLAG)
-}
-
 /**
  * Child spawn flags added on top of the configured args. Each is appended only
  * when the user did not already set it in `args`.
@@ -77,14 +72,6 @@ export function buildChildArgs(args: readonly string[], flags: ChildFlags): stri
 }
 
 /**
- * `args` plus `--agent-engine <engine>`, unless the user already set the flag.
- * Thin wrapper over {@link buildChildArgs} for callers that only pick the engine.
- */
-export function withAgentEngine(args: readonly string[], engine: AgentEngine): string[] {
-  return buildChildArgs(args, { engine })
-}
-
-/**
  * `args` without the volatile spawn-level flags (`--agent-engine`, `--model`,
  * `--effort`) and their values, in both the separate and `=` forms. Elements
  * are `unknown` because registry files are hand-editable; non-strings pass
@@ -104,9 +91,3 @@ export function stripVolatileFlags(args: readonly unknown[]): unknown[] {
   }
   return kept
 }
-
-/**
- * Backwards-compatible alias of {@link stripVolatileFlags} (the fingerprint now
- * strips model/effort too, D19 revision 2026-11-05).
- */
-export const stripAgentEngine = stripVolatileFlags

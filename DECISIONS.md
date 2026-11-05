@@ -180,7 +180,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **新增 `model?` / `effort?` 两个可选 Config 字段**。v3 的 ACP 会话默认 `model=auto`(服务器按任务路由,`effort` 不可控);用户要求能显式钉死。CLI 已支持 spawn 级 `--model <id>` 与 `--effort <level>`,作用于该进程启动的会话;本包一会话一进程,语义干净。schemastery 3.18.5 下不写 `.required()` / `.default()` 的 `z.string()` 即可选,缺省时结果里不出现该键,因此只有用户显式设了才拼旗标,否则保持 `auto`。
 - **argv 拼接与 `--agent-engine` 同款**:两条 spawn 路径(池 `specBase` 与 one-shot provider)在用户 `args` 未显式含 `--model` / `--effort`(`--model x` 与 `--model=x` 两种写法都识别)且 Config 有值时追加;用户显式写了则不追加。空串按未设处理。
 - **生效语义是 spawn 级**:对既有会话,钉死的模型/档位要等下次重连(新进程)才应用,运行中进程不变——文档与 Config JSDoc 都写明这点,避免用户误以为改配置能即时切活跃会话的模型。
-- **指纹排除清单扩为三旗标**:重连指纹比较时剔除的从 `--agent-engine` 扩到 `--agent-engine` / `--model` / `--effort`(各自的分离与 `=` 写法及值)。理由:`auto` 本身就在会话内按任务动态换模型,会话存的是对话不是模型;模型/档位差异不像 `command` 差异那样构成"换了一个 agent"。实现上原 `stripAgentEngine` 泛化为 `stripVolatileFlags`(保留前者为别名,不破坏既有调用);追加逻辑泛化为 `buildChildArgs(args, {engine, model?, effort?})`。
+- **指纹排除清单扩为三旗标**:重连指纹比较时剔除的从 `--agent-engine` 扩到 `--agent-engine` / `--model` / `--effort`(各自的分离与 `=` 写法及值)。理由:`auto` 本身就在会话内按任务动态换模型,会话存的是对话不是模型;模型/档位差异不像 `command` 差异那样构成"换了一个 agent"。实现上原 `stripAgentEngine` 泛化为 `stripVolatileFlags`;追加逻辑泛化为 `buildChildArgs(args, {engine, model?, effort?})`。(2026-11-05 精简:`stripAgentEngine` 别名与 `withAgentEngine` / `hasAgentEngineFlag` 两个薄封装为零生产引用的死导出,已删除;生产只用 `buildChildArgs` / `stripVolatileFlags`。engine.spec 的两例改以这两个活函数直接断言,等价覆盖、例数不变。)
 - 测试 188 → 266 的其余增量含本轮 7 例(engine helper 2 + 两条 spawn 路径 4 + pool 模型/档位指纹 1;其余为上游其他改动)。变异自检:model/effort 不追加、指纹漏剔、忽略用户已设旗标、空串当有效值、one-shot 路径漏拼、指纹剔除过头——六类故意改坏均被测试抓红。
 
 ## D18 按轮日志 + 会话详情页签(2026-11-04)
