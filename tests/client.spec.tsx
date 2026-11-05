@@ -636,7 +636,7 @@ describe('ChatDetail (D18)', () => {
     expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByRole('button', { name: '展开第 1 条' }).textContent).toBe('展开查看全文 · 共 3 行')
   })
 
-  it('the turn header row also toggles the turn and carries aria-expanded; the chevron is a visual cue only', async () => {
+  it('the turn header row toggles the turn and carries aria-expanded; there is no corner chevron', async () => {
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })))
     const { container } = render(<ChatDetail {...injected} />)
     const card = container.querySelector('[data-seq="1"]') as HTMLElement
@@ -644,10 +644,9 @@ describe('ChatDetail (D18)', () => {
     expect(head.getAttribute('role')).toBe('button')
     expect(head.getAttribute('aria-expanded')).toBe('false')
     expect(head.getAttribute('tabindex')).toBe('0')
-    // The chevron is a visual cue only: a non-interactive span, not a button.
-    const chevron = head.querySelector('[data-chevron]') as HTMLElement
-    expect(chevron.tagName).toBe('SPAN')
-    expect(chevron.getAttribute('aria-hidden')).toBe('true')
+    // The corner chevron is gone entirely: the header row is clickable, no angle marker.
+    expect(card.querySelector('[data-chevron]')).toBeNull()
+    expect(card.textContent).not.toContain('▾')
     expect(within(head).queryByRole('button')).toBeNull()
     await act(async () => { fireEvent.click(head) })
     expect(head.getAttribute('aria-expanded')).toBe('true')
@@ -655,6 +654,13 @@ describe('ChatDetail (D18)', () => {
     // Keyboard reaches the row.
     await act(async () => { fireEvent.keyDown(head, { key: 'Enter' }) })
     expect(head.getAttribute('aria-expanded')).toBe('false')
+    // The row's only clickability cue is its pointer cursor and a hover tint.
+    expect(head.style.cursor).toBe('pointer')
+    expect(head.style.background).toBe('')
+    fireEvent.mouseEnter(head)
+    expect(head.style.background).not.toBe('')
+    fireEvent.mouseLeave(head)
+    expect(head.style.background).toBe('')
   })
 
   it('a fully-shown turn offers no expand button; its header still toggles', async () => {

@@ -9,9 +9,10 @@
  * reason, and time demoted to a meta row. Expanding sits on the reading line:
  * the primary control is a full-width button at the card's tail ("expand full
  * text · N lines", becoming "collapse" once open), and the whole header row is
- * also clickable; the small chevron is a visual cue only. Expanding reveals the
- * full message and answer in scrollable regions that keep their line breaks,
- * and the diagnostic sits behind its own toggle. Reconnect events are set apart from turns by a
+ * also clickable (a pointer cursor and a hover tint are its only cue — there is
+ * no corner chevron). Expanding reveals the full message and answer in
+ * scrollable regions that keep their line breaks, and the diagnostic sits
+ * behind its own toggle. Reconnect events are set apart from turns by a
  * tinted left rail and a "connection" tag. The full text is fetched on demand
  * when a preview is cut; expansion and fetched text live in component state
  * only. Pure props: data arrives through a per-chat {@link DetailSource},
@@ -58,13 +59,13 @@ const styles = {
   list: { display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' },
 
   turn: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
-  turnTop: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6 },
+  // Clickable header row; its pointer cursor and hover tint are the only
+  // clickability cue (no corner chevron — the bottom button is the primary one).
+  turnTop: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px', transition: 'background 100ms ease' },
+  turnTopHover: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px', transition: 'background 100ms ease', background: 'var(--dsw-alias-interactive-bg-hover)' },
   turnTags: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
   turnSeq: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)' },
   turnTime: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
-  // Visual-only cue; the header row and the bottom button carry the interaction.
-  chevron: { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, transition: 'transform 120ms ease' },
-  chevronOpen: { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, transform: 'rotate(180deg)', transition: 'transform 120ms ease' },
 
   qa: { display: 'flex', flexDirection: 'column', gap: 6 },
   qaBlock: { display: 'flex', flexDirection: 'column', gap: 2 },
@@ -131,6 +132,7 @@ interface TurnRowProps {
 
 function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNode {
   const [diagOpen, setDiagOpen] = useState(false)
+  const [headHover, setHeadHover] = useState(false)
   const fullEntry = full?.status === 'ready' && full.entry.kind === 'turn' ? full.entry : undefined
   const message = fullEntry?.message ?? item.message
   const output = fullEntry?.output ?? item.output
@@ -148,13 +150,15 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
     <li style={styles.turn} data-seq={item.seq} data-open={open ? '' : undefined}>
       {/* The whole header row toggles the turn; the chevron is a visual cue only. */}
       <div
-        style={styles.turnTop}
+        style={headHover ? styles.turnTopHover : styles.turnTop}
         role="button"
         tabIndex={0}
         aria-expanded={open}
         aria-label={t('turnToggle', { seq: item.seq })}
         data-turn-head=""
         onClick={toggle}
+        onMouseEnter={() => { setHeadHover(true) }}
+        onMouseLeave={() => { setHeadHover(false) }}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() }
         }}
@@ -165,7 +169,6 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
           {item.freshSession ? <Tag tone="info">{t('freshBadge')}</Tag> : null}
           <span style={styles.turnTime}>{relativeTime(t, item.at, now)}</span>
         </div>
-        <span style={open ? styles.chevronOpen : styles.chevron} data-chevron="" aria-hidden="true">▾</span>
       </div>
       {open ? (
         <div style={styles.qa}>
