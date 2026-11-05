@@ -29,7 +29,7 @@ import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS,
 import { AcpSessionPool } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
-import { type AgentEngine, withAgentEngine } from './engine.js'
+import { type AgentEngine, buildChildArgs } from './engine.js'
 
 // cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
 // cannot read at runtime; `satisfies` pins the literal to the declared member.
@@ -56,6 +56,25 @@ export interface Config {
    * session as usual (D19). Applies to both the one-shot provider and the chats.
    */
   agentEngine: AgentEngine
+  /**
+   * Model id the child's sessions are pinned to, appended as `--model <id>`
+   * (e.g. `claude-opus-5.5`, `glm-5`). Left unset by default so the server
+   * keeps its `auto` routing (it picks a model per task, and `effort` is not
+   * under our control). Set it to pin one model. If {@link args} already
+   * contains `--model`, that explicit choice wins and nothing is appended.
+   * Spawn-level: a chat already running keeps its model; a pinned model takes
+   * effect on the NEXT reconnect (a new process), not on the live one.
+   */
+  model?: string
+  /**
+   * Reasoning effort the child's sessions are pinned to, appended as
+   * `--effort <level>` (typically `low` / `medium` / `high` / `xhigh` /
+   * `max`; the accepted set depends on the model). Left unset by default
+   * (the model's own default under `auto`). If {@link args} already contains
+   * `--effort`, that explicit choice wins. Spawn-level, like {@link model}:
+   * applied on the next reconnect, not on a live process.
+   */
+  effort?: string
   /**
    * How to auto-answer the child's `session/request_permission` prompts:
    * `reject` (default — decline every prompt) or `allow` (approve via the first
@@ -93,6 +112,10 @@ export const Config: z<Config> = z.object({
   command: z.string().required(),
   args: z.array(z.string()).default([]),
   agentEngine: z.union(['v1', 'v2', 'v3'] as const).default('v3'),
+  // Optional: no .required()/.default() ⇒ absent when unset (schemastery 3.18.5),
+  // so the flag is only appended when the user pins a model/effort.
+  model: z.string(),
+  effort: z.string(),
   permission: z.union(['allow', 'reject'] as const).default('reject'),
   env: z.dict(z.string()).default({}),
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
@@ -143,7 +166,11 @@ class AcpProvider implements SubagentProvider {
     }
     const spec: AcpRunSpec = {
       command: this.config.command,
-      args: withAgentEngine(this.config.args, this.config.agentEngine),
+      args: buildChildArgs(this.config.args, {
+        engine: this.config.agentEngine,
+        ...(this.config.model === undefined ? {} : { model: this.config.model }),
+        ...(this.config.effort === undefined ? {} : { effort: this.config.effort }),
+      }),
       cwd,
       permission: this.config.permission,
       env: this.config.env,
@@ -186,7 +213,11 @@ export function apply(ctx: Context, config: Config): void {
     pool ??= new AcpSessionPool({
       specBase: {
         command: resolved.command,
-        args: withAgentEngine(resolved.args, resolved.agentEngine),
+        args: buildChildArgs(resolved.args, {
+          engine: resolved.agentEngine,
+          ...(config.model === undefined ? {} : { model: config.model }),
+          ...(config.effort === undefined ? {} : { effort: config.effort }),
+        }),
         permission: resolved.permission,
         env: resolved.env,
         disposeEofGraceMs: resolved.disposeEofGraceMs,

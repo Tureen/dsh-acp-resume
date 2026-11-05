@@ -40,7 +40,7 @@ import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { AcpRunSpec } from './run.js'
-import { stripAgentEngine } from './engine.js'
+import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
@@ -583,8 +583,9 @@ export class AcpSessionPool {
   /** A saved session is only reloaded by the agent that created it. */
   private assertSameAgent(entry: RegistryEntry): void {
     const { command, args } = this.opts.specBase
-    // The engine flag is not part of the fingerprint (D19): saved sessions load across engines.
-    if (entry.command === command && Array.isArray(entry.args) && sameArgs(stripAgentEngine(entry.args), stripAgentEngine(args))) return
+    // Engine/model/effort are not part of the fingerprint (D19): saved sessions
+    // load across engines, and `auto` already swaps models within a session.
+    if (entry.command === command && Array.isArray(entry.args) && sameArgs(stripVolatileFlags(entry.args), stripVolatileFlags(args))) return
     throw new Error(
       `acp-resume: chat ${entry.chatId} was recorded for agent ${JSON.stringify([entry.command, ...(Array.isArray(entry.args) ? entry.args : [])])}, `
       + `but the plugin is now configured for ${JSON.stringify([command, ...args])}; the saved session belongs to another agent and was not loaded. `

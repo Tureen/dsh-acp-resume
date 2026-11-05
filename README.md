@@ -45,6 +45,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         command: /path/to/agent-cli  # 必填:子 agent 可执行文件
         args: [acp]                  # 默认 []
         agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加(D19)
+        model: glm-5                 # 默认不设 = 服务器 auto 路由(按任务选模型)。设了就钉死,追加 --model <id>;args 里已写 --model 则以 args 为准
+        effort: high                 # 默认不设 = 模型自身默认档。设了追加 --effort <档>(low/medium/high/xhigh/max,依模型而异);args 里已写 --effort 则以 args 为准
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
         permission: allow            # 默认 reject;同官方语义:allow / reject
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
@@ -57,6 +59,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 ```
 
 `agentEngine` 对一次性 provider 与持久会话两条路径都生效,命令须认识 `--agent-engine`(kiro-cli 认识)。已知限制:不认该旗标的 agent 目前没有关闭追加的开关。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
+
+`model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
 三个时长字段须为正数且不超过 Node 定时器上限,`registryPath` 为相对路径时插件启动即报错。
 

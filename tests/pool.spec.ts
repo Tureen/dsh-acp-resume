@@ -735,14 +735,30 @@ describe('AcpSessionPool', () => {
     expect((await second.pool.send(chat.chatId, 'p')).freshSession).toBe(false)
   })
 
+  it('reconnects across a model/effort-only args difference (D19): same session, context intact', async () => {
+    const { env } = storeEnv('acp-resume-model-fp-')
+    const first = makePool({ env, args: [mockServer, '--model', 'glm-5', '--effort', 'low'] })
+    const chat = await first.pool.start(process.cwd())
+    await first.pool.send(chat.chatId, 'first-secret')
+    await first.pool.disposeAll()
+
+    // Same command, different model/effort (and no model/effort at all on the new pool).
+    const second = makePool({ env, registryPath: first.registryPath, args: [mockServer, '--model', 'claude-opus-5.5'] })
+    const turn = await second.pool.send(chat.chatId, 'second')
+    expect(turn.stopReason).toBe('completed')
+    expect(turn.freshSession).toBe(false)
+    expect(turn.output).toBe('remember:first-secret')
+    expect(registryRemote(first.registryPath, chat.chatId)).toBe(chat.remoteSessionId)
+  })
+
   it('still refuses when args differ beyond the engine flag', async () => {
     const dir = tempDir('acp-resume-engine-fp-other-')
     const registryPath = join(dir, 'registry.json')
     writeFileSync(registryPath, JSON.stringify({
       version: 1,
-      sessions: [{ chatId: 'chat-mix', remoteSessionId: 'remote-z', cwd: process.cwd(), command: process.execPath, args: [mockServer, '--other', '--agent-engine', 'v2'], lastActive: 1 }],
+      sessions: [{ chatId: 'chat-mix', remoteSessionId: 'remote-z', cwd: process.cwd(), command: process.execPath, args: [mockServer, '--other', '--agent-engine', 'v2', '--model', 'glm-5'], lastActive: 1 }],
     }))
-    const { pool, spawns } = makePool({ registryPath, args: [mockServer, '--agent-engine', 'v3'] })
+    const { pool, spawns } = makePool({ registryPath, args: [mockServer, '--agent-engine', 'v3', '--model', 'claude-opus-5.5'] })
     await expect(pool.send('chat-mix', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(registryRemote(registryPath, 'chat-mix')).toBe('remote-z')

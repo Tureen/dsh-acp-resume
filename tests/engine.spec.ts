@@ -20,7 +20,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
-import { hasAgentEngineFlag, stripAgentEngine, withAgentEngine } from '../src/engine.ts'
+import { buildChildArgs, hasAgentEngineFlag, stripAgentEngine, stripVolatileFlags, withAgentEngine } from '../src/engine.ts'
 import type { ToolsRegistryFace } from '../src/tools.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
@@ -124,6 +124,27 @@ describe('engine flag helpers', () => {
     expect(stripAgentEngine(['a', '--agent-engine-other', 'b'])).toEqual(['a', '--agent-engine-other', 'b'])
     expect(stripAgentEngine(['a', 7, null])).toEqual(['a', 7, null])
   })
+
+  it('appends --model / --effort only when configured and not already set (D19 2026-11-05)', () => {
+    expect(buildChildArgs(['acp'], { engine: 'v3' })).toEqual(['acp', '--agent-engine', 'v3'])
+    expect(buildChildArgs(['acp'], { engine: 'v3', model: 'glm-5' })).toEqual(['acp', '--agent-engine', 'v3', '--model', 'glm-5'])
+    expect(buildChildArgs(['acp'], { engine: 'v3', model: 'glm-5', effort: 'high' }))
+      .toEqual(['acp', '--agent-engine', 'v3', '--model', 'glm-5', '--effort', 'high'])
+    // Empty strings are treated as unset.
+    expect(buildChildArgs(['acp'], { engine: 'v2', model: '', effort: '' })).toEqual(['acp', '--agent-engine', 'v2'])
+    // A user-supplied flag (either form) is never duplicated.
+    expect(buildChildArgs(['acp', '--model', 'mine'], { engine: 'v3', model: 'glm-5' }))
+      .toEqual(['acp', '--model', 'mine', '--agent-engine', 'v3'])
+    expect(buildChildArgs(['acp', '--effort=low'], { engine: 'v3', effort: 'max' }))
+      .toEqual(['acp', '--effort=low', '--agent-engine', 'v3'])
+  })
+
+  it('strips --model and --effort too (fingerprint ignores volatile flags)', () => {
+    expect(stripVolatileFlags(['acp', '--model', 'glm-5', '--effort', 'high'])).toEqual(['acp'])
+    expect(stripVolatileFlags(['acp', '--model=glm-5', '--effort=high', '--other'])).toEqual(['acp', '--other'])
+    expect(stripVolatileFlags(['acp', '--agent-engine', 'v3', '--model', 'glm-5'])).toEqual(['acp'])
+    expect(stripVolatileFlags(['acp', 7, null])).toEqual(['acp', 7, null])
+  })
 })
 
 describe('engine flag on the spawn paths', () => {
@@ -145,5 +166,24 @@ describe('engine flag on the spawn paths', () => {
 
   it('one-shot provider: does not duplicate a user-supplied flag', async () => {
     expect(await oneShotArgv({ args: [mockServer, '--agent-engine=v2'] })).toEqual(['--agent-engine=v2'])
+  })
+
+  it('chat pool: leaves model/effort off by default (server auto-routes)', async () => {
+    expect(await chatArgv({ args: [mockServer] })).toEqual(['--agent-engine', 'v3'])
+  })
+
+  it('chat pool: appends --model / --effort when configured', async () => {
+    expect(await chatArgv({ args: [mockServer], model: 'glm-5', effort: 'high' }))
+      .toEqual(['--agent-engine', 'v3', '--model', 'glm-5', '--effort', 'high'])
+  })
+
+  it('chat pool: does not duplicate a user-supplied --model', async () => {
+    expect(await chatArgv({ args: [mockServer, '--model', 'mine'], model: 'glm-5' }))
+      .toEqual(['--model', 'mine', '--agent-engine', 'v3'])
+  })
+
+  it('one-shot provider: appends --model / --effort when configured', async () => {
+    expect(await oneShotArgv({ args: [mockServer], model: 'claude-opus-5.5', effort: 'max' }))
+      .toEqual(['--agent-engine', 'v3', '--model', 'claude-opus-5.5', '--effort', 'max'])
   })
 })
