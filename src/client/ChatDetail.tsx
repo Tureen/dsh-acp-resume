@@ -6,10 +6,12 @@
  * title) that recedes behind the header, and the turn history as one card per
  * entry, newest first, spaced apart. Each turn card shows the question and
  * answer as the subject (first non-empty line as a preview) with seq, stop
- * reason, and time demoted to a meta row of tags; a dedicated chevron control
- * (discoverable, with `aria-expanded`) expands the card to the full message and
- * answer in scrollable regions that keep their line breaks, and the diagnostic
- * sits behind its own toggle. Reconnect events are set apart from turns by a
+ * reason, and time demoted to a meta row. Expanding sits on the reading line:
+ * the primary control is a full-width button at the card's tail ("expand full
+ * text · N lines", becoming "collapse" once open), and the whole header row is
+ * also clickable; the small chevron is a visual cue only. Expanding reveals the
+ * full message and answer in scrollable regions that keep their line breaks,
+ * and the diagnostic sits behind its own toggle. Reconnect events are set apart from turns by a
  * tinted left rail and a "connection" tag. The full text is fetched on demand
  * when a preview is cut; expansion and fetched text live in component state
  * only. Pure props: data arrives through a per-chat {@link DetailSource},
@@ -56,18 +58,21 @@ const styles = {
   list: { display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' },
 
   turn: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
-  turnTop: { display: 'flex', alignItems: 'center', gap: 6 },
+  turnTop: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6 },
   turnTags: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
   turnSeq: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)' },
   turnTime: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
-  chevron: { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, padding: 0, border: 0, borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: 11 },
+  // Visual-only cue; the header row and the bottom button carry the interaction.
+  chevron: { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, transition: 'transform 120ms ease' },
+  chevronOpen: { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, color: 'var(--dsw-alias-label-tertiary)', fontSize: 11, transform: 'rotate(180deg)', transition: 'transform 120ms ease' },
 
   qa: { display: 'flex', flexDirection: 'column', gap: 6 },
   qaBlock: { display: 'flex', flexDirection: 'column', gap: 2 },
   qaLabel: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' },
   qaPreview: { margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   qaAnswerPreview: { margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  moreHint: { margin: 0, fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', fontStyle: 'italic' },
+  // The primary expand/collapse entry: a full-width button at the reading tail.
+  expandButton: { alignSelf: 'stretch', marginTop: 2, padding: '6px 8px', border: '1px solid var(--dsw-alias-border-l4)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: 12, fontWeight: 500, textAlign: 'center' },
 
   full: { margin: 0, maxHeight: 320, overflow: 'auto', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.6, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l4)' },
   diagToggle: { alignSelf: 'flex-start', padding: 0, border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: 11 },
@@ -85,6 +90,11 @@ const styles = {
 
 function failure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Non-empty line count of a body, for the expand button's hint (0 when blank). */
+function countLines(text: string): number {
+  return text.split('\n').filter(line => line.trim() !== '').length
 }
 
 /** First non-empty line, trimmed and cut to `max` characters with an ellipsis. */
@@ -127,19 +137,35 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
   const tag = stopTag(item.stopReason)
   const questionPreview = firstLine(item.message)
   const answerPreview = item.output === '' ? { text: t('noAnswer'), clipped: false } : firstLine(item.output)
-  const hasMore = questionPreview.clipped || answerPreview.clipped || item.messageMore || item.outputMore || item.output === ''
+  // A turn is expandable when the collapsed previews do not already show
+  // everything: either line is clipped, the host flagged more, or there is no
+  // answer text to preview. A fully-shown turn has nothing behind an expand.
+  const expandable = questionPreview.clipped || answerPreview.clipped || item.messageMore || item.outputMore || item.output === ''
+  // Line count of the longer body, for the bottom button's hint.
+  const bodyLines = Math.max(countLines(message), countLines(output))
+  const toggle = (): void => { onToggle(item) }
   return (
     <li style={styles.turn} data-seq={item.seq} data-open={open ? '' : undefined}>
-      <div style={styles.turnTop}>
+      {/* The whole header row toggles the turn; the chevron is a visual cue only. */}
+      <div
+        style={styles.turnTop}
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        aria-label={t('turnToggle', { seq: item.seq })}
+        data-turn-head=""
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() }
+        }}
+      >
         <div style={styles.turnTags}>
           <span style={styles.turnSeq}>#{item.seq}</span>
           {tag === undefined ? <Tag tone="neutral">{item.stopReason}</Tag> : <Tag tone={tag.tone}>{t(tag.key)}</Tag>}
           {item.freshSession ? <Tag tone="info">{t('freshBadge')}</Tag> : null}
           <span style={styles.turnTime}>{relativeTime(t, item.at, now)}</span>
         </div>
-        <button type="button" style={styles.chevron} aria-expanded={open}
-          aria-label={t(open ? 'turnCollapse' : 'turnExpand', { seq: item.seq })}
-          onClick={() => { onToggle(item) }}>{open ? '▴' : '▾'}</button>
+        <span style={open ? styles.chevronOpen : styles.chevron} data-chevron="" aria-hidden="true">▾</span>
       </div>
       {open ? (
         <div style={styles.qa}>
@@ -160,6 +186,9 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
               {diagOpen ? <p style={styles.diag} data-diagnostic>{item.diagnostic}</p> : null}
             </>
           )}
+          {/* Collapse at the reading tail: the natural place after reading the full text. */}
+          <button type="button" style={styles.expandButton} aria-expanded data-turn-foot=""
+            aria-label={t('turnCollapse', { seq: item.seq })} onClick={toggle}>{t('collapseFull')}</button>
         </div>
       ) : (
         <div style={styles.qa}>
@@ -171,7 +200,13 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
             <span style={styles.qaLabel}>{t('answer')}</span>
             <p style={styles.qaAnswerPreview}>{answerPreview.text}</p>
           </div>
-          {hasMore ? <p style={styles.moreHint}>{t('moreLines')}</p> : null}
+          {/* The primary expand entry: a real button on the reading-line end. */}
+          {expandable ? (
+            <button type="button" style={styles.expandButton} aria-expanded={false} data-turn-foot=""
+              aria-label={t('turnExpand', { seq: item.seq })} onClick={toggle}>
+              {bodyLines > 1 ? t('expandFullLines', { lines: bodyLines }) : t('expandFull')}
+            </button>
+          ) : null}
         </div>
       )}
     </li>

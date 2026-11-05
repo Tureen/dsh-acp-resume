@@ -611,22 +611,63 @@ describe('ChatDetail (D18)', () => {
     expect(screen.getByText('正在读取…')).toBeTruthy()
   })
 
-  it('has a discoverable expand control per turn with an accessible, toggling name', () => {
+  it('the primary expand entry is a bottom button on the reading line, which toggles to a collapse button in place', async () => {
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })))
     const { container } = render(<ChatDetail {...injected} />)
     const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    const chevron = within(card).getByRole('button', { name: '展开第 1 条' })
-    expect(chevron.getAttribute('aria-expanded')).toBe('false')
-    // A collapsed card whose full text is longer hints at the expansion.
-    expect(within(card).queryByText('还有内容,展开查看')).toBeTruthy()
-    fireEvent.click(chevron)
-    expect(screen.getByRole('button', { name: '收起第 1 条' }).getAttribute('aria-expanded')).toBe('true')
+    const foot = within(card).getByRole('button', { name: '展开第 1 条' })
+    // It is the bottom-of-card button (not the header row), carrying the hint text.
+    expect(foot.getAttribute('data-turn-foot')).toBe('')
+    expect(foot.textContent).toContain('展开查看全文')
+    expect(foot.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => { fireEvent.click(foot) })
+    // Same place becomes a collapse button once open.
+    const collapse = within(card).getByRole('button', { name: '收起第 1 条' })
+    expect(collapse.getAttribute('data-turn-foot')).toBe('')
+    expect(collapse.textContent).toBe('收起')
+    expect(collapse.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => { fireEvent.click(collapse) })
+    expect(within(card).getByRole('button', { name: '展开第 1 条' }).getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('a single-line turn shows no "more content" hint', () => {
+  it('shows a line count on the expand button for a multi-line body', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: '一\n二\n三', messageMore: true })] })))
+    const { container } = render(<ChatDetail {...injected} />)
+    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByRole('button', { name: '展开第 1 条' }).textContent).toBe('展开查看全文 · 共 3 行')
+  })
+
+  it('the turn header row also toggles the turn and carries aria-expanded; the chevron is a visual cue only', async () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })))
+    const { container } = render(<ChatDetail {...injected} />)
+    const card = container.querySelector('[data-seq="1"]') as HTMLElement
+    const head = card.querySelector('[data-turn-head]') as HTMLElement
+    expect(head.getAttribute('role')).toBe('button')
+    expect(head.getAttribute('aria-expanded')).toBe('false')
+    expect(head.getAttribute('tabindex')).toBe('0')
+    // The chevron is a visual cue only: a non-interactive span, not a button.
+    const chevron = head.querySelector('[data-chevron]') as HTMLElement
+    expect(chevron.tagName).toBe('SPAN')
+    expect(chevron.getAttribute('aria-hidden')).toBe('true')
+    expect(within(head).queryByRole('button')).toBeNull()
+    await act(async () => { fireEvent.click(head) })
+    expect(head.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-seq="1"] [data-full="message"]')).not.toBeNull()
+    // Keyboard reaches the row.
+    await act(async () => { fireEvent.keyDown(head, { key: 'Enter' }) })
+    expect(head.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('a fully-shown turn offers no expand button; its header still toggles', async () => {
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: '就一行', output: '也一行' })] })))
     const { container } = render(<ChatDetail {...injected} />)
-    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).queryByText('还有内容,展开查看')).toBeNull()
+    const card = container.querySelector('[data-seq="1"]') as HTMLElement
+    expect(within(card).queryByRole('button', { name: /^展开第 1 条$/ })).toBeNull()
+    expect(card.querySelector('[data-turn-foot]')).toBeNull()
+    // The header still responds (it opens the same full regions, harmless when short).
+    await act(async () => { fireEvent.click(card.querySelector('[data-turn-head]') as HTMLElement) })
+    expect(container.querySelector('[data-seq="1"] [data-full="message"]')).not.toBeNull()
+    // Open state offers the collapse button at the tail.
+    expect(within(card).getByRole('button', { name: '收起第 1 条' }).textContent).toBe('收起')
   })
 
   it('previews show the first non-empty line, not a raw character slice of a multi-line message', () => {
@@ -637,8 +678,8 @@ describe('ChatDetail (D18)', () => {
     expect(within(card).getByText('首行问题')).toBeTruthy()
     expect(within(card).queryByText(/第二行不该出现/)).toBeNull()
     expect(within(card).getByText('首行回答')).toBeTruthy()
-    // A multi-line body hints that there is more even when the first line is short.
-    expect(within(card).getByText('还有内容,展开查看')).toBeTruthy()
+    // A multi-line body is expandable even when the first line is short.
+    expect(within(card).getByRole('button', { name: '展开第 1 条' })).toBeTruthy()
   })
 
   it('expands a turn on click: full text fetched once when the preview is cut, no fetch when it is complete', async () => {
@@ -649,6 +690,7 @@ describe('ChatDetail (D18)', () => {
     const { container } = render(<ChatDetail {...injected} />)
     expect(container.querySelector('[data-full]')).toBeNull()
 
+    // The cut turn has a bottom expand button; the whole turn is opened from its header row.
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 1 条' })) })
     expect(source.loadEntry).toHaveBeenCalledWith(1)
     // The full text sits in labelled, scrollable regions that keep line breaks.
@@ -661,8 +703,8 @@ describe('ChatDetail (D18)', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 1 条' })) })
     expect(source.loadEntry).toHaveBeenCalledTimes(1)
 
-    // A turn whose preview is complete shows its text without asking the host.
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 2 条' })) })
+    // A turn whose preview is complete shows its text without asking the host (opened from the header row).
+    await act(async () => { fireEvent.click(container.querySelector('[data-seq="2"] [data-turn-head]') as HTMLElement) })
     expect(source.loadEntry).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[data-seq="2"] [data-full="message"]')?.textContent).toBe('问题2')
   })
@@ -671,7 +713,7 @@ describe('ChatDetail (D18)', () => {
     const failed = turn(2, { stopReason: 'error', diagnostic: 'stage: prompt' })
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1), failed] })))
     const { container } = render(<ChatDetail {...injected} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 2 条' })) })
+    await act(async () => { fireEvent.click(container.querySelector('[data-seq="2"] [data-turn-head]') as HTMLElement) })
     expect(container.querySelector('[data-seq="2"] [data-full]')).not.toBeNull()
     expect(container.querySelector('[data-seq="1"] [data-full]')).toBeNull()
     // The diagnostic is collapsed by default, behind a toggle.
@@ -781,13 +823,13 @@ describe('ChatDetail (D18)', () => {
   })
 
   it('renders in English too', () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1)] })), { t: translator(en) })
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })), { t: translator(en) })
     const { container } = render(<ChatDetail {...injected} />)
     expect(screen.getByText('Turn history')).toBeTruthy()
     const card = container.querySelector('[data-seq="1"]') as HTMLElement
     expect(within(card).getByText('completed')).toBeTruthy()
     expect(within(card).getByText('9 min ago')).toBeTruthy()
-    expect(within(card).getByRole('button', { name: 'Expand entry 1' })).toBeTruthy()
+    expect((card.querySelector('[data-turn-foot]') as HTMLElement).textContent).toBe('Expand full text')
   })
 
   it('an address that names no chat shows a notice instead of throwing', () => {
