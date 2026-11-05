@@ -1,6 +1,6 @@
 {
   "name": "dsh-acp-resume",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Resumable/continuable ACP subagent provider for DeepSeek Harness: keeps the remote session id, reconnects via session/load, and joins the built-in continuable control surface. Independent sibling of @deepseek-ai/dsh-subagent-acp (registered as provider 'acp-resume').",
   "type": "module",
   "main": "lib/index.js",
