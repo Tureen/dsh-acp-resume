@@ -146,7 +146,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **结局映射**:`completed` → `completed`;`aborted` → `killed`;`error` / `max-tokens` / `refusal` / 其他 → `failed`,detail 为原工具错误的首行(如 `the agent ran out of room before it finished its answer`)。send 本身失败(重连失败等)→ `failed`,由 job 自己的取消引起时为 `killed`。`done` 永不 reject。
 - **所有权与调用标识**:按 bash 姿势,`owner` 取 `exec.agent.id`(无 agent 时为无主 job),`toolCall` 取调用标识。kind 为 `acp-chat`,label 为 `<会话 label 或 chatId>: <消息首行,至多 60 字>`。
 - **单飞与前置检查**:新增 `pool.assertSendable(chatId)`,同步复核 send 会给出的拒绝(池已销毁、未知会话、在途、注册表记录属于另一 agent 命令)。工具先做这项检查再 `jobs.start`;`run` 在 `start` 内同步调用 `pool.send`,而 send 在第一个 await 之前就占住会话,检查与占用之间没有可插入的空档(同一步里并行两个 send 到同一会话,第二个是工具错误)。注册表拒绝(无控制器、属主 job 数达上限)同样作为工具错误抛出,不降级为同步执行:上限报错本身告诉模型去 kill 或等待,自动转同步会让卡顿换个地方复现。
-- **不加 `wait` 参数**:官方 bash/workflow 都是默认前台、`run_in_background` 选择后台;本包按需求反过来默认后台。需要内联等待时,`job_output` 的 `wait: true` 就是官方的阻塞原语(上限受 tool-jobs 配置约束),再加一个 `wait` 只是第二条做同一件事的路径。
+- **不加 `wait` 参数**:官方 bash/workflow 都是默认前台、`run_in_background` 选择后台;本包按需求反过来默认后台。需要内联等待时,`job_output` 的 `wait: true` 就是官方的阻塞原语(上限受 tool-jobs 配置约束),再加一个 `wait` 只是第二条做同一件事的路径。(2026-11-06:D22 起,对运行中 acp-chat 任务的 `wait: true` 默认被拒,结果只走完成通知。)
 - **接线**:与 bash 相同(`tool-bash/src/index.ts:546-555`):tools 作用域内,无 `ctx.jobs` 时注册同步 send;jobs 到达时换成后台 send;jobs 离开而 tools 仍在时换回同步。start/list/close 不随之变化。
 - **降级**:无 jobs 服务的上下文(官方 spec 的 setup、未装 jobs-local 的宿主)保持原同步语义与原工具说明,既有用例不变。
 - **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(`~0.2.1-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
@@ -251,3 +251,26 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 - 不臆测 KAS/宿主渲染管线的绝对占用;本条只保证消除本插件产生的周期性重绘与冗余 IO。
 
 后果:新增 `src/client/snapshot-equal.ts`;两个源加 publish 守卫与 backoff 状态;`TurnLog` 加 mtime 缓存;测试 281 → 295(client +10、turn-log +4,另含 snapshot-equal 单测)。行为对用户可见的唯一变化:静默期相对时间不再每 5 秒刷新(冻结在上次变化),有变化立即恢复。已知边界:mtime 缓存的 `append`/`remove` 显式失效与 `:size` 分量是针对"同毫秒同长度"极端情形的防御(单写者 + append 必增长的前提下通常冗余);真机 GUI 重绘脉冲消除待装机用 Activity Monitor 复测确认。
+
+## D22 禁止 acp-chat 阻塞等待:结果只走完成通知唤醒(2026-11-06)
+
+问题:宿主 tool-jobs 的 `job_output` 带 `wait: true` 时最长阻塞 600000ms(`maxWaitTimeoutMs` 默认值),而 acp-chat 一轮常跑十几分钟。模型反复顶格等待,期间用户的新消息排队,体感整段卡约 10 分钟。job 结算后 tool-jobs 本就会注入 "background job … finished" 完成通知并唤醒模型(D17),硬等没有必要。
+
+机制(官方 checkout `my-subagent-acp` @ dsh-v0.2.1-rc.5 复核,路径相对仓库根):
+- 工具派发前发瀑布事件 `tools/pre-execute`,监听者返回 `{kind:'deny', reason}` 即拒绝执行:工具本体不跑,模型收到 `Error: <reason>` 且 `isError:true`,对话可继续(类型 `PreToolDecision`:`packages/core/tools/src/index.ts:608-612`;deny 的呈现:`:1528-1539`)。
+- 官方注册先例:`ctx.on('tools/pre-execute', async (exec, next) => …)`:`packages/experimental/hooks-codex/src/index.ts:228`(返回 deny 见 `:232`)、`hooks-claude-code/src/index.ts:244`、`experimental/auto-review/src/index.ts:684`、`packages/jobs/tool-jobs/src/index.ts:221`。
+- `exec.arguments` 已解析,非法 JSON 时是原始字符串,须判型;`job_output` 参数名 `job_id` / `wait` / `timeout_ms`(`tool-jobs/src/index.ts:316-319`)。
+- `jobs.get(id, caller)` 不推进读游标;未知 job 或非本会话 job 抛错(`jobs-local/src/index.ts:397-410`)。`caller` 取 `exec.agent.id`,与 tool-jobs 自身用法一致(`tool-jobs:154-160`)。
+- 已结算 job 的 wait 立即返回、不阻塞(`jobs-local:500`)。bash 前台等待走 registry.wait、不经工具派发(`tool-bash:297-320`)。
+
+决策:`src/job-wait-gate.ts` 的 `decideJobWait` 在 `scope.inject(['jobs'])` 内以 `tools/pre-execute` 监听器挂载。四个条件全满足才 deny:工具名 `job_output` 且有 agent;参数是对象、`wait === true`、`job_id` 为非空字符串;`jobs.get` 不抛错;job 的 kind 为 `acp-chat` 且状态为 `running` / `stopping`。其余一律放行(返回 `undefined` 交给下一个监听者)。`get` 抛错(未知 id、外会话 job)放行,由 `job_output` 报它自己的错——不在门里猜。拒绝文案(`waitDeniedReason`)告诉模型:这是仍在运行的 acp-chat 轮,等待已禁用;结算时会收到会话内通知;不要轮询;可做独立工作或告知用户待定后结束本轮;通知后用不带 wait 的 `job_output` 读取;在此之前不要再向该 chat 发送。`acp_chat_send` 的工具说明与返回文本同步改为「不要等,完成会唤醒」。
+
+边界:
+- 只拦运行中的 acp-chat;已结算放行,其他种类任务(bash、workflow 等)完全不受影响。
+- 依赖 tool-jobs 的 `completionDelivery` 保持默认 wakeup(完成通知唤醒)。若宿主把它改成不唤醒,模型要靠用户下一条消息或不带 wait 的 `job_output` 查询才会取到结果,体验会退化。[读官方代码得出,未在真机验证]
+- 取舍:放弃「在本轮内拿到结果」,换「不阻塞用户输入」。需要同步语义的宿主(无 jobs 服务)仍走 D17 的内联 send,不受此门影响。
+- 监听器内部不抛异常:`jobs.get` 包 try/catch,抛异常也会拦调用但文案不可控。
+
+开关:`allowChatJobWait`(默认 `false`,即默认禁止)。设 `true` 时不注册监听器,恢复 `wait` 硬等。无 jobs 服务时本就不注册(与 send 变体的条件化一致)。
+
+后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(12 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: job acp-chat-` 开头);测试 295 → 307。

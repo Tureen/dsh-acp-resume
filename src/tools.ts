@@ -203,7 +203,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
     name,
     description: `Send one message to a persistent chat started with ${toolPrefix}start. Returns at once with a background job id; `
       + 'the agent\'s answer streams into that job while you keep working. You are notified in-session when the job finishes: '
-      + 'read the answer with job_output (set wait: true only when you are blocked on it), and stop it with job_kill. '
+      + 'do not wait on it (job_output with wait is refused while the turn runs): when it finishes you are woken, then read the answer with job_output without wait. Stop it with job_kill. '
       + 'The chat keeps full conversation context. One prompt may be in flight per chat: a send to a chat whose previous job '
       + 'is still running is rejected, so wait for that job first. Different chats may run in parallel. '
       + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
@@ -235,7 +235,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
       })
       return {
         text: `message sent to chat ${chatId}; the answer runs as background job ${jobId}. `
-          + `You are notified in-session when it finishes; read the answer with job_output, stop it with job_kill. `
+          + `Do not wait on it: you are woken when it finishes; then read the answer with job_output without wait. Stop it with job_kill. `
           + `Do not send to this chat again until the job finishes.`,
         jobId,
       }

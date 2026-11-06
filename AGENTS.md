@@ -22,6 +22,7 @@ src/
   panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn` 五个 Remote 方法(D15/D18)
   client/        面板浏览器半(tsdown 打成 lib/client.js):ChatsPanel 列表、ChatDetail 详情页签(资源地址 `dsh-resource://acp-resume-chat/<chatId>`)、chats-source / detail-source 数据源
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
+  job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,拒绝对运行中 acp-chat 任务的 job_output wait:true(allowChatJobWait 可关)
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
                  (defineTool + ctx.tools.register,不走 ctx.subagents);有 ctx.jobs 时 send 注册
                  acp-chat 后台任务并立即返回 jobId(D17),无 jobs 时同步等待、轮非 completed 抛工具错误
@@ -32,6 +33,7 @@ tests/
   jobs.spec.ts           后台任务模式 send(真 jobs-local 注册表)与 send 变体随 ctx.jobs 切换
   steer.spec.ts          acp_chat_steer:插话快乐路 / 不支持降级 / 无在途轮拒绝
   engine.spec.ts         --agent-engine 辅助函数与两条 spawn 路径的 argv
+  job-wait-gate.spec.ts  D22 门:decideJobWait 纯函数、allowChatJobWait 开关、真实 ToolRuntime 派发
   turn-log.spec.ts       按轮日志单元(追加/读/截断/容错/裁剪/删除/写失败)
   panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom)
   mock-acp-server.ts     扩展了 session/load 的 mock;会话表落文件以支持跨进程重连(D9/D12)
@@ -49,7 +51,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 295 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 57 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 13 + `turn-log.spec.ts` 18;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 307 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 57 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 13 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 12;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(`/Users/Tulane/Developer/open-source-projects/deepseek-harness`,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

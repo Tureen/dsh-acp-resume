@@ -27,7 +27,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | 工具 | 用途 |
 |---|---|
 | `acp_chat_start` | 建立持久会话,返回会话句柄 chatId |
-| `acp_chat_send` | 向指定会话发消息;进程死后自动重连恢复上下文。宿主装有 jobs 服务时立即返回后台任务 id,回答流式写入该任务,完成后会话内通知,用 `job_output` 读、`job_kill` 停;无 jobs 服务时等待并返回最终回答(D17) |
+| `acp_chat_send` | 向指定会话发消息;进程死后自动重连恢复上下文。宿主装有 jobs 服务时立即返回后台任务 id,回答流式写入该任务;不要对它 `wait` 硬等(运行中的会被拒绝),完成后会话内通知唤醒,再用不带 `wait` 的 `job_output` 读,`job_kill` 停(D22);无 jobs 服务时等待并返回最终回答(D17) |
 | `acp_chat_list` | 列出活跃与持久化会话 |
 | `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
 | `acp_chat_steer` | 给**在途轮**插话:排队的消息在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。没有在途轮时报错(改用 send);agent 不实现私有扩展 `_session/steer` 时报「当前 agent 不支持插话」(D19) |
@@ -52,6 +52,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
         enableChatTools: true        # 默认 true;false 时只注册 one-shot provider
         toolPrefix: acp_chat_        # 默认 acp_chat_;五个工具名的前缀
+        allowChatJobWait: false      # 默认 false;false 时拒绝对运行中 acp-chat 任务的 job_output wait:true(D22),true 则放开
         idleTimeoutMs: 600000        # 默认 600000;空闲多久释放进程
         disposeEofGraceMs: 6000      # 默认 6000;关 stdin 后等子进程自行收尾的时间
         disposeGraceMs: 3000         # 默认 3000;观察失败/升级信号的宽限,也是 close 等在途轮结算的上限
@@ -61,6 +62,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 `agentEngine` 对一次性 provider 与持久会话两条路径都生效,命令须认识 `--agent-engine`(kiro-cli 认识)。已知限制:不认该旗标的 agent 目前没有关闭追加的开关。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
+
+`allowChatJobWait`(D22):一轮对话常跑十几分钟,模型用 `job_output` 的 `wait: true` 硬等会顶满宿主 600 秒上限,期间用户新消息排队。默认在工具派发前拒绝对**运行中**的 acp-chat 任务的 wait,并告诉模型等完成通知;任务已结算、其他种类任务(如 bash)不受影响。设 `true` 关闭该拦截。
 
 三个时长字段须为正数且不超过 Node 定时器上限,`registryPath` 为相对路径时插件启动即报错。
 

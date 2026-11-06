@@ -30,6 +30,7 @@ import { AcpSessionPool } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
 import { type AgentEngine, buildChildArgs } from './engine.js'
+import { decideJobWait } from './job-wait-gate.js'
 
 // cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
 // cannot read at runtime; `satisfies` pins the literal to the declared member.
@@ -105,6 +106,14 @@ export interface Config {
   toolPrefix?: string
   /** Register the persistent-chat tools alongside the one-shot provider (default true). */
   enableChatTools?: boolean
+  /**
+   * Allow `job_output` with `wait: true` on a still-running `acp-chat` job
+   * (default false, D22). By default such a call is refused with guidance:
+   * a chat turn can run for minutes, and blocking on it stalls the model and
+   * queues the user's messages, while the job's completion notice already
+   * wakes the model. Settled jobs and other job kinds are never affected.
+   */
+  allowChatJobWait?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -124,6 +133,7 @@ export const Config: z<Config> = z.object({
   registryPath: z.string().default(''),
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
+  allowChatJobWait: z.boolean().default(false),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */
@@ -252,6 +262,10 @@ export function apply(ctx: Context, config: Config): void {
       inlineSend?.()
       inlineSend = undefined
       const unregister = scope.tools.register(sendTool(jobsScope.jobs))
+      // D22: refuse blocking waits on running chat jobs; collection goes through the completion notice.
+      if (!resolved.allowChatJobWait) {
+        jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
+      }
       jobsScope.effect(() => () => {
         unregister()
         if (scope.fiber.state === FIBER_ACTIVE) inlineSend = scope.tools.register(sendTool())
