@@ -275,4 +275,6 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 开关:`allowChatJobWait`(默认 `false`,即默认禁止)。设 `true` 时不注册监听器,恢复 `wait` 硬等。无 jobs 服务时本就不注册(与 send 变体的条件化一致)。
 
-后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: job acp-chat-` 开头);测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
+后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: Waiting on job acp-chat-` 开头(文案重构后));测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
+
+(2026-11-06 注记)模型可见文案按描述层优化原则重构:正面协议优先(先说「完成会唤醒、再无 wait 读取」)、因果完整(说明机制而非只给禁令)、后果明示(wait 被拒、提前读只得 no new output)、冲突化解(带着运行中任务结束本轮即算已收集,对冲 tool-jobs 系统提示的「最终回答前先收集」)。涉及 `acp_chat_send` 描述与返回文本、`waitDeniedReason` 三处;描述里写作 `job_output with wait`(不含字面 `wait: true`,由文案锁定测试保证)。

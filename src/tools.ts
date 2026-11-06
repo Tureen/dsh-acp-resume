@@ -202,10 +202,11 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
   return defineTool({
     name,
     description: `Send one message to a persistent chat started with ${toolPrefix}start. Returns at once with a background job id; `
-      + 'the agent\'s answer streams into that job while you keep working. You are notified in-session when the job finishes: '
-      + 'do not wait on it (job_output with wait is refused while the turn runs): when it finishes you are woken, then read the answer with job_output without wait. Stop it with job_kill. '
-      + 'The chat keeps full conversation context. One prompt may be in flight per chat: a send to a chat whose previous job '
-      + 'is still running is rejected; send again after that job\'s completion notice. Different chats may run in parallel. '
+      + 'the agent\'s answer streams into that job. When the turn finishes you are woken in-session; then read the answer with job_output without wait. '
+      + 'Ending your turn while the job runs is correct and counts as collecting it. '
+      + 'job_output with wait on a running turn is refused, and reading again before the notification only returns no new output. '
+      + 'A send to a chat whose previous job is still running is rejected; send again after that job\'s completion notice. '
+      + 'Stop it with job_kill. The chat keeps full conversation context; different chats may run in parallel. '
       + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
       + 'If the agent did not finish its turn, the job ends failed (or killed, when cancelled) with the reason in its status, '
       + 'and any partial answer stays readable with job_output.',
@@ -235,8 +236,8 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
       })
       return {
         text: `message sent to chat ${chatId}; the answer runs as background job ${jobId}. `
-          + `Do not wait on it: you are woken when it finishes; then read the answer with job_output without wait. Stop it with job_kill. `
-          + `Do not send to this chat again until the job finishes.`,
+          + `You are woken in-session when it finishes; then read it with job_output without wait. Ending your turn now is correct and counts as collecting it. `
+          + `Stop it with job_kill. Do not send to this chat again until the job finishes.`,
         jobId,
       }
     },

@@ -174,15 +174,17 @@ describe('decideJobWait', () => {
     job.settle()
   })
 
-  it('guides the model: no polling, read after the notice without wait, no new send meanwhile', () => {
+  it('guides the model positively: ending the turn counts as collecting, woken on finish, read without wait', () => {
     const reason = waitDeniedReason('acp-chat-abc')
     expect(reason).toContain('acp-chat-abc')
-    expect(reason).toMatch(/notification/)
+    expect(reason).toMatch(/counts as collected/)
+    expect(reason).toMatch(/ending your turn now is correct/)
+    expect(reason).toMatch(/woken in-session/)
     expect(reason).toMatch(/without wait/)
     expect(reason).toMatch(/Do not poll/)
-    expect(reason).toMatch(/Ending your turn while this job runs is correct/)
-    expect(reason).toMatch(/counts as collecting/)
-    expect(reason).toMatch(/do not send another message/)
+    expect(reason).toMatch(/no new output/)
+    expect(reason).toMatch(/send to that chat again/)
+    expect(reason).not.toMatch(/wait for that job|wait: true/)
   })
 })
 
@@ -328,7 +330,7 @@ describe('real ToolRuntime dispatch', () => {
     })
     expect(denied.isError).toBe(true)
     const text = denied.content.map(block => ('text' in block ? block.text : '')).join('')
-    expect(text.startsWith('Error: job acp-chat-')).toBe(true)
+    expect(text.startsWith('Error: Waiting on job acp-chat-')).toBe(true)
     expect(calls).toEqual([])
 
     const allowed = await ctx.tools.execute({

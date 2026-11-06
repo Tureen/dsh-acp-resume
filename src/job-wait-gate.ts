@@ -26,13 +26,9 @@ export type JobWaitExecution = Pick<ToolExecution, 'name' | 'arguments' | 'agent
  * @param jobId - the running chat job the model tried to wait on.
  */
 export function waitDeniedReason(jobId: string): string {
-  return `job ${jobId} is an acp-chat turn that is still running, so waiting on it is disabled. `
-    + 'Do not poll for it: you will get an in-session notification when it finishes. '
-    + 'Ending your turn while this job runs is correct here and counts as collecting it; '
-    + 'reading it again without wait before the notification only returns no new output. '
-    + 'Keep doing independent work, or tell the user the answer is pending and end this turn. '
-    + 'After the notification, read the answer with job_output without wait. '
-    + 'Until then, do not send another message to that chat.'
+  return `Waiting on job ${jobId} is disabled: it is an acp-chat turn still running, and it already counts as collected, so ending your turn now is correct. `
+    + 'Do not poll: reading again before the notification only returns no new output. '
+    + 'When it finishes you are woken in-session; then read it with job_output without wait, and you may send to that chat again.'
 }
 
 /**

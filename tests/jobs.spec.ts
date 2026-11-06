@@ -142,6 +142,11 @@ describe('job-backed send', () => {
     const description = tools.get('acp_chat_send')!.description
     expect(description).not.toMatch(/wait for that job|wait: true/)
     expect(description).toContain('completion notice')
+    for (const copy of [sent.text as string, description]) {
+      expect(copy).toContain('woken')
+      expect(copy).toContain('counts as collecting')
+      expect(copy).toContain('without wait')
+    }
     // The tool returned while the agent is still holding its answer.
     expect(ctx.jobs.get(jobId).status).toBe('running')
     expect(ctx.jobs.get(jobId).label).toBe(`${chatId as string}: hi`)
