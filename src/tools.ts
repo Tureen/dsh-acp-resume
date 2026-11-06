@@ -205,7 +205,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
       + 'the agent\'s answer streams into that job while you keep working. You are notified in-session when the job finishes: '
       + 'do not wait on it (job_output with wait is refused while the turn runs): when it finishes you are woken, then read the answer with job_output without wait. Stop it with job_kill. '
       + 'The chat keeps full conversation context. One prompt may be in flight per chat: a send to a chat whose previous job '
-      + 'is still running is rejected, so wait for that job first. Different chats may run in parallel. '
+      + 'is still running is rejected; send again after that job\'s completion notice. Different chats may run in parallel. '
       + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
       + 'If the agent did not finish its turn, the job ends failed (or killed, when cancelled) with the reason in its status, '
       + 'and any partial answer stays readable with job_output.',
@@ -407,7 +407,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolD
         if (error instanceof AcpSteerUnsupportedError) {
           throw new Error(
             'the current agent does not support steering (it rejected _session/steer as an unknown method); '
-            + `wait for the turn to finish, or stop it with job_kill / ${toolPrefix}close and send again`,
+            + `let the turn finish (you will be notified), or stop it with job_kill / ${toolPrefix}close and send again`,
             { cause: error },
           )
         }

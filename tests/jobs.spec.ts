@@ -129,7 +129,7 @@ describe('job-backed send', () => {
     const dir = tempDir('acp-resume-jobs-hold-')
     const hold = join(dir, 'hold')
     writeFileSync(hold, 'held')
-    const { call } = mountTools({ MOCK_TEXT: 'job answer', MOCK_PROMPT_HOLD: hold }, ctx.jobs)
+    const { call, tools } = mountTools({ MOCK_TEXT: 'job answer', MOCK_PROMPT_HOLD: hold }, ctx.jobs)
     const { chatId } = await call('start', { cwd: process.cwd() })
 
     const sent = await call('send', { chatId, message: 'hi' })
@@ -137,6 +137,11 @@ describe('job-backed send', () => {
     expect(jobId).toMatch(/^acp-chat-/)
     expect(sent.text).toContain(`background job ${jobId}`)
     expect(sent.text).toContain('job_output')
+    // D22: no copy may push the model toward a blocked wait.
+    expect(sent.text).not.toMatch(/wait for that job|wait: true/)
+    const description = tools.get('acp_chat_send')!.description
+    expect(description).not.toMatch(/wait for that job|wait: true/)
+    expect(description).toContain('completion notice')
     // The tool returned while the agent is still holding its answer.
     expect(ctx.jobs.get(jobId).status).toBe('running')
     expect(ctx.jobs.get(jobId).label).toBe(`${chatId as string}: hi`)

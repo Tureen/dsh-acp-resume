@@ -79,14 +79,14 @@ interface Settler {
 }
 
 /** Register a job of `kind` the test settles by hand. */
-function startJob(ctx: Context, kind: 'acp-chat' | 'bash', owner: Agent | undefined): Settler {
+function startJob(ctx: Context, kind: 'acp-chat' | 'bash', owner: Agent | undefined, options: { deferCancel?: boolean } = {}): Settler {
   let settle!: () => void
   const done = new Promise<{ status: 'completed' }>((resolve) => { settle = () => { resolve({ status: 'completed' }) } })
   const id = ctx.jobs.start({
     kind,
     label: `${kind} test job`,
     ...(owner === undefined ? {} : { owner: owner.id }),
-    run: () => ({ done, cancel() { settle() } }),
+    run: () => ({ done, cancel() { if (options.deferCancel !== true) settle() } }),
   } as Parameters<typeof ctx.jobs.start>[0])
   return { id, settle }
 }
@@ -122,6 +122,16 @@ describe('decideJobWait', () => {
     await ctx.jobs.wait(job.id, 5000, agent.id)
     expect(ctx.jobs.get(job.id, agent.id).status).toBe('completed')
     expect(decideJobWait(ctx.jobs, outputCall(agent, { job_id: job.id, wait: true }))).toBeUndefined()
+  })
+
+  it('allows wait on a stopping job (killed by the model, no completion notice is coming)', async () => {
+    const ctx = await jobsHost()
+    const agent = await liveAgent(ctx, 'session-a')
+    const job = startJob(ctx, 'acp-chat', agent, { deferCancel: true })
+    ctx.jobs.kill(job.id, agent.id, 'test kill')
+    expect(ctx.jobs.get(job.id, agent.id).status).toBe('stopping')
+    expect(decideJobWait(ctx.jobs, outputCall(agent, { job_id: job.id, wait: true }))).toBeUndefined()
+    job.settle()
   })
 
   it('leaves other job kinds alone', async () => {
@@ -169,7 +179,9 @@ describe('decideJobWait', () => {
     expect(reason).toContain('acp-chat-abc')
     expect(reason).toMatch(/notification/)
     expect(reason).toMatch(/without wait/)
-    expect(reason).toMatch(/do not poll/)
+    expect(reason).toMatch(/Do not poll/)
+    expect(reason).toMatch(/Ending your turn while this job runs is correct/)
+    expect(reason).toMatch(/counts as collecting/)
     expect(reason).toMatch(/do not send another message/)
   })
 })
@@ -254,6 +266,12 @@ describe('apply: allowChatJobWait switch', () => {
     expect((await dispatch(ctx, outputCall(agent, { job_id: job.id, wait: true }))).kind).toBe('deny')
     await jobsFiber.dispose()
     expect((await dispatch(ctx, outputCall(agent, { job_id: job.id, wait: true }))).kind).toBe('allow')
+    // Remounting the registry brings the gate back (and exactly one listener).
+    await ctx.plugin(LocalJobRegistry)
+    ctx.jobs.attachController('gate-spec')
+    const again = startJob(ctx, 'acp-chat', agent)
+    expect((await dispatch(ctx, outputCall(agent, { job_id: again.id, wait: true }))).kind).toBe('deny')
+    again.settle()
   })
 })
 

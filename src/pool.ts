@@ -394,7 +394,7 @@ export class AcpSessionPool {
     if (this.registry.get(chatId) === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
     const existing = this.live.get(chatId)
     if (existing?.busy === true || this.starting.has(chatId)) {
-      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight`)
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
     }
     if (existing?.closing !== undefined) {
       // A release is underway: let it finish, then take the released path.
@@ -509,7 +509,7 @@ export class AcpSessionPool {
     if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
     const existing = this.live.get(chatId)
     if (existing?.busy === true || this.starting.has(chatId)) {
-      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight`)
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
     }
     if (existing === undefined) this.assertSameAgent(entry)
   }

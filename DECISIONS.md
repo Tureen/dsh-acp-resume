@@ -263,14 +263,16 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 - `jobs.get(id, caller)` 不推进读游标;未知 job 或非本会话 job 抛错(`jobs-local/src/index.ts:397-410`)。`caller` 取 `exec.agent.id`,与 tool-jobs 自身用法一致(`tool-jobs:154-160`)。
 - 已结算 job 的 wait 立即返回、不阻塞(`jobs-local:500`)。bash 前台等待走 registry.wait、不经工具派发(`tool-bash:297-320`)。
 
-决策:`src/job-wait-gate.ts` 的 `decideJobWait` 在 `scope.inject(['jobs'])` 内以 `tools/pre-execute` 监听器挂载。四个条件全满足才 deny:工具名 `job_output` 且有 agent;参数是对象、`wait === true`、`job_id` 为非空字符串;`jobs.get` 不抛错;job 的 kind 为 `acp-chat` 且状态为 `running` / `stopping`。其余一律放行(返回 `undefined` 交给下一个监听者)。`get` 抛错(未知 id、外会话 job)放行,由 `job_output` 报它自己的错——不在门里猜。拒绝文案(`waitDeniedReason`)告诉模型:这是仍在运行的 acp-chat 轮,等待已禁用;结算时会收到会话内通知;不要轮询;可做独立工作或告知用户待定后结束本轮;通知后用不带 wait 的 `job_output` 读取;在此之前不要再向该 chat 发送。`acp_chat_send` 的工具说明与返回文本同步改为「不要等,完成会唤醒」。
+决策:`src/job-wait-gate.ts` 的 `decideJobWait` 在 `scope.inject(['jobs'])` 内以 `tools/pre-execute` 监听器挂载。四个条件全满足才 deny:工具名 `job_output` 且有 agent;参数是对象、`wait === true`、`job_id` 为非空字符串;`jobs.get` 不抛错;job 的 kind 为 `acp-chat` 且状态为 `running`。`stopping` 放行(2026-11-06 评审修订):模型自己 `job_kill` 后宿主抑制完成通知,拒绝文案里「会收到通知」就成了假话;且 D6 下取消本地立即结算,`stopping` 极短暂,拦它没有收益。其余一律放行(返回 `undefined` 交给下一个监听者)。`get` 抛错(未知 id、外会话 job)放行,由 `job_output` 报它自己的错——不在门里猜。拒绝文案(`waitDeniedReason`)告诉模型:这是仍在运行的 acp-chat 轮,等待已禁用;不要轮询,结算时会收到会话内通知;本轮就此结束即算收集,通知前再无 wait 地读只会拿到空增量(压过 tool-jobs 系统提示里「最终回答前先收集」的倾向);可做独立工作或告知用户待定后结束本轮;通知后用不带 wait 的 `job_output` 读取;在此之前不要再向该 chat 发送。`acp_chat_send` 的工具说明与返回文本同步改为「不要等,完成会唤醒」。
 
 边界:
 - 只拦运行中的 acp-chat;已结算放行,其他种类任务(bash、workflow 等)完全不受影响。
 - 依赖 tool-jobs 的 `completionDelivery` 保持默认 wakeup(完成通知唤醒)。若宿主把它改成不唤醒,模型要靠用户下一条消息或不带 wait 的 `job_output` 查询才会取到结果,体验会退化。[读官方代码得出,未在真机验证]
+- 通知并非总会来:连续唤醒超过 tool-jobs 的 `maxConsecutiveWakes` 后通知静默;模型自己 `job_kill` 的任务不发完成通知(宿主抑制)。前者靠用户下一条消息或无 wait 的 `job_output` 兜底;后者正是 `stopping` 放行、且 kill 后可直接读的原因。[读官方代码得出]
+- 单飞拒绝文本(pool)、`acp_chat_send` 描述、steer 降级文本一并去掉「wait for …」措辞,改为「结束本轮/等通知」,避免与门互相矛盾诱导死循环。
 - 取舍:放弃「在本轮内拿到结果」,换「不阻塞用户输入」。需要同步语义的宿主(无 jobs 服务)仍走 D17 的内联 send,不受此门影响。
 - 监听器内部不抛异常:`jobs.get` 包 try/catch,抛异常也会拦调用但文案不可控。
 
 开关:`allowChatJobWait`(默认 `false`,即默认禁止)。设 `true` 时不注册监听器,恢复 `wait` 硬等。无 jobs 服务时本就不注册(与 send 变体的条件化一致)。
 
-后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(12 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: job acp-chat-` 开头);测试 295 → 307。
+后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: job acp-chat-` 开头);测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
