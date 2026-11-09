@@ -53,12 +53,12 @@
 kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测可用;`session/list` v2 无(v3 才有)。重连必须回放原 cwd。
 后果:注册表存 cwd;发现远端会话列表依赖 kiro 自身(`kiro-cli chat --list-sessions`)。
 
-## D8 测试豁免:真实子进程类 25 例(2026-11-04)
+## D8 测试豁免:真实子进程类 24 例(2026-11-04;2026-11-09 统一为 24)
 
 依据:官方测试直读包内 `src/spawn.ts`,npm 分发包不含该模块;相关行为(销毁梯子/环境清洗/进程退出细节)阶段二不修改,由官方仓库测试覆盖。
-后果:`spawnSubprocess` 导入失败的 25 例豁免;42 个协议面用例为有效回归面。
+后果:`spawnSubprocess` 导入失败的 24 例豁免(原文写 25,与 D16 修订及 AGENTS.md 不一致,2026-11-09 统一为 24);42 个协议面用例为有效回归面。
 
-修订(2026-11-04,D16):豁免经条件导入官方 checkout 的 `spawn.ts` 恢复(路径默认 `/Users/Tulane/Developer/open-source-projects/deepseek-harness`,可用 `DSH_OFFICIAL_CHECKOUT` 覆盖),24 例重新纳入回归面;checkout 缺席时这 24 例自动跳过。全绿基线 131(协议面 67 + connection 23 + pool 29 + tools 12)。
+修订(2026-11-04,D16):豁免经条件导入官方 checkout 的 `spawn.ts` 恢复(路径默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用 `DSH_OFFICIAL_CHECKOUT` 覆盖),24 例重新纳入回归面;checkout 缺席时这 24 例自动跳过。全绿基线 131(协议面 67 + connection 23 + pool 29 + tools 12)。
 
 ## D9 mock 服务器扩展 session/load(2026-11-04,实施第 3 步)
 

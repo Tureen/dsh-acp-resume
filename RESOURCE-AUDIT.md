@@ -9,7 +9,7 @@
 - 探针分三层:
   - **插件层**:真实 `@deepseek-ai/dsh-subprocess-local`(macOS 上以独立进程组 detached spawn)、真实 `jobs-local`、真实 `AgentRegistry`。子 agent 换成 `tree-agent.ts`:它先 spawn 一个同进程组的孙进程,再运行 mock 服务器,用来模拟 kiro-cli → kiro-cli-chat 的进程树。用 `process.kill(pid, 0)` 和 `ps` 查每个 pid 是否还活着。
   - **池/工具层**:真实池和真实 jobs-local,spawn 换成计数包装。每个句柄记三件事:`stdin.end` 次数(等于进入销毁梯子的次数)、`terminate` 次数、是否已退出。"恰好释放一次"的判定标准是:每个句柄都是 `stdin.end` 1 次且已退出。
-  - **真机 kiro**:真实 subprocess-local 拉起 `/Users/Tulane/.local/bin/kiro-cli acp`,只发 `initialize`,不建 kiro 会话。用 `pgrep`/`ps` 查进程树。
+  - **真机 kiro**:真实 subprocess-local 拉起 `kiro-cli acp`,只发 `initialize`,不建 kiro 会话。用 `pgrep`/`ps` 查进程树。
 - 另外三种计数手段:
   - 计时器:真实计时器外包一层账本,按调用栈过滤出 `src/` 创建的计时器;另做一轮 `vi.useFakeTimers({ shouldAdvanceTime: true })`,用 `vi.getTimerCount()` 计数。
   - abort 监听器:给 `EventTarget.prototype.add/removeEventListener` 打补丁记账。只统计直接调用方在 `src/` 的注册;`once` 监听器触发即算移除。

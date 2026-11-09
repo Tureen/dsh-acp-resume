@@ -4,7 +4,7 @@
 输入:PANEL-DESIGN.md(v1 已上线,§2.5 把"轮次历史展开"留给 v2)、DECISIONS.md D6/D15/D17、`src/pool.ts`、`src/panel.ts`、`src/client/*`。
 
 引用约定:
-- 不带前缀的 `packages/...:行号` 相对官方只读 checkout `/Users/Tulane/Developer/open-source-projects/deepseek-harness` 根目录(分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`,本次 `git describe` 确认)。
+- 不带前缀的 `packages/...:行号` 相对官方只读 checkout `<官方 checkout>` 根目录(分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`,本次 `git describe` 确认)。
 - `dsh-kiro:` 前缀指 `dat-lequoc/dsh-kiro` 在 `/tmp` 的浅克隆(commit `c9a397f`,2026-10-24)。
 - 本仓库文件写 `本仓库 src/...`。
 - 每条结论标 **[读码]**(读源码得出)、**[实测]**(本次跑过)或 **[推断]**(由读码推出,未运行验证)。

@@ -11,7 +11,7 @@
  * The send tool follows the job registry (D17): the job-backed variant is
  * registered while `ctx.jobs` is present, the inline variant otherwise (and
  * again when the registry leaves while the tools stay).
- * @module @deepseek-ai/dsh-subagent-acp
+ * @module dsh-acp-resume
  */
 
 import type { Context, FiberState } from '@deepseek-ai/cordis'

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PassThrough, type Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,7 @@ import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 // spawnSubprocess, so the real-subprocess cases import it from the official
 // source checkout (override with DSH_OFFICIAL_CHECKOUT). Without the checkout
 // those cases skip.
-const officialCheckout = process.env.DSH_OFFICIAL_CHECKOUT ?? '/Users/Tulane/Developer/open-source-projects/deepseek-harness'
+const officialCheckout = process.env.DSH_OFFICIAL_CHECKOUT ?? join(homedir(), 'Developer/open-source-projects/deepseek-harness')
 const officialSpawnModule = join(officialCheckout, 'packages/subprocess/subprocess-local/src/spawn.ts')
 const officialSpawnAvailable = existsSync(officialSpawnModule)
 const spawnSubprocess: (spec: SubprocessSpawnSpec) => SubprocessHandle = officialSpawnAvailable

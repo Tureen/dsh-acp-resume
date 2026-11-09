@@ -8,7 +8,9 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: **in development**. Stage two (connection primitives, session pool, five tools, and wiring) is implemented and has been through one six-dimension review fix round (D16). Real-machine kiro-cli smoke tests and install acceptance are still pending; progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+Status: published on npm (0.1.16). Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+
+**Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
 ## Motivation
 
@@ -114,7 +116,7 @@ The background mode of `acp_chat_send` needs the host to have both `@deepseek-ai
 
 ```sh
 pnpm install && pnpm build     # build lib/
-pnpm test                      # vitest; 311 green = official protocol surface 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest; 311 green = official protocol surface 67 + connection 24 + pool 57 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - Baseline: the sources are copied from `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`, with peers pinned to `~0.2.1-rc.5`;

@@ -8,7 +8,7 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 - 本包 provider 注册名 `acp-resume`,永不触碰官方 `acp` provider 与现有 kiro 链路(D1)。
 - `src/run.ts` 是官方源码的逐字副本,禁止为消重而重构(D11);`src/connection.ts` 是池专用姊妹实现,约 200 行受控重复是刻意选择,不是待清理债务。
 - 42 个官方协议面用例是 one-shot 行为的不回归门槛;真实子进程类 24 例依赖官方 checkout 的 `spawn.ts`(npm 分发包不含),checkout 在场时运行、缺席时自动跳过(D8),跳过属预期,不是待修缺陷。
-- 官方源码只读对照:`/Users/Tulane/Developer/open-source-projects/deepseek-harness`,分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`。
+- 官方源码只读对照:`<官方 checkout>`(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖),分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`。
 
 ## Repository layout
 
@@ -53,8 +53,8 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 311 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 57 + `tools.spec.ts` 12 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
-- D8 豁免已恢复为条件运行:官方 checkout(`/Users/Tulane/Developer/open-source-projects/deepseek-harness`,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
+- 绿色回归面 = 各套件绿例之和,当前 311 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 57 + `tools.spec.ts` 13 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
+- D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
 ## Conventions

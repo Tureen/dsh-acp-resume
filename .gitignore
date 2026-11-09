@@ -1,3 +1,9 @@
 node_modules/
 lib/
 *.tsbuildinfo
+.DS_Store
+.env
+.env.*
+*.log
+turns/
+issue-draft-tool-jobs-wait.md

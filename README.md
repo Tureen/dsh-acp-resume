@@ -6,7 +6,9 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:**开发中**。阶段二(连接原语、会话池、五个工具与接线)已实现,并完成一轮六维评审修复(D16);待真机 kiro-cli 冒烟与装机验收,进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
+状态:已发布到 npm(0.1.16)。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
+
+**已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间的行为目前由 mock 服务器的测试覆盖;只在 kiro-cli 上有过实测,其他 ACP agent 未实测。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
 ## 动机
 
@@ -112,7 +114,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;311 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest;311 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

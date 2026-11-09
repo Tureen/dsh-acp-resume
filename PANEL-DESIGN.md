@@ -192,7 +192,7 @@ v2 验收(装机后 GUI,待做):
 
 ## 3.6 技术补强(spike 定稿)
 
-2026-11-04 spike。依据全部取自官方只读 checkout `/Users/Tulane/Developer/open-source-projects/deepseek-harness`(分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`),下文 `file:line` 均相对该仓库根;另引第三方先例 `dat-lequoc/dsh-kiro`(commit `c9a397f`,标注 `dsh-kiro:`)。每条结论标明 **[实测]**(在 `/tmp` 下跑过探针,不在本仓库)、**[读码]**(读源码得出)或 **[未验证]**(待装机确认)。
+2026-11-04 spike(`<官方 checkout>` 指官方源码只读 checkout,默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用 `DSH_OFFICIAL_CHECKOUT` 覆盖)。依据全部取自官方只读 checkout `<官方 checkout>`(分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`),下文 `file:line` 均相对该仓库根;另引第三方先例 `dat-lequoc/dsh-kiro`(commit `c9a397f`,标注 `dsh-kiro:`)。每条结论标明 **[实测]**(在 `/tmp` 下跑过探针,不在本仓库)、**[读码]**(读源码得出)或 **[未验证]**(待装机确认)。
 
 ### 3.6.0 对 §3.1–§3.5 的修正(以本节为准)
 
