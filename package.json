@@ -29,6 +29,13 @@
     "subagent",
     "kiro"
   ],
+  "author": "Tureen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tureen/dsh-acp-resume.git"
+  },
+  "bugs": "https://github.com/Tureen/dsh-acp-resume/issues",
+  "homepage": "https://github.com/Tureen/dsh-acp-resume#readme",
   "license": "MIT",
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
