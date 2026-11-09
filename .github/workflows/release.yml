@@ -29,3 +29,44 @@ jobs:
       - run: pnpm test # D8 的 24 例条件用例在无官方 checkout 的 CI 上自动跳过,属预期
 
       - run: npm publish --provenance
+
+  market-index:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: market-index
+      cancel-in-progress: false
+    steps:
+      # 发布由 tag 触发;索引必须提交到默认分支，供 GitHub Pages 读取。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm install -g pnpm@11
+
+      - run: git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git "$RUNNER_TEMP/deepseek-harness"
+
+      - run: pnpm --dir "$RUNNER_TEMP/deepseek-harness" install --frozen-lockfile --filter @deepseek-ai/dsh-plugin-market-generator...
+
+      - run: >-
+          pnpm --dir "$RUNNER_TEMP/deepseek-harness" --filter @deepseek-ai/dsh-plugin-market-generator start
+          --input "$GITHUB_WORKSPACE/market/plugins.txt"
+          --output "$GITHUB_WORKSPACE/docs/index.json"
+          --title "Tureen's DSH Plugins"
+          --description "Community plugin market for DeepSeek Harness"
+
+      - name: 提交市场索引
+        run: |
+          if git diff --quiet -- docs/index.json; then
+            exit 0
+          fi
+          git add -A -- docs
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore: 再生市场索引'
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"

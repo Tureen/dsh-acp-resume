@@ -5,12 +5,14 @@
 ## D1 独立新包,不 fork 官方 subagent-acp(2026-11-04)
 
 依据:fork 会破坏三条硬要求——现有 kiro 链路隔离(同名包替换会劫持 `provider: acp` 配置)、官方更新可跟进(rebase 负担)、客户端升级可适配(peer 面缩小到 seam 契约)。独立包注册 `acp-resume`,与官方 `acp` 并存,三条全部成立。
-后果:包内自持官方 0.2.1-rc.5 源码副本;官方缺陷修复需择要摘入(面小)。
+后果:包内自持官方 one-shot 源码副本;2026-11-09 已与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 对照，`src/run.ts` 无差异;官方缺陷修复需择要摘入(面小)。
 
-## D2 基线钉 0.2.1-rc.5,与已装 App 对齐(2026-11-03)
+## D2 基线钉 0.2.2-rc.1,与已装 App 对齐(2026-11-03;2026-11-09 修订)
 
-依据:用户 App 实测为 0.2.1-rc.5(Info.plist);错版先例:误装 0.1.0-rc.6 导致 provider 行无法激活。
-后果:peer 全部 `~0.2.1-rc.5`;App 升级时同步重装并跑回归。
+依据:用户 App 已自动升级至 0.2.2-rc.1;错版先例:误装 0.1.0-rc.6 导致 provider 行无法激活。
+后果:DSH peer 与对应 devDependencies 全部 `~0.2.2-rc.1`;Cordis peer/devDependencies 同步为 `~4.1.0`，loader devDependency 同步为 `~1.1.0` 以满足新版 Cordis peer；新版工具运行时将执行器拆出，直接调度 ToolRuntime 的回归用例另加 `@deepseek-ai/dsh-tool-executor-native` devDependency；App 升级时同步重装并跑回归。
+
+修订(2026-11-09):包所有者决定将 `engines.dsh` 改为仅设最低版本 `>=0.2.2-rc.1`、移除上限，避免每次宿主跨版本线升级都必须发布新版插件。所有者接受代价：未来 0.3+ 宿主若不兼容，安装不再被 engines 拦截，问题可能表现为构建、加载或运行期故障；这不改变 DSH peer 仍钉 `~0.2.2-rc.1` 的策略。官方 checkout 已切到 tag `dsh-v0.2.2-rc.1`，`src/run.ts` 与官方无差异；D8 的 24 个真实子进程用例在该 checkout 下实际运行，连同 42 个 mock 协议面和其余套件共 314 例全绿。
 
 ## D3 不接入内核续聊体系(prepareContinuable)(2026-11-04)
 
@@ -63,6 +65,8 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 后果:`spawnSubprocess` 导入失败的 24 例豁免(原文写 25,与 D16 修订及 AGENTS.md 不一致,2026-11-09 统一为 24);42 个协议面用例为有效回归面。
 
 修订(2026-11-04,D16):豁免经条件导入官方 checkout 的 `spawn.ts` 恢复(路径默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用 `DSH_OFFICIAL_CHECKOUT` 覆盖),24 例重新纳入回归面;checkout 缺席时这 24 例自动跳过。全绿基线 131(协议面 67 + connection 23 + pool 29 + tools 12)。
+
+修订(2026-11-09,D2):官方 checkout 已切到 `dsh-v0.2.2-rc.1`;24 例真实子进程用例在该基线实际运行并通过。若 checkout 缺席，仍按本条自动跳过，不把跳过当作缺陷。
 
 ## D9 mock 服务器扩展 session/load(2026-11-04,实施第 3 步)
 
@@ -153,7 +157,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **不加 `wait` 参数**:官方 bash/workflow 都是默认前台、`run_in_background` 选择后台;本包按需求反过来默认后台。需要内联等待时,`job_output` 的 `wait: true` 就是官方的阻塞原语(上限受 tool-jobs 配置约束),再加一个 `wait` 只是第二条做同一件事的路径。(2026-11-06:D22 起,对运行中 acp-chat 任务的 `wait: true` 默认被拒,结果只走完成通知。)
 - **接线**:与 bash 相同(`tool-bash/src/index.ts:546-555`):tools 作用域内,无 `ctx.jobs` 时注册同步 send;jobs 到达时换成后台 send;jobs 离开而 tools 仍在时换回同步。start/list/close 不随之变化。
 - **降级**:无 jobs 服务的上下文(官方 spec 的 setup、未装 jobs-local 的宿主)保持原同步语义与原工具说明,既有用例不变。
-- **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(`~0.2.1-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
+- **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(当前 D2 基线 `~0.2.2-rc.1`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
 
 后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接(2026-11-04:此描述自 D6 释放条 P2-1 修订起成立;此前释放一开始就移出活跃表,第一个 send 不等待直接重连)。
 

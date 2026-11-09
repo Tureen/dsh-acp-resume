@@ -4,11 +4,11 @@
 
 A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods but has **only been tested with kiro-cli** so far; mid-turn steering (`_session/steer`) is a kiro-specific extension, and the steering tool reports a clear error when the agent does not support it. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
 
-Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0` and Node >= 24).
+Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.1` and Node >= 24).
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: published on npm (0.1.16). Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: published on npm (0.1.17). Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -79,7 +79,7 @@ The three duration fields must be positive and no greater than Node's timer limi
 
 ## Install and upgrade
 
-**Main path: install from npm.** Requires DSH `>=0.2.1-rc.5 <0.2.2-0` (the package's `engines.dsh` declares this range, and the install is refused when it is not satisfied) and Node >= 24:
+**Main path: install from npm.** Requires DSH `>=0.2.2-rc.1` (the package's `engines.dsh` sets only a minimum version and no installation ceiling for later DSH release lines) and Node >= 24:
 
 ```sh
 dsh plugin --profile <name> add dsh-acp-resume
@@ -88,6 +88,8 @@ dsh plugin --profile <name> add dsh-acp-resume
 > **Note:** If installation reports `ERR_PNPM_TARBALL_EXTRACT` or a checksum error, dsh's default `minimumReleaseAge` supply-chain protection has filtered out the newly published version. A first npm release can also include the invalid placeholder version `0.0.0-stage`. Pin the version explicitly: `dsh plugin --profile <name> add dsh-acp-resume@<version>`. dsh writes that version to the profile's `minimumReleaseAgeExclude`, so installation succeeds immediately. The unpinned command works again after the release has aged for a while.
 
 `<name>` is the profile name (the default profile directory of the DSH App is `~/.dsh/profiles/desktop/`). After installing, the package appears in that profile's `dsh.profile.bundles`, and takes effect after DSH restarts. To upgrade, use `dsh plugin --profile <name> add dsh-acp-resume@<version>`; to uninstall, use `dsh plugin --profile <name> remove dsh-acp-resume`.
+
+**Install from Discover (experimental).** Enable the **Custom plugin markets** experimental switch on the Plugins page. Then open **Discover**, select **Add index source**, and enter `https://tureen.github.io/dsh-acp-resume/index.json`. When the index loads, install from the `dsh-acp-resume` card and restart DSH.
 
 **Alternative: a local tgz.** After `pnpm build` in this repository, run `pnpm pack --pack-destination <stable directory>` (`prepack` clears `lib/` and recompiles first, so no stale output is packed), then `dsh plugin --profile <name> add <path to the tgz>`.
 
@@ -121,10 +123,10 @@ pnpm install && pnpm build     # build lib/
 pnpm test                      # vitest; 314 green = official protocol surface 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- Baseline: the sources are copied from `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`, with peers pinned to `~0.2.1-rc.5`;
+- Baseline: checked against `dsh-v0.2.2-rc.1`; `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1`. DSH peers are pinned to `~0.2.2-rc.1`, and the Cordis peer to `~4.1.0`;
 - Conditionally run cases: the 24 real-child-process cases need `spawn.ts` from the official checkout (not included in the npm distribution). When the official checkout (its path given by the environment variable `DSH_OFFICIAL_CHECKOUT`; when unset, the default location in the tests is used) is present, everything is green and the exit code is 0; when it is absent, these 24 cases are skipped automatically (see DECISIONS D8);
 - Two implementations side by side: run.ts stays the official original and is not refactored (D11); connection.ts is the sibling implementation dedicated to the pool;
-- Official source checkout used for reference: branch `my-subagent-acp` @ `dsh-v0.2.1-rc.5` (read-only comparison).
+- Official source checkout used for reference: tag `dsh-v0.2.2-rc.1` (read-only comparison).
 
 ## License
 

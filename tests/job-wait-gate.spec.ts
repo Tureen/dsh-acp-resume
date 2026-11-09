@@ -25,6 +25,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
 import { decideJobWait, waitDeniedReason } from '../src/job-wait-gate.ts'
@@ -66,6 +67,7 @@ async function liveAgent(ctx: Context, rawId: string): Promise<Agent> {
 /** A registry host with a job controller and the agent registry (jobs need live owners). */
 async function jobsHost(): Promise<Context> {
   const ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin((await import('@deepseek-ai/dsh-agent')).default)
   await ctx.plugin(LocalJobRegistry)
   ctx.jobs.attachController('gate-spec')
@@ -288,9 +290,10 @@ describe('real ToolRuntime dispatch', () => {
       getSectionOrder() { return 0 }
     }
     await ctx.plugin(StubSystemPrompt)
-    await ctx.plugin((await import('@deepseek-ai/dsh-agent')).default)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin((await import('@deepseek-ai/dsh-agent')).default)
     await mountWorkingDirectoryFixture(ctx)
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(LocalSubprocessRuntime)
@@ -321,25 +324,23 @@ describe('real ToolRuntime dispatch', () => {
     const agent = await liveAgent(ctx, 'session-a')
     const job = startJob(ctx, 'acp-chat', agent)
 
-    const denied = await ctx.tools.execute({
-      callId: 'call-deny' as never,
-      name: 'job_output',
-      arguments: { job_id: job.id, wait: true },
+    const deniedBatch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: 'call-deny' as never, name: 'job_output', arguments: JSON.stringify({ job_id: job.id, wait: true }) }],
       agent,
       signal: new AbortController().signal,
     })
+    const denied = deniedBatch.results[0]!.result
     expect(denied.isError).toBe(true)
     const text = denied.content.map(block => ('text' in block ? block.text : '')).join('')
     expect(text.startsWith('Error: Waiting on job acp-chat-')).toBe(true)
     expect(calls).toEqual([])
 
-    const allowed = await ctx.tools.execute({
-      callId: 'call-allow' as never,
-      name: 'job_output',
-      arguments: { job_id: job.id },
+    const allowedBatch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: 'call-allow' as never, name: 'job_output', arguments: JSON.stringify({ job_id: job.id }) }],
       agent,
       signal: new AbortController().signal,
     })
+    const allowed = allowedBatch.results[0]!.result
     expect(allowed.isError).toBeFalsy()
     expect(calls).toEqual([{ job_id: job.id }])
     job.settle()

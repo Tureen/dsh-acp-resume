@@ -77,7 +77,10 @@ function exec(options: { signal?: AbortSignal; agent?: Agent } = {}): ToolRunCon
 /** A host context with the real process-local registry; `controller: false` leaves no job controller attached. */
 async function jobsHost(options: { controller?: boolean; agents?: boolean } = {}): Promise<Context> {
   const ctx = new Context()
-  if (options.agents === true) await ctx.plugin(AgentRegistry)
+  if (options.agents === true) {
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(AgentRegistry)
+  }
   await ctx.plugin(LocalJobRegistry)
   if (options.controller !== false) ctx.jobs.attachController('jobs-spec')
   cleanups.push(() => ctx.fiber.dispose())

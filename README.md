@@ -2,11 +2,11 @@
 
 # dsh-acp-resume
 
-A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
+A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.1`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:已发布到 npm(0.1.16)。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
+状态:已发布到 npm(0.1.17)。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间的行为目前由 mock 服务器的测试覆盖;只在 kiro-cli 上有过实测,其他 ACP agent 未实测。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -77,7 +77,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ## 安装与升级
 
-**主路径:从 npm 安装。** 需要 DSH `>=0.2.1-rc.5 <0.2.2-0`(包里的 `engines.dsh` 声明了这个范围,不满足时安装会被拒绝)和 Node >= 24:
+**主路径:从 npm 安装。** 需要 DSH `>=0.2.2-rc.1`(包里的 `engines.dsh` 只设最低版本,不为后续 DSH 版本线设置安装上限)和 Node >= 24:
 
 ```sh
 dsh plugin --profile <name> add dsh-acp-resume
@@ -86,6 +86,8 @@ dsh plugin --profile <name> add dsh-acp-resume
 > **提示：** 若安装报 `ERR_PNPM_TARBALL_EXTRACT` 或校验和错误，是 dsh 默认的 `minimumReleaseAge` 供应链防护过滤了刚发布的版本；npm 首发包还可能伴随无效的占位版本 `0.0.0-stage`。请显式钉版本：`dsh plugin --profile <name> add dsh-acp-resume@<版本>`，dsh 会将该版本写入 profile 的 `minimumReleaseAgeExclude`，可立即安装。版本发布一段时间后，不钉版本也会恢复正常。
 
 `<name>` 是 profile 名(DSH App 的默认 profile 目录是 `~/.dsh/profiles/desktop/`)。装好后包会出现在该 profile 的 `dsh.profile.bundles` 里,重启 DSH 生效。升级用 `dsh plugin --profile <name> add dsh-acp-resume@<版本>`;卸载用 `dsh plugin --profile <name> remove dsh-acp-resume`。
+
+**从 Discover 安装(实验性)。** 在插件页打开 **Custom plugin markets** 实验开关，然后切到 **Discover**，选择 **Add index source**，填入 `https://tureen.github.io/dsh-acp-resume/index.json`。索引加载后，在 `dsh-acp-resume` 卡片上安装，重启 DSH 生效。
 
 **备选:本地 tgz。** 在本仓库 `pnpm build` 后 `pnpm pack --pack-destination <稳定目录>`(`prepack` 会先清空 `lib/` 再编译,保证不打进陈旧产物),再 `dsh plugin --profile <name> add <tgz 路径>`。
 
@@ -119,10 +121,10 @@ pnpm install && pnpm build     # 构建 lib/
 pnpm test                      # vitest;314 绿 = 官方协议面 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;
+- 基线:源码经 `dsh-v0.2.2-rc.1` 对照，`src/run.ts` 与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 一致；DSH peer 钉 `~0.2.2-rc.1`，Cordis peer 钉 `~4.1.0`;
 - 条件运行的用例:真实子进程类 24 例需要官方 checkout 里的 `spawn.ts`(npm 分发包不含)。官方 checkout(路径由环境变量 `DSH_OFFICIAL_CHECKOUT` 指定,未设置时用测试里的默认位置)在场时全绿、退出码 0;不在时这 24 例自动跳过(见 DECISIONS D8);
 - 双实现并存:run.ts 保持官方原版不重构(D11);connection.ts 是池专用姊妹实现;
-- 参考用官方源码 checkout:分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`(只读对照)。
+- 参考用官方源码 checkout:tag `dsh-v0.2.2-rc.1`(只读对照)。
 
 ## License
 
