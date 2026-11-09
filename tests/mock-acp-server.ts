@@ -72,8 +72,8 @@
  *                        history back as `agent_message_chunk` updates
  *                        (`replay:<prompt>`), as kiro does, then responds.
  * - `MOCK_CRASH_ON_INITIALIZE_FILE` / `MOCK_LOAD_MISSING_FILE` /
- *   `MOCK_CRASH_ON_LOAD_FILE` — runtime switches: the behavior applies while
- *                        the named file exists, so one pool's processes can
+ *   `MOCK_CRASH_ON_LOAD_FILE` / `MOCK_CRASH_ON_PROMPT_FILE` — runtime switches:
+ *                        the behavior applies while the named file exists, so one pool's processes can
  *                        differ between start and reconnect. CRASH_ON_LOAD exits
  *                        (code 13) inside `session/load`.
  * - `MOCK_FLUSH_ON_EOF` — if set, on stdin EOF the agent takes an async beat
@@ -260,7 +260,7 @@ function makeAgent() {
     async prompt(params: PromptRequest, conn: AgentContext): Promise<PromptResponse> {
       promptCount += 1
       const ordinal = promptCount
-      if (CRASH_ON_PROMPT || CRASH_PROMPTS.has(ordinal)) process.exit(1)
+      if (CRASH_ON_PROMPT || switchOn('MOCK_CRASH_ON_PROMPT_FILE') || CRASH_PROMPTS.has(ordinal)) process.exit(1)
       const hold = process.env.MOCK_PROMPT_HOLD
       if (hold !== undefined) {
         const released = Promise.withResolvers<undefined>()

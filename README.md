@@ -16,7 +16,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 - 外部 agent 的会话号持久化在 `$DSH_HOME/storages/acp-resume/registry.json`;每个会话的轮次记录(消息与回答文本,明文)另存于同目录 `turns/<chatId>.jsonl`,最近 200 条,供面板详情页查看,删除会话时一并删除;
 - 会话进程空闲保活(超时释放,会话记录保留);
-- 下次对话自动重连:重新 spawn → `initialize` → `session/load(原会话号 + 原 cwd)` → 继续;仅当远端在协议层拒绝 load 时降级为新会话并明确告知,其余失败本次报错、会话记录不动(D6)。
+- 下次对话自动重连:重新 spawn → `initialize` → `session/load(原会话号 + 原 cwd)` → 继续;远端在协议层拒绝 load 时降级为新会话。若当前池实例同一 chat 连续 3 轮 `error`,下一次 send 也会跳过 load 新开会话,并以前置短语 `remote session failed repeatedly, started fresh` 明确告知;该计数只在内存中保存,应用重启后重新累计。其余失败本次报错、会话记录不动(D6)。
 
 ## 架构(与官方完全隔离并存)
 
@@ -116,7 +116,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;311 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest;314 绿 = 官方协议面 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

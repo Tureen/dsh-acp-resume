@@ -80,7 +80,7 @@ export interface TurnItem {
 export interface EventItem {
   readonly seq: number
   readonly kind: 'event'
-  readonly event: 'session-lost' | 'reconnect-failed'
+  readonly event: 'session-lost' | 'session-reset-after-errors' | 'reconnect-failed'
   readonly at: number
   readonly message?: string
   readonly error?: string

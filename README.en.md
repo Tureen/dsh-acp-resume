@@ -18,7 +18,7 @@ The official ACP backend starts a new process for every delegation, runs a singl
 
 - The external agent's session id is persisted in `$DSH_HOME/storages/acp-resume/registry.json`. Each session's turn history (messages and answer text, in plain text) is stored separately in `turns/<chatId>.jsonl` in the same directory, keeping the latest 200 entries for the panel's detail page, and is deleted together with the session;
 - The session process is kept alive while idle (released after a timeout; the session record stays);
-- The next conversation reconnects automatically: respawn → `initialize` → `session/load(original session id + original cwd)` → continue. Only when the remote rejects the load at the protocol level does it degrade to a new session and say so explicitly. Any other failure errors out for that attempt and leaves the session record untouched (D6).
+- The next conversation reconnects automatically: respawn → `initialize` → `session/load(original session id + original cwd)` → continue. A protocol-level load rejection falls back to a new session. If the same chat has three consecutive `error` turns in the current pool instance, its next send also skips load and starts a new session, with the leading phrase `remote session failed repeatedly, started fresh`; the count is memory-only and starts over after an application restart. Any other failure errors out for that attempt and leaves the session record untouched (D6).
 
 ## Architecture (fully isolated from, and coexisting with, the official package)
 
@@ -118,7 +118,7 @@ The background mode of `acp_chat_send` needs the host to have both `@deepseek-ai
 
 ```sh
 pnpm install && pnpm build     # build lib/
-pnpm test                      # vitest; 311 green = official protocol surface 67 + connection 24 + pool 57 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest; 314 green = official protocol surface 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - Baseline: the sources are copied from `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`, with peers pinned to `~0.2.1-rc.5`;

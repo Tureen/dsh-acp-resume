@@ -1,7 +1,8 @@
 /**
  * Pool lifecycle tests against REAL mock-server subprocesses: same-process
  * turns, reconnect through session/load after release, the D6 fallback rule
- * (only a protocol-level load rejection degrades to a fresh session), idle
+ * (only a protocol-level load rejection or repeated error turns degrades to a
+ * fresh session), idle
  * release, single-flight, connection invalidation after aborted/error turns,
  * cooperative close, teardown across reconnect windows, and registry
  * durability (purge, reconstruction, corrupt-file set-aside). Keyless; no model.
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { AcpConnectionError } from '../src/connection.ts'
-import { AcpSessionPool, type PoolOptions } from '../src/pool.ts'
+import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSessionNotice, type PoolOptions } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -330,6 +331,63 @@ describe('AcpSessionPool', () => {
     expect(after.stopReason).toBe('completed')
     // The crashed prompt never reached the session table.
     expect(after.output).toBe('remember:记住暗号J')
+  })
+
+  it('starts a fresh session after three consecutive error turns and reports the repeated-failure note', async () => {
+    const { env, dir } = storeEnv('acp-resume-repeated-errors-')
+    const crashOnPrompt = join(dir, 'crash-on-prompt')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_CRASH_ON_PROMPT_FILE: crashOnPrompt } })
+    const chat = await pool.start(process.cwd())
+    writeFileSync(crashOnPrompt, 'on')
+    for (let count = 0; count < CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD; count += 1) {
+      await expect(pool.send(chat.chatId, `crash-${count}`)).resolves.toMatchObject({ stopReason: 'error', freshSession: false })
+      expect(pool.listChats()[0]?.active).toBe(false)
+    }
+    rmSync(crashOnPrompt)
+    let observedReason: string | undefined
+    const recovered = await pool.send(chat.chatId, 'fresh session answers', undefined, {
+      onFreshSession: (reason) => { observedReason = reason },
+    })
+    expect(recovered).toMatchObject({ stopReason: 'completed', freshSession: true, freshSessionReason: 'repeated-errors' })
+    expect(recovered.remoteSessionId).not.toBe(chat.remoteSessionId)
+    expect(registryRemote(registryPath, chat.chatId)).toBe(recovered.remoteSessionId)
+    expect(observedReason).toBe('repeated-errors')
+    expect(freshSessionNotice(recovered.freshSessionReason as 'repeated-errors')).toContain('remote session failed repeatedly, started fresh')
+    expect(logLines(registryPath, chat.chatId).map(line => line.event ?? line.freshSession)).toContain('session-reset-after-errors')
+  })
+
+  it('clears the repeated-error count after a successful turn and does not downgrade early', async () => {
+    const { env, dir } = storeEnv('acp-resume-error-reset-')
+    const crashOnPrompt = join(dir, 'crash-on-prompt')
+    const { pool } = makePool({ env: { ...env, MOCK_CRASH_ON_PROMPT_FILE: crashOnPrompt } })
+    const chat = await pool.start(process.cwd())
+    writeFileSync(crashOnPrompt, 'on')
+    await expect(pool.send(chat.chatId, 'first crash')).resolves.toMatchObject({ stopReason: 'error' })
+    await expect(pool.send(chat.chatId, 'second crash')).resolves.toMatchObject({ stopReason: 'error' })
+    rmSync(crashOnPrompt)
+    const reset = await pool.send(chat.chatId, 'success resets count')
+    expect(reset).toMatchObject({ stopReason: 'completed', freshSession: false, remoteSessionId: chat.remoteSessionId })
+    writeFileSync(crashOnPrompt, 'on')
+    await expect(pool.send(chat.chatId, 'third crash')).resolves.toMatchObject({ stopReason: 'error' })
+    await expect(pool.send(chat.chatId, 'fourth crash')).resolves.toMatchObject({ stopReason: 'error' })
+    rmSync(crashOnPrompt)
+    const after = await pool.send(chat.chatId, 'must still load the saved session')
+    expect(after).toMatchObject({ stopReason: 'completed', freshSession: false, remoteSessionId: chat.remoteSessionId })
+  })
+
+  it('keeps the repeated-error count out of the durable registry', async () => {
+    const { env, dir } = storeEnv('acp-resume-error-memory-only-')
+    const crashOnPrompt = join(dir, 'crash-on-prompt')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_CRASH_ON_PROMPT_FILE: crashOnPrompt } })
+    const chat = await pool.start(process.cwd())
+    writeFileSync(crashOnPrompt, 'on')
+    for (let count = 0; count < CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD; count += 1) {
+      await expect(pool.send(chat.chatId, `crash-${count}`)).resolves.toMatchObject({ stopReason: 'error' })
+    }
+    const row = registryRow(registryPath, chat.chatId)
+    expect(row).toBeDefined()
+    expect(row).not.toHaveProperty('consecutiveErrorTurns')
+    expect(row).not.toHaveProperty('errorCount')
   })
 
   it('reconnects when the live process died between turns', async () => {

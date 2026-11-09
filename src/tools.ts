@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { AcpSteerUnsupportedError } from './connection.js'
-import type { AcpSessionPool, PoolSendResult } from './pool.js'
+import { freshSessionNotice, type AcpSessionPool, type PoolSendResult } from './pool.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -33,8 +33,10 @@ export type ChatJobsFace = Pick<JobRegistry, 'start'>
 
 type ToolDefinitionOf = ReturnType<typeof defineTool>
 
-/** Leading line on a degraded send; embeds the fixed D6 phrase. */
-const FRESH_NOTE = '[remote session lost, started fresh — prior context is gone; restate what matters and re-ask]'
+/** Leading line on a degraded send; maps the D6 recovery reason to its fixed notice. */
+function resultFreshSessionNotice(result: PoolSendResult): string {
+  return freshSessionNotice(result.freshSessionReason ?? 'load-rejected')
+}
 
 const EMPTY_OUTPUT = '(agent returned no text)'
 
@@ -94,7 +96,7 @@ function turnFailureHeadline(result: PoolSendResult): string {
 
 /** Error for a non-completed send: headline, then any partial output the agent produced. */
 function failedTurnError(result: PoolSendResult): Error {
-  const fresh = result.freshSession ? `\n${FRESH_NOTE}` : ''
+  const fresh = result.freshSession ? `\n${resultFreshSessionNotice(result)}` : ''
   const partial = result.output.trim() === '' ? '' : `\npartial output received:\n${result.output}`
   return new Error(`${turnFailureHeadline(result)}${fresh}${partial}`)
 }
@@ -111,7 +113,7 @@ function jobLabel(pool: AcpSessionPool, chatId: string, message: string): string
 
 /**
  * Run one pooled turn as a job's work. The answer streams into the job's
- * output (the fresh-session note first, when the remote session was lost);
+ * output (the matching fresh-session note first, when the saved session was replaced);
  * the outcome maps the stop reason: `completed` → completed, `aborted` →
  * killed, anything else → failed, with the failure headline as detail. A
  * send that rejects (reconnect failure, single-flight race) fails the job, or
@@ -120,7 +122,7 @@ function jobLabel(pool: AcpSessionPool, chatId: string, message: string): string
 async function runTurnAsJob(pool: AcpSessionPool, chatId: string, message: string, signal: AbortSignal, job: JobHandle): Promise<JobOutcome> {
   try {
     const result = await pool.send(chatId, message, signal, {
-      onFreshSession: () => { job.append(`${FRESH_NOTE}\n`) },
+      onFreshSession: (reason) => { job.append(`${freshSessionNotice(reason)}\n`) },
       onText: (text) => { job.append(text) },
     })
     if (result.stopReason === 'completed') {
@@ -184,7 +186,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
       description: `Send one message to a persistent chat started with ${toolPrefix}start and await its final answer. `
         + 'The chat keeps full conversation context. One prompt may be in flight per chat; wait for each answer. '
         + 'Different chats may run in parallel; never send twice to the same chat in one turn. '
-        + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
+        + 'If the saved remote session had to be replaced, the answer comes from a fresh session and its first line says so. '
         + 'If the agent did not finish its turn, the tool fails and includes any partial output.',
       parameters: SEND_PARAMETERS(toolPrefix),
       output: SEND_OUTPUT,
@@ -195,7 +197,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
         const result = await pool.send(args.chatId, args.message, exec.signal)
         if (result.stopReason !== 'completed') throw failedTurnError(result)
         const body = result.output.trim() === '' ? EMPTY_OUTPUT : result.output
-        return { text: result.freshSession ? `${FRESH_NOTE}\n${body}` : body }
+        return { text: result.freshSession ? `${resultFreshSessionNotice(result)}\n${body}` : body }
       },
     })
   }

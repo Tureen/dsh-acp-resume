@@ -4,9 +4,11 @@
  * between turns), a durable registry entry (remote session id + cwd, so a
  * dead process reconnects through `session/load`), an idle timer that
  * releases the process while PRESERVING the registry, and single-flight
- * prompt semantics per chat. Only a protocol-level rejection of
- * `session/load` falls back to a fresh remote session; any other reconnect
- * failure fails the send and leaves the saved remote session id untouched.
+ * prompt semantics per chat. A protocol-level rejection of `session/load`, or
+ * three consecutive settled `error` turns in this pool instance, falls back
+ * to a fresh remote session; any other reconnect failure fails the send and
+ * leaves the saved remote session id untouched. The error count is volatile
+ * pool state, never a registry field, and resets when the pool restarts.
  * A reconnect whose registry entry was recorded under a different
  * command/args fails without loading: the saved session belongs to another
  * agent. A turn that settles `aborted` or `error` releases its process.
@@ -25,7 +27,7 @@
  * (D20): attribution metadata the panel filters on, never access control — the
  * registry stays profile-global and every method serves every chat.
  * Every settled turn and every reconnect event (`session-lost`,
- * `reconnect-failed`) is also appended to the chat's turn log (`turns/<chatId>.jsonl`
+ * `session-reset-after-errors`, `reconnect-failed`) is also appended to the chat's turn log (`turns/<chatId>.jsonl`
  * next to the registry, D18); the log is a mirror for the panel's detail page,
  * its write failures only warn, and `remove` deletes it with the record.
  * Optional send observers ({@link PoolSendHooks}) receive the turn's text
@@ -64,6 +66,19 @@ export interface PooledChatInfo {
   readonly ownerSessionId?: string
 }
 
+/** Reason the current send replaced its saved remote session. */
+export type FreshSessionReason = 'load-rejected' | 'repeated-errors'
+
+/** Number of consecutive settled `error` turns before the next send starts a fresh remote session (D6). */
+export const CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD = 3
+
+/** Return the model-facing notice for a fresh-session fallback. */
+export function freshSessionNotice(reason: FreshSessionReason): string {
+  return reason === 'load-rejected'
+    ? '[remote session lost, started fresh — prior context is gone; restate what matters and re-ask]'
+    : '[remote session failed repeatedly, started fresh — prior context is gone; restate what matters and re-ask]'
+}
+
 /** Terminal result of one pooled send. */
 export interface PoolSendResult {
   readonly chatId: string
@@ -71,15 +86,17 @@ export interface PoolSendResult {
   /** The turn's assistant text. */
   readonly output: string
   readonly stopReason: string
-  /** True when the remote session was lost and a FRESH one answered instead. */
+  /** True when the saved remote session was replaced and a FRESH one answered instead. */
   readonly freshSession: boolean
+  /** Why `freshSession` is true; absent when this turn stayed on its saved session. */
+  readonly freshSessionReason: FreshSessionReason | undefined
   readonly diagnostic: string | undefined
 }
 
 /** Optional observers of one {@link AcpSessionPool.send}; a throwing observer is contained. */
 export interface PoolSendHooks {
-  /** Called once, before the prompt is sent, when a FRESH remote session replaced the lost one. */
-  readonly onFreshSession?: () => void
+  /** Called once, before the prompt is sent, when a FRESH remote session replaces the saved one. */
+  readonly onFreshSession?: (reason: FreshSessionReason) => void
   /** Each assistant text chunk of this turn, in arrival order; their concatenation is `output`. */
   readonly onText?: (text: string) => void
 }
@@ -285,6 +302,8 @@ class ChatRegistry {
  */
 export class AcpSessionPool {
   private readonly live = new Map<string, LiveChat>()
+  /** Consecutive settled `error` turns by chat; volatile D6 recovery state, never persisted. */
+  private readonly consecutiveErrorTurns = new Map<string, number>()
   /**
    * Open windows in progress (`start` and reconnects), keyed by chatId. Each
    * promise settles only after its connection is tracked or disposed. Teardown
@@ -380,7 +399,8 @@ export class AcpSessionPool {
 
   /**
    * Send one message to a durable chat, reconnecting through `session/load`
-   * when no live process exists. A protocol-level `session/load` rejection
+   * when no live process exists. A protocol-level `session/load` rejection,
+   * or a prior run of three settled `error` turns in this pool instance,
    * answers from a FRESH remote session (`freshSession: true`); any other
    * reconnect failure rejects and keeps the saved remote session id.
    * Rejects while another prompt on the same chat is in flight, and rejects
@@ -408,6 +428,7 @@ export class AcpSessionPool {
     }
 
     let freshSession = false
+    let freshSessionReason: FreshSessionReason | undefined
     if (existing === undefined) {
       const entry = this.registry.get(chatId) as RegistryEntry
       try {
@@ -420,22 +441,29 @@ export class AcpSessionPool {
       // Claim the open window BEFORE awaiting: a concurrent send on this chat
       // must be rejected above, not leak a second connection.
       const controller = new AbortController()
-      const reconnect = (async (): Promise<boolean> => {
-        const opened = await this.reopen(entry, windowSignal(controller, signal))
+      const reconnect = (async (): Promise<FreshSessionReason | undefined> => {
+        const forceFresh = (this.consecutiveErrorTurns.get(chatId) ?? 0) >= CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD
+        const opened = await this.reopen(entry, windowSignal(controller, signal), forceFresh)
         if (this.disposed) await this.discard(opened.conn, 'acp-resume: pool already disposed')
         if (controller.signal.aborted) await this.discard(opened.conn, released)
         const current = this.registry.get(chatId)
         if (current === undefined) await this.discard(opened.conn, `acp-resume: chat ${chatId} was removed while reconnecting`)
-        else if (opened.fresh) {
+        else if (opened.freshSessionReason !== undefined) {
           this.registry.upsert({ ...current, remoteSessionId: opened.conn.remoteSessionId, lastActive: Date.now() })
-          this.logEntry(chatId, { kind: 'event', event: 'session-lost', at: Date.now(), ...(opened.lost === undefined ? {} : { error: opened.lost.message }) })
+          this.logEntry(chatId, {
+            kind: 'event',
+            event: opened.freshSessionReason === 'load-rejected' ? 'session-lost' : 'session-reset-after-errors',
+            at: Date.now(),
+            ...(opened.lost === undefined ? {} : { error: opened.lost.message }),
+          })
         }
         this.track(chatId, opened.conn)
-        return opened.fresh
+        return opened.freshSessionReason
       })()
       this.starting.set(chatId, { promise: reconnect, controller })
       try {
-        freshSession = await reconnect
+        freshSessionReason = await reconnect
+        freshSession = freshSessionReason !== undefined
       } catch (error: unknown) {
         // A teardown-aborted window reports the teardown, not the startup race's abort text.
         this.assertLive()
@@ -446,8 +474,8 @@ export class AcpSessionPool {
         this.starting.delete(chatId)
       }
       this.assertLive()
-      if (freshSession && hooks.onFreshSession !== undefined) {
-        try { hooks.onFreshSession() } catch { /* an observer cannot break the send */ }
+      if (freshSessionReason !== undefined && hooks.onFreshSession !== undefined) {
+        try { hooks.onFreshSession(freshSessionReason) } catch { /* an observer cannot break the send */ }
       }
     }
 
@@ -467,7 +495,12 @@ export class AcpSessionPool {
       const current = this.registry.get(chatId)
       const settledAt = Date.now()
       const output = blockText(turn.output)
-      if (current !== undefined) this.registry.upsert(settledEntry(current, turn.stopReason, message, settledAt))
+      if (current !== undefined) {
+        this.registry.upsert(settledEntry(current, turn.stopReason, message, settledAt))
+        this.recordSettledTurn(chatId, turn.stopReason)
+      } else {
+        this.consecutiveErrorTurns.delete(chatId)
+      }
       this.logEntry(chatId, {
         kind: 'turn', startedAt, at: settledAt, message, output, stopReason: turn.stopReason, freshSession,
         ...(turn.diagnostic === undefined ? {} : { diagnostic: turn.diagnostic }),
@@ -487,6 +520,7 @@ export class AcpSessionPool {
         output,
         stopReason: turn.stopReason,
         freshSession,
+        freshSessionReason,
         diagnostic: turn.diagnostic,
       }
     } finally {
@@ -543,6 +577,7 @@ export class AcpSessionPool {
       throw new Error(`acp-resume: releasing chat ${chatId} failed; its record is kept: ${toError(error).message}`, { cause: error })
     }
     this.registry.remove(chatId)
+    this.consecutiveErrorTurns.delete(chatId)
     this.turnLog.remove(chatId)
   }
 
@@ -573,6 +608,7 @@ export class AcpSessionPool {
     this.disposed = true
     await Promise.allSettled([...this.starting.values()].map(window => this.abortWindow(window)))
     await Promise.allSettled([...this.live.keys()].map(id => this.close(id)))
+    this.consecutiveErrorTurns.clear()
   }
 
   /** Abort an open window and wait for it to settle, at most {@link windowGraceMs}. */
@@ -621,12 +657,16 @@ export class AcpSessionPool {
     }
   }
 
-  /** Reconnect a saved remote session; only a protocol-level load rejection degrades to a fresh one. */
-  private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined): Promise<{ conn: AcpConnection; fresh: boolean; lost?: Error }> {
+  /** Reconnect a saved remote session, or skip load after repeated failed turns (D6). */
+  private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
     const spec = { ...this.opts.specBase, cwd: entry.cwd }
+    if (forceFresh) {
+      const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
+      return { conn, freshSessionReason: 'repeated-errors' }
+    }
     try {
       const conn = await openAcpConnection(spec, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
-      return { conn, fresh: false }
+      return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
       const sessionGone = error instanceof AcpConnectionError
         && error.stage === 'load-session'
@@ -634,7 +674,16 @@ export class AcpSessionPool {
       if (!sessionGone) throw error
       this.assertLive()
       const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
-      return { conn, fresh: true, lost: error }
+      return { conn, freshSessionReason: 'load-rejected', lost: error }
+    }
+  }
+
+  /** Track a settled outcome for the volatile repeated-error fallback threshold (D6). */
+  private recordSettledTurn(chatId: string, stopReason: string): void {
+    if (stopReason === 'error') {
+      this.consecutiveErrorTurns.set(chatId, (this.consecutiveErrorTurns.get(chatId) ?? 0) + 1)
+    } else {
+      this.consecutiveErrorTurns.delete(chatId)
     }
   }
 

@@ -29,11 +29,15 @@
 修订(2026-11-04,D19):工具增至五个,新增 `acp_chat_steer`(给在途轮插话,标并发安全)。
 修订(2026-11-04,D17):宿主装有 jobs 服务(`ctx.jobs`)时,`acp_chat_send` 不再等整轮回答,改为把这一轮注册成后台任务(job),立即返回 jobId;回答流式写进该 job 的输出,完成通知由宿主的 tool-jobs 在会话内送达,模型用 `job_output` 读、`job_kill` 停。无 jobs 服务时 send 保持原同步语义。其余三个工具不变。
 
-## D6 池语义(2026-11-04;同日按六维评审修订,见 D16)
+## D6 池语义(2026-11-04;同日按六维评审修订,见 D16;2026-11-09 重复失败恢复修订)
+
+**本次修订背景(2026-11-09):** 今天网络切换后，4 个 kiro 远端会话都能成功 `session/load`，但每次 prompt 约 8 秒后传输断开并以 `stopReason=error` 结算。原规则只会在协议级 load 拒绝时新开会话，这类「能加载、一用就崩」的会话会无限重试同一个远端会话，只能人工 purge；上述 4 个会话已人工清理。
 
 - 单飞:每会话同时仅一个 prompt 在途,在途时新 send 拒绝并提示(与官方"一次一个"一致,不做排队);
 - 工具并发标注:`acp_chat_start` / `send` / `list` 标并发安全,不同会话的 send 可并行;`acp_chat_close` 标独占(不与其他工具并行);同一会话的并行 send 仍由单飞拒绝;
-- 降级:**仅** `session/load` 被远端在协议层拒绝(`AcpConnectionError` 的 `stage: load-session` 且 `category: protocol`,含能力门控判定的 loadSession 未声明)时降级为新会话;工具回答首行前置注记,内含固定短语 `remote session lost, started fresh`,由模型决定重述上下文。进程启动失败、传输断开、进程退出等其余重连失败直接让本次 send 失败,注册表不动,原远端会话号保留待下次重试;
+- 降级(一):`session/load` 被远端在协议层拒绝(`AcpConnectionError` 的 `stage: load-session` 且 `category: protocol`,含能力门控判定的 loadSession 未声明)时降级为新会话;工具回答首行前置注记,内含固定短语 `remote session lost, started fresh`,由模型决定重述上下文。
+- 降级(二,2026-11-09):每个 chat 在**当前池实例内存**中累计连续 `stopReason=error` 的已结算轮数；任一非 `error` 结算轮都会折断连续性，成功轮必然清零。累计到 3 后，该 chat 的**下一次** send 在已释放状态下跳过 `session/load`、直接 `session/new`，替换注册表中的远端会话号，回复首行前置含固定短语 `remote session failed repeatedly, started fresh` 的注记。此计数不写注册表、不改变其结构或版本，应用重启后的新池从 0 重新累计；这是有意接受的非持久诊断状态。该路径与协议级 load 拒绝并列，不能把它伪记为远端 load 拒绝。
+- 进程启动失败、传输断开、进程退出等其余**重连**失败直接让本次 send 失败,注册表不动,原远端会话号保留待下次重试；prompt 已结算为 `error` 的轮仍按上一条累计。
 - 空闲:`idleTimeoutMs`(默认 600 000)到期关进程,**注册表保留**,下次 send 重连;
 - 注册表:进程内串行写,临时文件+原子改名;记录 chatId/remoteSessionId/cwd/命令指纹;文件损坏(读不了、非 JSON、结构不符)时改名为 `<路径>.corrupt-<时间戳>` 留证,经 `onWarn` 告警后以空表继续;`registryPath` 须为绝对路径(空串取默认路径);
 - 取消:send 的工具取消信号让本轮在本地立即结算为 `aborted`,同时尽力发送 `session/cancel`(不等远端回应);随后作废该连接(关进程,注册表保留),下次 send 经 `session/load` 重建;
@@ -206,10 +210,10 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 决策与细则:
 - **日志文件**:`<registryPath 的父目录>/turns/<chatId>.jsonl`,只追加,一行一条 JSON。两类记录,共用每会话递增的 `seq`(从 1 起,裁剪后不复用):
   - `turn`:`startedAt`、`at`(结算时刻)、`message`、`output`(回答文本)、`stopReason`(completed / aborted / error / max-tokens / refusal / …)、`freshSession`、可选 `diagnostic`;每个 `completed` 之外的结局也记。
-  - `event`:`session-lost`(`session/load` 被协议拒绝,新开远端会话顶替;随后同一次 send 还会记一条 `freshSession: true` 的 `turn`)、`reconnect-failed`(send 在 prompt 发出前失败:load 的非协议类失败、进程起不来、已记录的 agent 指纹与当前配置不符;带上未发出的消息与错误文案)。拆卸引起的中止(`was released before the prompt started`)与池已销毁不记。
+  - `event`:`session-lost`(`session/load` 被协议拒绝,新开远端会话顶替;随后同一次 send 还会记一条 `freshSession: true` 的 `turn`)、`session-reset-after-errors`(当前池实例同一 chat 连续 3 条 `error` 轮后，下一次 send 主动跳过 load、新开远端会话；它不是 `session-lost`，不表示 load 被拒绝)、`reconnect-failed`(send 在 prompt 发出前失败:load 的非协议类失败、进程起不来、已记录的 agent 指纹与当前配置不符;带上未发出的消息与错误文案)。拆卸引起的中止(`was released before the prompt started`)与池已销毁不记。
 - **不记的**:steer(不是轮)、send 在做任何事之前就被拒绝的情形(未知会话、在途、信号已中止)、启动(start)。
 - **写入点**:`AcpSessionPool.send` 的轮结算处(紧跟注册表更新,因此 jobs 与同步两种 send 都覆盖,tools.ts 不改)与重连窗口/失败处。写之前复查注册表里该会话还在,与"结算前 purge 不得复活记录"同一条规则,所以 purge 之后不会留下孤儿日志。
-- **与 D6 / D17 的边界**:注册表字段与版本不变;单飞、降级判定(只有协议级 load 拒绝才降级)、取消条、空闲释放、释放时序全部不动;日志写失败**只经 `onWarn` 告警,绝不改变轮的结果**(同 D6 "轮结果优先于拆卸失败");`purge` 在删注册表条目后删日志文件,删失败只告警;`close` 保留日志。
+- **与 D6 / D17 的边界**:注册表字段与版本不变;单飞、取消条、空闲释放、释放时序全部不动。两种降级分别为协议级 load 拒绝与当前池实例连续 3 条 `error` 后的主动新会话；后者的计数只存内存、重启从 0 开始，`session-reset-after-errors` 与 `session-lost` 分别记录两种原因。日志写失败**只经 `onWarn` 告警,绝不改变轮的结果**(同 D6 "轮结果优先于拆卸失败");`purge` 在删注册表条目后删日志文件,删失败只告警;`close` 保留日志。
 - **容量**:单条上限——`message` 8192 字符、`output` 32768 字符(按码点截,不拆代理对,截断时记 `messageTruncated` / `outputTruncated`)、`diagnostic` 与 `error` 2000 字符;每会话保留最近 200 条,文件超过 400 条时用"临时文件 + 原子改名"裁回 200 条(条数在进程内计数,首次写入时读一次文件)。
 - **容错**:读逐行解析,不能解析或形状不对的行跳过;进程崩溃留下的半行,下一次追加先补换行;`seq` 取文件中最大可读值 + 1。chatId 作文件名前校验(只允许字母数字与 `._-`,首字符为字母数字),不合法则告警并不读写,防路径逃逸。
 - **host 读接口**(`AcpResumePanelService`,与 list/close/purge 同款 source 模式,参数自校验):`turns(chatId, limit?)` → `{ chat, entries, total }`,`entries` 是最近 `limit` 条(默认 50,上限 200)的**预览**(message / output 各至多 120 字,附 `messageMore` / `outputMore` 标志),`chat` 是该会话的注册表行,所以详情页一次调用拿全;`turn(chatId, seq)` → 单条全文。未知会话 `acp-resume/unknown-chat`(同现有错误码),日志里没有该 seq `acp-resume/unknown-turn`(新),参数非法 `gateway/bad-request`。与研究 §3.4 的偏差:研究草图写的是 `detail / turns(before, limit) / turn`;实施时合并 `detail` 进 `turns`(省一次往返),并把分页改成只给 `limit`(加载更早 = 提高 `limit`),因为 5 秒轮询每次整体重取,游标会和裁剪、追加互相竞争。

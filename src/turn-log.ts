@@ -2,7 +2,8 @@
  * Per-chat turn log (D18): an append-only JSONL file `<dir>/<chatId>.jsonl`
  * holding what the side panel's detail page shows. One line per settled turn
  * (message, answer text, stop reason, timestamps, fresh-session flag) and one
- * per reconnect event (`session-lost`, `reconnect-failed`). Steers are not
+ * per reconnect event (`session-lost`, `session-reset-after-errors`,
+ * `reconnect-failed`). Steers are not
  * turns and are never logged. The log is a diagnostic mirror, not state: a
  * write that fails is reported through `onWarn` and never throws, so it can
  * never change a turn's outcome; the registry stays the source of truth for
@@ -41,7 +42,7 @@ export interface TurnRecord {
   readonly message: string
   readonly output: string
   readonly stopReason: string
-  /** The remote session was lost and a fresh one answered. */
+  /** The saved remote session was replaced and a fresh one answered. */
   readonly freshSession: boolean
   readonly diagnostic?: string
   readonly messageTruncated?: true
@@ -53,8 +54,8 @@ export interface EventRecord {
   readonly v: 1
   readonly seq: number
   readonly kind: 'event'
-  /** `session-lost`: `session/load` was rejected and a fresh session replaced it; `reconnect-failed`: the send failed before its prompt went out. */
-  readonly event: 'session-lost' | 'reconnect-failed'
+  /** `session-lost`: `session/load` was rejected and a fresh session replaced it; `session-reset-after-errors`: three settled error turns made the next send start fresh; `reconnect-failed`: the send failed before its prompt went out. */
+  readonly event: 'session-lost' | 'session-reset-after-errors' | 'reconnect-failed'
   readonly at: number
   /** The message the failed send carried (`reconnect-failed` only). */
   readonly message?: string

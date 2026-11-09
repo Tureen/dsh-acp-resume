@@ -16,7 +16,7 @@
 | 1 | 连接原语抽取 | `src/connection.ts`:`openAcpConnection(openNew/openLoad)` + `prompt`(轮粒度输出/取消/安全诊断)+ `dispose` | connection.spec 六用例绿(含跨进程 load 重连记忆) | ☑ 7b61bf9 |
 | 2 | ~~run.ts 重构为薄包装~~ **已评估并撤销(D11)** | run.ts 保持官方原版;connection.ts 为池专用姊妹实现 | 撤销后回归面 48 绿恢复(重构曾致 5 例退化) | ☑ 评估闭环 |
 | 3 | mock 扩展 load | 会话表(内存+文件持久)、load 分支、MOCK_REMEMBER / MOCK_SESSION_STORE / MOCK_LOAD_MISSING | 跨进程重连用例绿(随第 1 步交付) | ☑ 7b61bf9 |
-| 4 | 会话池 | `src/pool.ts`:start/send/close、空闲计时(可配窗口)、注册表原子落盘、load 重连与降级 | `tests/pool.spec.ts` 6/6 绿(同进程两轮/释放后重连记忆/降级/空闲释放重连/busy 拒绝/跨池实例恢复) | ☑ |
+| 4 | 会话池 | `src/pool.ts`:start/send/close、空闲计时(可配窗口)、注册表原子落盘、load 重连与降级、连续 3 条 `error` 后下次 send 主动新开会话(计数仅内存) | `tests/pool.spec.ts` 60 例绿(含同进程两轮/释放后重连记忆/协议降级/连续失败恢复/空闲释放重连/busy 拒绝/跨池实例恢复) | ☑ |
 | 5 | 工具与接线 | `src/tools.ts` 四工具(acp_chat_start/send/list/close)+ `index.ts`(name→acp-resume、Config 四新字段、池构造与 effect 清理) | 全量 54 绿/25 豁免;工具注册经 ctx.get('tools') 条件化,无 tools 服务上下文零扰动 | ☑ 4157a6e |
 | 6 | 真机与装机验收 | 真 kiro-cli 冒烟剧本 + pack 安装 desktop profile | GUI 中模型经四工具完成:建会话→两轮→杀进程→重连记得上文→空闲释放→再连 | ☐(0.1.2 已装机待走剧本) |
 | 7 | 持久会话面板(D15) | 双面包:node 半 sidebarRightTabs+remote、client 半页签组件;注册表增 title/turnCount | PANEL-DESIGN.md §4 验收清单全过(含"续聊不新增卡片") | ☐ |

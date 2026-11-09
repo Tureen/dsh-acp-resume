@@ -219,7 +219,9 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
 function EventCard({ item, now, t }: { readonly item: EventItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const text = item.event === 'session-lost'
     ? t('eventSessionLost')
-    : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: item.message })}`}`
+    : item.event === 'session-reset-after-errors'
+      ? t('eventSessionResetAfterErrors')
+      : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: item.message })}`}`
   return (
     <li style={styles.event} data-seq={item.seq} data-event={item.event}>
       <div style={styles.eventTop}>

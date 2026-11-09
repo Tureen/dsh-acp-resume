@@ -2,7 +2,7 @@
 
 基线:@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5 源码(阶段一已复制,行为一致,42 个协议面用例绿)。
 
-> 修订(2026-11-09):以下为阶段二的设计原稿,部分已被后续决策取代,以 DECISIONS.md 与 AGENTS.md 为准。现状:`subagent-acp.spec.ts` 共 67 例(含条件运行的 24 例 D8),全仓 311 绿;工具已增至五个(含 `acp_chat_steer`,D19);`run.ts` 保持官方逐字副本、未重构(D11)。
+> 修订(2026-11-09):以下为阶段二的设计原稿,部分已被后续决策取代,以 DECISIONS.md 与 AGENTS.md 为准。现状:`subagent-acp.spec.ts` 共 67 例(含条件运行的 24 例 D8),全仓 314 绿;工具已增至五个(含 `acp_chat_steer`,D19);`run.ts` 保持官方逐字副本、未重构(D11)。D6 另规定:当前池实例同一 chat 连续 3 条 `error` 后,下一次 send 直接新开会话;计数只存内存,应用重启重新累计。
 目标:为 ACP 外部子代理提供可续聊会话——进程保活、远端会话号落盘、死后 session/load 重连——且与官方 one-shot 链路完全隔离。
 
 ## 定型认知(前置调研结论)
@@ -22,7 +22,7 @@
 |---|---|---|
 | src/connection.ts | 新增 | AcpConnection:openNew / openLoad(load 参数 {sessionId, cwd, mcpServers:[]},kiro v2 实测可用)/ prompt(官方结算逻辑:流式攒文本、stopReason 映射、权限策略、单飞)/ close(官方销毁梯子) |
 | src/run.ts | ~~重构~~ 保持逐字副本(2026-11-09 修订,D11) | 原计划 startAcpRun = openNew + 一轮 prompt + 结算;已撤销,连接原语由池专用的 connection.ts 另行实现,run.ts 不动 |
-| src/pool.ts | 新增 | 池:acquire/send/close;空闲计时 idleTimeoutMs(到期关进程、留注册表);注册表 $DSH_HOME/storages/acp-resume/registry.json(原子写;chatId/remoteSessionId/cwd/命令指纹);进程死后 send 自动 openLoad;load 失败降级新会话并注明 |
+| src/pool.ts | 新增 | 池:acquire/send/close;空闲计时 idleTimeoutMs(到期关进程、留注册表);注册表 $DSH_HOME/storages/acp-resume/registry.json(原子写;chatId/remoteSessionId/cwd/命令指纹);进程死后 send 自动 openLoad;协议级 load 拒绝或当前池实例连续 3 条 `error` 后降级新会话并注明(后者计数仅内存) |
 | src/tools.ts | 新增 | 四工具(defineTool);send 返回标注降级信息 |
 | src/index.ts | 修改 | name='acp-resume';Config + idleTimeoutMs(默认 600000)/registryPath/toolPrefix;apply 注册 provider+tools |
 | tests/mock-acp-server.ts | 扩展 | session/load 分支(内存会话表) |
