@@ -205,6 +205,8 @@ describe('job-backed send', () => {
     expect(() => { pool.assertSendable(chatId as string) }).not.toThrow()
   })
 
+  // Full-suite parallel scheduling leaves this real ACP steer/release sequence
+  // with a tight 5s budget when CI skips D8's official-checkout cases.
   it('steers the running job turn without touching job state, then the job still completes', async () => {
     const ctx = await jobsHost()
     const dir = tempDir('acp-resume-jobs-steer-')
@@ -224,9 +226,9 @@ describe('job-backed send', () => {
     expect(ctx.jobs.list()).toHaveLength(1)
 
     rmSync(hold)
-    expect((await ctx.jobs.wait(jobId, 5000)).status).toBe('completed')
+    expect((await ctx.jobs.wait(jobId, 20_000)).status).toBe('completed')
     expect(readAll(ctx.jobs, jobId)).toBe('steered answer')
-  })
+  }, 20_000)
 
   it('keeps single flight: a second send while the job runs is a tool error and registers no job', async () => {
     const ctx = await jobsHost()
