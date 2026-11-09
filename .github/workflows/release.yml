@@ -1,0 +1,31 @@
+# npm 发布工作流:推送 v* 标签时经 GitHub Actions OIDC(Trusted Publishing)免凭据发布。
+# 依赖 npm 侧已为本包配置 trusted publisher:`npm trust github dsh-acp-resume --file .github/workflows/release.yml --repo Tureen/dsh-acp-resume --allow-publish`
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  id-token: write # OIDC 令牌,供 npm trusted publishing 与 provenance
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm install -g pnpm@11
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm test # D8 的 24 例条件用例在无官方 checkout 的 CI 上自动跳过,属预期
+
+      - run: npm publish --provenance

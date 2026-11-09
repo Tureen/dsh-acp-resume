@@ -7,3 +7,4 @@ lib/
 *.log
 turns/
 issue-draft-tool-jobs-wait.md
+market/.plugin-market-cache/
