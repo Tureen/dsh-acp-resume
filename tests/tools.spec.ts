@@ -18,11 +18,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
 import { AcpSessionPool } from '../src/pool.ts'
 import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
+import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
@@ -225,6 +228,51 @@ describe('apply (plugin wiring)', () => {
     expect(ctx.subagents.list()).toEqual(['acp-resume'])
     await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
     expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
+  })
+
+  it('forwards ask through the registered persistent-chat tool', async () => {
+    const ctx = await host()
+    await ctx.plugin(UserQuestionService)
+    ctx.on('user-questions/request', request => ({
+      answers: request.questions.map(question => ({ id: question.id, selected: ['Allow (allow_once, option 1)'] })),
+    }))
+    const fiber = await ctx.plugin(acp, {
+      command: process.execPath,
+      args: [mockServer],
+      permission: 'ask',
+      env: { MOCK_PERMISSION: '1', MOCK_TEXT: 'approved in persistent chat' },
+      registryPath: join(tempDir('acp-resume-ask-tool-'), 'registry.json'),
+    })
+    cleanups.push(() => fiber.dispose())
+    await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration')
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
+    const { chatId } = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
+    await expect(send.execute({ chatId, message: 'p' }, exec())).resolves.toEqual({ text: 'approved in persistent chat' })
+  })
+
+  it('returns one safe actionable ENOENT message through the one-shot and chat-start entry points', async () => {
+    const ctx = await host()
+    const dir = tempDir('acp-resume-missing-command-')
+    const command = join(dir, 'missing-acp-agent')
+    const registryPath = join(dir, 'registry.json')
+    const fiber = await ctx.plugin(acp, { command, args: [], registryPath })
+    cleanups.push(() => fiber.dispose())
+    const request = {
+      label: 'missing command',
+      prompt: [{ type: 'text' as const, text: 'p' }],
+      parent: { id: 'parent', session: { header: { cwd: process.cwd() } } } as never,
+      signal: new AbortController().signal,
+    }
+    const oneShot = await startExternalActivation(ctx, 'acp-resume', request).then(() => undefined, (error: unknown) => error as Error)
+    expect(oneShot?.message).toContain(COMMAND_NOT_FOUND_GUIDANCE)
+    expect(oneShot?.message).not.toContain(command)
+    await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration')
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    const chatStart = await start.execute({ cwd: process.cwd() }, exec()).then(() => undefined, (error: unknown) => error as Error)
+    expect(chatStart?.message).toContain(COMMAND_NOT_FOUND_GUIDANCE)
+    expect(chatStart?.message).not.toContain(command)
+    expect(existsSync(registryPath)).toBe(false)
   })
 
   it('registers no tools when enableChatTools is false', async () => {

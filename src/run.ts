@@ -22,9 +22,11 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { AssistantOutputFold, settleRunResult, subprocessRunHandle } from '@deepseek-ai/dsh-subagent'
 import type { SubagentResult, SubagentRun, SubagentStartRequest, SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
+import { permissionWasAllowed, resolvePermissionRequest, type PermissionPolicy, type PermissionRequestResolver } from './permission-request.js'
 
-/** Fixed response to child permission requests: reject by default, or select the first allow option. */
-export type PermissionPolicy = 'allow' | 'reject'
+/** Permission policy shared by the one-shot provider and persistent chats. */
+export type { PermissionPolicy }
 
 /** Resolved spawn spec for an ACP child process (no defaults — see Config). */
 export interface AcpRunSpec {
@@ -37,8 +39,10 @@ export interface AcpRunSpec {
    * `cwd`, selected before provider startup.
    */
   cwd: string
-  /** How to auto-answer the child's permission prompts. */
+  /** Automatic policy, or host-user confirmation when set to `ask`. */
   permission: PermissionPolicy
+  /** Host-user permission bridge for `ask`; absent bridges fail closed. */
+  permissionResolver?: PermissionRequestResolver
   /**
    * Extra environment variables to ADD for the child (e.g. the child harness's
    * `DEEPSEEK_API_KEY`). Merged on top of the subprocess seam's scrubbed
@@ -133,7 +137,8 @@ function failureDiagnostic(facts: AcpFailureFacts): string {
 
 /** Fixed permission fact; ACP tool titles and option text never enter it. */
 function permissionDiagnostic(permission: AcpPermissionDecision): string {
-  return `ACP unattended decision (policy: ${permission.policy}; request: ${permission.request}; decision: ${permission.decision})`
+  const source = permission.policy === 'ask' ? 'ACP user permission decision' : 'ACP unattended decision'
+  return `${source} (policy: ${permission.policy}; request: ${permission.request}; decision: ${permission.decision})`
 }
 
 /** Put the operation failure first, followed by the latest permission decision. */
@@ -145,7 +150,7 @@ function diagnosticText(facts: AcpFailureFacts, permission?: AcpPermissionDecisi
 class AcpRunFailure extends Error {
   constructor(facts: AcpFailureFacts, cause: unknown) {
     super(
-      `subagent-acp: ${failureDiagnostic(facts)}`,
+      `subagent-acp: ${failureDiagnostic(facts)}${facts.category === 'process-start' && isCommandNotFound(cause) ? `\n${COMMAND_NOT_FOUND_GUIDANCE}` : ''}`,
       { cause },
     )
     this.name = 'AcpRunFailure'
@@ -287,6 +292,7 @@ function startupFailure(
   stage: Extract<AcpFailureStage, 'initialize' | 'new-session'>,
   outcome: SubprocessOutcome | undefined,
 ): AcpRunFailure {
+  if (isCommandNotFound(error)) return new AcpRunFailure({ stage: 'initialize', category: 'process-start' }, error)
   return new AcpRunFailure(
     /* v8 ignore next -- Windows anonymous pipes cannot expose a live-child protocol close during startup. */
     outcome === undefined
@@ -427,27 +433,14 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
       // surfaced — the subagent returns only its final answer.
       return Promise.resolve()
     })
-    .onRequest(methods.client.session.requestPermission, ({ params }) => {
-      // Auto-answer by the configured policy. `allow` selects the first option
-      // whose kind is `allow_once` or `allow_always`; if the child offered none (or we
-      // reject), answer `cancelled` so the child does not proceed.
-      if (spec.permission === 'allow') {
-        const allow = params.options.find(o => o.kind === 'allow_once' || o.kind === 'allow_always')
-        if (allow !== undefined) {
-          latestPermission = {
-            policy: 'allow',
-            request: permissionRequestKind(params.toolCall.kind),
-            decision: 'allowed',
-          }
-          return Promise.resolve({ outcome: { outcome: 'selected', optionId: allow.optionId } })
-        }
-      }
+    .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+      const response = await resolvePermissionRequest(spec.permission, params, request.signal, spec.permissionResolver)
       latestPermission = {
         policy: spec.permission,
         request: permissionRequestKind(params.toolCall.kind),
-        decision: 'denied',
+        decision: permissionWasAllowed(params, response) ? 'allowed' : 'denied',
       }
-      return Promise.resolve({ outcome: { outcome: 'cancelled' } })
+      return response
     })
 
   const connection = clientApp.connect(ndJsonStream(

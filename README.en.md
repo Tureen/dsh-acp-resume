@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: published on npm (0.1.17). Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.18 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -56,7 +56,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         model: glm-5                 # default unset = server auto routing (picks a model per task). When set, pins the model by appending --model <id>; if args already contains --model, args wins
         effort: high                 # default unset = the model's own default level. When set, appends --effort <level> (low/medium/high/xhigh/max, depends on the model); if args already contains --effort, args wins
         providerName: acp-resume     # default acp-resume; does not conflict with the official acp
-        permission: allow            # the schema fallback default is reject; same semantics as the official package: allow / reject (see "The two defaults of permission" below)
+        permission: allow            # default bundle policy: automatically selects an allow option; reject or ask are also supported (see below)
         env: {}                      # variables layered on top of the sanitized parent environment (e.g. the child agent's own key)
         enableChatTools: true        # default true; when false only the one-shot provider is registered
         toolPrefix: acp_chat_        # default acp_chat_; the prefix of the five tool names
@@ -69,7 +69,35 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
 
 `agentEngine` applies to both the one-shot provider and the persistent sessions. The default `v3` appends `--agent-engine v3` to the child process; this is kiro-cli's engine selection flag. When you use another ACP agent that does not accept the flag (most will exit on an unknown argument), set `agentEngine` to `none` and it is no longer appended. `none` only affects the appending: a `--agent-engine` that you write yourself in `args` is passed to the child process as is. When reconnecting an old session, the fingerprint check ignores this flag, so switching engines does not make an old session get rejected; if the new engine cannot read the old session, it degrades to a new session under the usual rule.
 
-**The two defaults of `permission`.** When the bundle is enabled, the bundled `cordis.patch.yml` sets `permission` to `allow` (permission requests from the agent are approved unattended, as an out-of-the-box default together with `command: kiro-cli`). When you skip the patch, wire it by hand with `- insert:` as in the example above, and leave `permission` out, the Config schema's fallback default is `reject`. The two differ on purpose: the patch default is tuned for kiro-cli to work out of the box, while the schema fallback takes the more conservative side. When you use another agent or want to tighten this, write `permission: reject` explicitly in a top-level override with the same id in your profile.
+**The `permission` policies.** `allow` selects the first `allow_once` or `allow_always` option automatically. `reject` (the schema fallback default) declines every request. `ask` forwards each request to the host's user-confirmation interface and waits for one choice; if that service, its answerer, or a valid answer is unavailable, it denies the request. The bundled `cordis.patch.yml` sets `permission` to `allow` for kiro-cli. With manual `- insert:` wiring, leaving the field out uses the conservative `reject` default.
+
+### Starter recipes
+
+These recipes are **top-level overrides** for a profile whose bundle is already enabled. Do not add another `- insert:` block.
+
+**Use the default kiro-cli.** No override is needed when `kiro-cli` is installed and available on `PATH`; the bundled configuration already uses `command: kiro-cli` and `args: [acp]`.
+
+**Use a specific kiro-cli executable.** When `kiro-cli` is installed outside `PATH`, override its absolute path:
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/kiro-cli
+    args: [acp]
+```
+
+**Use another ACP agent and ask before each permission.** Override its executable and arguments, disable kiro's engine flag when that agent does not accept it, and forward permission requests to the host user-confirmation interface:
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/other-acp-agent
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+```
 
 `model` / `effort` also apply to both paths and are **spawn-level** choices (they act on the session the child process starts). When either is unset, its flag is not appended, which keeps kiro's `auto` (the server picks the model per task dynamically, and `effort` is not under your control); when set, the model/level is pinned. **Effective semantics**: they only apply to the next process that starts. A session process that is already running is not affected, and a session you are continuing has to wait until it is released when idle and reconnected by the next `acp_chat_send` (a new process) before the new model is applied. Like `--agent-engine`, the fingerprint check also ignores `--model` / `--effort` (reason in D19): `auto` already switches models per task within a session, so pinning a different model does not make it "a different agent", and old sessions stay continuable.
 
@@ -120,12 +148,12 @@ The background mode of `acp_chat_send` needs the host to have both `@deepseek-ai
 
 ```sh
 pnpm install && pnpm build     # build lib/
-pnpm test                      # vitest; 314 green = official protocol surface 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest; 321 green = official protocol surface 68 + connection 28 + pool 60 + tools 15 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- Baseline: checked against `dsh-v0.2.2-rc.1`; `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1`. DSH peers are pinned to `~0.2.2-rc.1`, and the Cordis peer to `~4.1.0`;
+- Baseline: checked against `dsh-v0.2.2-rc.1`; except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1`. DSH peers are pinned to `~0.2.2-rc.1`, and the Cordis peer to `~4.1.0`;
 - Conditionally run cases: the 24 real-child-process cases need `spawn.ts` from the official checkout (not included in the npm distribution). When the official checkout (its path given by the environment variable `DSH_OFFICIAL_CHECKOUT`; when unset, the default location in the tests is used) is present, everything is green and the exit code is 0; when it is absent, these 24 cases are skipped automatically (see DECISIONS D8);
-- Two implementations side by side: run.ts stays the official original and is not refactored (D11); connection.ts is the sibling implementation dedicated to the pool;
+- Two implementations side by side: except for D11's narrow `permission: ask` and ENOENT guidance changes, run.ts follows the official baseline and is not refactored; connection.ts is the sibling implementation dedicated to the pool;
 - Official source checkout used for reference: tag `dsh-v0.2.2-rc.1` (read-only comparison).
 
 ## License

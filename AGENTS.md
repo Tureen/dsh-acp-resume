@@ -1,12 +1,12 @@
 # AGENTS.md
 
-dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 的独立兄弟包,完整保留官方 one-shot(一次性)委派行为,新增持久会话池——进程保活、远端会话号落盘、进程死后经 `session/load` 重连。改架构前读 [DESIGN.md](DESIGN.md);决策按编号引用 [DECISIONS.md](DECISIONS.md);当前进度与验收状态见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
+dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 的独立兄弟包,完整保留官方 one-shot(一次性)委派行为(仅 D11 明载的 ask 权限决策与 ENOENT 指引例外),新增持久会话池——进程保活、远端会话号落盘、进程死后经 `session/load` 重连。改架构前读 [DESIGN.md](DESIGN.md);决策按编号引用 [DECISIONS.md](DECISIONS.md);当前进度与验收状态见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
 ## 基线与隔离(硬约束)
 
 - 基线钉 `0.2.2-rc.1`,DSH peer 依赖全部 `~0.2.2-rc.1`、Cordis peer `~4.1.0`(D2);DSH App 升级时同步重装 peer 并跑全量回归。
 - 本包 provider 注册名 `acp-resume`,永不触碰官方 `acp` provider 与现有 kiro 链路(D1)。
-- `src/run.ts` 是官方源码的逐字副本,禁止为消重而重构(D11);`src/connection.ts` 是池专用姊妹实现,约 200 行受控重复是刻意选择,不是待清理债务。
+- `src/run.ts` 保持官方源码逐字基线，只有 D11 明确记录的 `permission: ask` 权限决策器和 ENOENT 固定指引例外；禁止为消重而重构。`src/connection.ts` 是池专用姊妹实现,约 200 行受控重复是刻意选择,不是待清理债务。
 - 42 个官方协议面用例是 one-shot 行为的不回归门槛;真实子进程类 24 例依赖官方 checkout 的 `spawn.ts`(npm 分发包不含),checkout 在场时运行、缺席时自动跳过(D8),跳过属预期,不是待修缺陷。
 - 官方源码只读对照:`<官方 checkout>`(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖),tag `dsh-v0.2.2-rc.1`。
 
@@ -15,7 +15,9 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 ```
 src/
   index.ts       插件入口:Config(全字段见 README「配置」)+ provider 与工具注册
-  run.ts         官方 one-shot 驱动(逐字基线,勿重构,D11)
+  command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
+  permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
+  run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
   connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
@@ -53,7 +55,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 314 绿:官方协议面 `subagent-acp.spec.ts` 67(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 24 + `pool.spec.ts` 60 + `tools.spec.ts` 13 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 321 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 28 + `pool.spec.ts` 60 + `tools.spec.ts` 15 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

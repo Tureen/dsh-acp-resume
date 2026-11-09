@@ -18,9 +18,11 @@
  *                        `dispose()` must still kill the process.
  * - `MOCK_PERMISSION`  — if `1`, the agent calls `session/request_permission`
  *                        before answering, to exercise the client's auto-answer.
- * - `MOCK_PERMISSION_IGNORE_DECISION` — if `1`, continue after a denied
- *                        permission so the terminal failure can carry the
- *                        provider's fixed permission fact.
+ * - `MOCK_PERMISSION_READY_FILE` — if set, the agent touches this path immediately
+ *                        before its permission request, so a test can cancel while
+ *                        the user question is still pending.
+ * - `MOCK_PERMISSION_DECISION_FILE` — if set, the agent appends `selected <id>`
+ *                        or `cancelled` after receiving the client response.
  * - `MOCK_CRASH_ON_INITIALIZE` — exit while the unpublished initialize
  *                        operation is active.
  * - `MOCK_CRASH_AFTER_CHUNK` — exit after streaming the assistant chunk, so
@@ -137,6 +139,8 @@ const STOP = (process.env.MOCK_STOP ?? 'end_turn') as StopReason
 const HANG = process.env.MOCK_HANG === '1'
 const WANT_PERMISSION = process.env.MOCK_PERMISSION === '1'
 const IGNORE_PERMISSION_DECISION = process.env.MOCK_PERMISSION_IGNORE_DECISION === '1'
+const PERMISSION_READY_FILE = process.env.MOCK_PERMISSION_READY_FILE
+const PERMISSION_DECISION_FILE = process.env.MOCK_PERMISSION_DECISION_FILE
 const NO_ALLOW = process.env.MOCK_NO_ALLOW === '1'
 const THOUGHT = process.env.MOCK_THOUGHT === '1'
 const CRASH_ON_INITIALIZE = process.env.MOCK_CRASH_ON_INITIALIZE === '1'
@@ -284,6 +288,7 @@ function makeAgent() {
             { optionId: 'yes', name: 'Allow', kind: 'allow_once' as const },
             { optionId: 'no', name: 'Reject', kind: 'reject_once' as const },
           ]
+        if (PERMISSION_READY_FILE !== undefined) writeFileSync(PERMISSION_READY_FILE, 'waiting')
         const decision = await conn.request(methods.client.session.requestPermission, {
           sessionId: params.sessionId,
           toolCall: {
@@ -293,7 +298,11 @@ function makeAgent() {
           },
           options,
         }) as RequestPermissionResponse
-        if (decision.outcome.outcome === 'cancelled' && !IGNORE_PERMISSION_DECISION) {
+        if (PERMISSION_DECISION_FILE !== undefined) {
+          const selected = Reflect.get(decision.outcome, 'optionId')
+          appendFileSync(PERMISSION_DECISION_FILE, typeof selected === 'string' ? `selected ${selected}\n` : 'cancelled\n')
+        }
+        if ((decision.outcome.outcome === 'cancelled' || Reflect.get(decision.outcome, 'optionId') === 'no') && !IGNORE_PERMISSION_DECISION) {
           return { stopReason: 'cancelled' }
         }
       }

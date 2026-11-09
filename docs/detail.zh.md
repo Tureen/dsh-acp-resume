@@ -24,8 +24,36 @@
 ## 关键配置
 
 - `command`：外部 ACP agent 的可执行文件。默认示例使用 `kiro-cli`。
-- `permission`：自动处理 agent 的权限请求。bundle 默认 `allow`；手动接线时建议按需要明确写 `allow` 或 `reject`。
+- `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
+
+### 新手配方
+
+以下是 bundle 已启用时写进 profile `cordis.patch.yml` 的顶层同 id 覆盖，不要再加第二个 `- insert:`。
+
+**默认 kiro-cli。** 无需覆盖：安装 `kiro-cli` 并确保它在 `PATH` 中即可使用自带的 `command: kiro-cli` 和 `args: [acp]`。
+
+**指定路径的 kiro-cli。**
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/kiro-cli
+    args: [acp]
+```
+
+**换用其他 ACP agent，并逐次询问权限。**
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/other-acp-agent
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+```
 
 完整配置、默认值和手动接线方式见 [README](../README.md#配置)。
 

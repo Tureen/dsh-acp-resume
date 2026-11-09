@@ -5,14 +5,14 @@
 ## D1 独立新包,不 fork 官方 subagent-acp(2026-11-04)
 
 依据:fork 会破坏三条硬要求——现有 kiro 链路隔离(同名包替换会劫持 `provider: acp` 配置)、官方更新可跟进(rebase 负担)、客户端升级可适配(peer 面缩小到 seam 契约)。独立包注册 `acp-resume`,与官方 `acp` 并存,三条全部成立。
-后果:包内自持官方 one-shot 源码副本;2026-11-09 已与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 对照，`src/run.ts` 无差异;官方缺陷修复需择要摘入(面小)。
+后果:包内自持官方 one-shot 源码副本;2026-11-09 已与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 对照，除 D11 记录的 ask 权限决策器与 ENOENT 指引窄例外外，`src/run.ts` 无差异;官方缺陷修复需择要摘入(面小)。
 
 ## D2 基线钉 0.2.2-rc.1,与已装 App 对齐(2026-11-03;2026-11-09 修订)
 
 依据:用户 App 已自动升级至 0.2.2-rc.1;错版先例:误装 0.1.0-rc.6 导致 provider 行无法激活。
 后果:DSH peer 与对应 devDependencies 全部 `~0.2.2-rc.1`;Cordis peer/devDependencies 同步为 `~4.1.0`，loader devDependency 同步为 `~1.1.0` 以满足新版 Cordis peer；新版工具运行时将执行器拆出，直接调度 ToolRuntime 的回归用例另加 `@deepseek-ai/dsh-tool-executor-native` devDependency；App 升级时同步重装并跑回归。
 
-修订(2026-11-09):包所有者决定将 `engines.dsh` 改为仅设最低版本 `>=0.2.2-rc.1`、移除上限，避免每次宿主跨版本线升级都必须发布新版插件。所有者接受代价：未来 0.3+ 宿主若不兼容，安装不再被 engines 拦截，问题可能表现为构建、加载或运行期故障；这不改变 DSH peer 仍钉 `~0.2.2-rc.1` 的策略。官方 checkout 已切到 tag `dsh-v0.2.2-rc.1`，`src/run.ts` 与官方无差异；D8 的 24 个真实子进程用例在该 checkout 下实际运行，连同 42 个 mock 协议面和其余套件共 314 例全绿。
+修订(2026-11-09):包所有者决定将 `engines.dsh` 改为仅设最低版本 `>=0.2.2-rc.1`、移除上限，避免每次宿主跨版本线升级都必须发布新版插件。所有者接受代价：未来 0.3+ 宿主若不兼容，安装不再被 engines 拦截，问题可能表现为构建、加载或运行期故障；这不改变 DSH peer 仍钉 `~0.2.2-rc.1` 的策略。官方 checkout 已切到 tag `dsh-v0.2.2-rc.1`，除 D11 已记录的 ask 权限决策器与 ENOENT 指引窄例外外，`src/run.ts` 与官方一致；D8 的 24 个真实子进程用例在该 checkout 下实际运行，连同 42 个 mock 协议面和其余套件共 320 例全绿。
 
 ## D3 不接入内核续聊体系(prepareContinuable)(2026-11-04)
 
@@ -72,11 +72,13 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 官方 mock 无 load 分支;扩展为内存会话表:load 命中恢复历史,未命中可配置报错/空,支撑池生命周期测试。
 
-## D11 撤销 run.ts 消重重构,双实现并存(2026-11-04)
+## D11 撤销 run.ts 消重重构,双实现并存(2026-11-04;2026-11-09 permission: ask 窄例外修订)
 
 决策:第 2 步原计划"startAcpRun 重构为 openAcpConnection 薄包装"实施后回归退化 5 例,当场撤销,run.ts 恢复官方原版;connection.ts 作为池专用姊妹实现与官方驱动并存。
 依据:官方测试对启动失败消息(`subagent-acp: Subagent failure ...`)与 prompt 失败分类有逐字断言,任何语义搬移都是回归面;"基线不动、增量在自有文件"是本包的立身原则,DRY 收益不抵风险。
 后果:run.ts 与 connection.ts 存在受控重复(约 200 行语义同源);官方升级时 run.ts 面天然安全,connection 面自行维护;42+6=48 绿回归面继续有效。
+
+修订(2026-11-09,窄例外):`permission: ask` 必须让 one-shot 路径把 ACP `session/request_permission` 转发到宿主 `ctx.userQuestions`，无法只在池专用 `connection.ts` 实现。因此允许 `run.ts` 在两处保持与官方副本不同：注入 ask 的权限决策器，以及 ENOENT 的固定行动指引；其余 one-shot 生命周期、协议处理、取消与销毁梯子仍逐字跟随官方。两项差异均有本包回归覆盖，禁止据此把 run.ts 重构、合并或扩展为通用分叉。
 
 ## D12 mock 会话表文件持久化(2026-11-04)
 
@@ -127,7 +129,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 9. **tools 服务响应式注册**:改用 `ctx.inject(['tools'], ...)`,tools 服务晚于本插件到达或被重载时都能正确(重新)注册;池挂在插件 fiber 上,tools 重载不杀会话进程。替代 D13 的 `ctx.get` 一次性探测。
 10. **配置与注册表健壮性**:`idleTimeoutMs` 在 apply 入口校验(正有限数,不超过 Node 定时器上限);`registryPath` 须为绝对路径;注册表损坏时改名留证并经 `onWarn` 告警(D6)。
 
-结构化错误契约:连接启动失败统一抛 `AcpConnectionError`,带 `stage`(`initialize` / `new-session` / `load-session`)、`category`(`protocol` / `transport` / `process-exit` / `process-start` / `unknown`)与可选 `jsonRpcCode`(远端 JSON-RPC 拒绝时的错误码)。`message` 只含固定安全事实,原始错误放 `cause`。spawn 本身抛错诊断为 `stage: initialize; category: process-start`。池的降级判定只读这两个字段,不解析文案。
+结构化错误契约:连接启动失败统一抛 `AcpConnectionError`,带 `stage`(`initialize` / `new-session` / `load-session`)、`category`(`protocol` / `transport` / `process-exit` / `process-start` / `unknown`)与可选 `jsonRpcCode`(远端 JSON-RPC 拒绝时的错误码)。`message` 只含固定安全事实,原始错误放 `cause`。spawn 本身抛错诊断为 `stage: initialize; category: process-start`。`code === 'ENOENT'` 的同步或异步 spawn 失败额外附固定英文行动指引，不回显用户的 command、PATH 或系统原始错误；`cause` 与 `onError` 仍保留原始错误。`permission: ask` 的服务缺席、无回答者、无效回答或取消统一回 ACP `cancelled`，不改变启动错误分类或将其误报为协议失败。池的降级判定只读这两个字段,不解析文案。
 
 能力门控:`session/load` 前检查 `initialize` 响应的 `agentCapabilities.loadSession`,不为 `true` 即按 `load-session` + `protocol` 失败处理(从而降级新会话)。**已真机确认(2026-11-04)**:kiro-cli 声明 `loadSession`——0.1.3 装机后行为验证,SIGKILL 进程后 `session/load` 重连恢复暗号上下文且无降级注记(若未声明,门控必触发降级,注记必现)。
 
@@ -295,3 +297,15 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: Waiting on job acp-chat-` 开头(文案重构后));测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
 
 (2026-11-06 注记)模型可见文案按描述层优化原则重构:正面协议优先(先说「完成会唤醒、再无 wait 读取」)、因果完整(说明机制而非只给禁令)、后果明示(wait 被拒、提前读只得 no new output)、冲突化解(带着运行中任务结束本轮即算已收集,对冲 tool-jobs 系统提示的「最终回答前先收集」)。涉及 `acp_chat_send` 描述与返回文本、`waitDeniedReason` 三处;描述里写作 `job_output with wait`(不含字面 `wait: true`,由文案锁定测试保证)。
+## D23 permission: ask 转发宿主用户确认(2026-11-09)
+
+问题:bundle 默认 `permission: allow` 适合 kiro-cli 开箱运行，但用户需要一个真实可用的收紧选项。此前 `reject` 只能自动拒绝，无法让用户逐次判断外部 ACP agent 的 `session/request_permission`。
+
+决策:
+- **配置与依赖**:`permission` 扩为 `allow | reject | ask`，默认仍为 `reject`，bundle 补丁仍为 `allow`。`ask` 通过可选宿主服务 `ctx.userQuestions`（`@deepseek-ai/dsh-user-questions`）向发起调用的活跃根 agent 提问；该服务或回答者缺席、调用者不是可交互根 agent、回答无效或服务报错时一律 fail closed，回 ACP `{ outcome: { outcome: 'cancelled' } }`，绝不自动允许。
+- **请求映射**:每次 ACP 请求生成一个单选问题。标题优先用 `toolCall.title`，否则固定为外部 ACP 子代理的权限请求；正文列出 tool name、kind 和受限长度的文本内容项。ACP 每个 option 映射为唯一显示标签（保留 name、kind 和序号），闭包表将被选 label 精确映射回原 `optionId`；只接受该问题唯一、无 custom 的单选回答，其余回 cancelled。宿主按当前界面语言呈现问题文本与选项，插件不自行翻译用户提供的 ACP 文本。
+- **等待与超时**:使用 `ctx.userQuestions.ask`，不使用会返回 `pending` 的 `askTimed`，因为 ACP 权限 RPC 必须在当前请求中得到 `selected` 或 `cancelled`。ACP 请求没有可读取的超时字段，插件不另造本地计时器；有可用回答者时问题持续等待，直到用户选择、调用取消、宿主/连接关闭或远端自身结束请求。服务缺席或拒绝立即回 cancelled，作为默认 deny；取消导致的 cancelled 不另加轮结果注记，沿用既有 aborted 语义。
+- **取消、空闲与 jobs**:one-shot 的请求信号、同步 send 的工具信号及后台 job 的 job 控制器信号都传给问题。任一信号先取消即立即向 ACP 回 cancelled，并由现有 D6 取消条尽力 `session/cancel`、作废连接；迟到的用户回答被观察后丢弃。挂起问题属于在途 prompt，`busy` 保持为真且空闲计时器已清除，因此不会被空闲释放。后台 job 在用户回答前保持 running；D22 仍拒绝模型对运行中 job 的阻塞 `job_output wait:true`，完成通知才是收集结果的通道。
+- **两条路径**:one-shot `run.ts` 与池的 `connection.ts` 都使用同一权限决策器。run.ts 的接入是 D11 记录的窄例外；connection 只在当前 prompt 存在 ask 决策器时转发，轮外或连接已取消的权限请求 fail closed。`allow` 继续选择第一个 allow-shaped option，`reject` 继续 cancelled，保持既有行为。
+
+后果:新增 `dsh-user-questions` peer/dev 依赖与按调用临时绑定的权限决策器；ask 用户需要宿主已组合该服务和其界面回答者。测试覆盖 one-shot 与持久工具的允许、持久连接的拒绝与无回答者 fail-closed、既有 allow/reject 自动策略以及取消期间清理；所有路径只回传 ACP 原始 optionId，不把选项文本当授权事实。

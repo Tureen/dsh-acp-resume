@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
+import { Context } from '@deepseek-ai/cordis'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { AcpConnectionError, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
+import { userQuestionPermissionResolver } from '../src/permission-request.ts'
 import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
@@ -23,6 +26,7 @@ const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url
 
 const dirs: string[] = []
 const connections: AcpConnection[] = []
+const questionContexts: Context[] = []
 
 function tempDir(prefix = 'acp-resume-conn-'): string {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -77,6 +81,19 @@ function lines(path: string): string[] {
   return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(l => l !== '') : []
 }
 
+function permissionQuestions(answer: string | Promise<string>): Promise<Context> {
+  const ctx = new Context()
+  questionContexts.push(ctx)
+  return (async () => {
+    await ctx.plugin(UserQuestionService)
+    ctx.on('user-questions/request', async (request) => {
+      const selected = await answer
+      return { answers: request.questions.map(question => ({ id: question.id, selected: [selected] })) }
+    })
+    return ctx
+  })()
+}
+
 /** Startup rejection captured for structured assertions. */
 async function startupError(promise: Promise<unknown>): Promise<AcpConnectionError> {
   const error = await promise.then(() => undefined, (e: unknown) => e)
@@ -86,6 +103,7 @@ async function startupError(promise: Promise<unknown>): Promise<AcpConnectionErr
 
 afterEach(async () => {
   await Promise.allSettled(connections.splice(0).map(c => c.dispose()))
+  await Promise.allSettled(questionContexts.splice(0).map(ctx => ctx.fiber.dispose()))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -288,6 +306,61 @@ describe('openAcpConnection / AcpConnection', () => {
     const turn = await conn.prompt(ask('p'), live())
     expect(turn.stopReason).toBe('aborted')
     expect(turn.diagnostic).toBe('ACP unattended decision (policy: reject; request: edit; decision: denied)')
+  })
+
+  it('forwards an ask permission prompt to the host and returns its exact allow option id', async () => {
+    const decisions = join(tempDir(), 'permission-decisions')
+    const questions = await permissionQuestions('Allow (allow_once, option 1)')
+    const conn = await open(makeSpec({ MOCK_PERMISSION: '1', MOCK_PERMISSION_DECISION_FILE: decisions, MOCK_TEXT: 'approved' }, undefined, { permission: 'ask' }).spec)
+    const turn = await conn.prompt(ask('p'), live(), undefined, userQuestionPermissionResolver(questions.userQuestions, undefined))
+    expect(turn.stopReason).toBe('completed')
+    expect(text(turn.output)).toBe('approved')
+    expect(lines(decisions)).toEqual(['selected yes'])
+  })
+
+  it('forwards an ask permission prompt to the host and returns its exact reject option id', async () => {
+    const decisions = join(tempDir(), 'permission-decisions')
+    const questions = await permissionQuestions('Reject (reject_once, option 2)')
+    const conn = await open(makeSpec({ MOCK_PERMISSION: '1', MOCK_PERMISSION_DECISION_FILE: decisions }, undefined, { permission: 'ask' }).spec)
+    const turn = await conn.prompt(ask('p'), live(), undefined, userQuestionPermissionResolver(questions.userQuestions, undefined))
+    expect(turn.stopReason).toBe('aborted')
+    expect(lines(decisions)).toEqual(['selected no'])
+  })
+
+  it('fails closed when ask has a user-questions service but no answerer', async () => {
+    const decisions = join(tempDir(), 'permission-decisions')
+    const questions = new Context()
+    questionContexts.push(questions)
+    await questions.plugin(UserQuestionService)
+    const conn = await open(makeSpec({ MOCK_PERMISSION: '1', MOCK_PERMISSION_DECISION_FILE: decisions }, undefined, { permission: 'ask' }).spec)
+    const turn = await conn.prompt(ask('p'), live(), undefined, userQuestionPermissionResolver(questions.userQuestions, undefined))
+    expect(turn.stopReason).toBe('aborted')
+    expect(lines(decisions)).toEqual(['cancelled'])
+  })
+
+  it('cancels a pending ask question, reports ACP cancellation, and ignores a late answer', async () => {
+    const ready = join(tempDir(), 'permission-ready')
+    const decisions = join(tempDir(), 'permission-decisions')
+    const cancels = join(tempDir(), 'cancels')
+    const deferred = Promise.withResolvers<string>()
+    const questions = await permissionQuestions(deferred.promise)
+    const conn = await open(makeSpec({
+      MOCK_PERMISSION: '1',
+      MOCK_PERMISSION_READY_FILE: ready,
+      MOCK_PERMISSION_DECISION_FILE: decisions,
+      MOCK_CANCEL_FILE: cancels,
+    }, undefined, { permission: 'ask' }).spec)
+    const controller = new AbortController()
+    const pending = conn.prompt(ask('p'), controller.signal, undefined, userQuestionPermissionResolver(questions.userQuestions, undefined))
+    await until(() => existsSync(ready), 'permission request')
+    controller.abort()
+    await expect(pending).resolves.toMatchObject({ stopReason: 'aborted' })
+    await until(() => lines(decisions).length === 1, 'cancelled permission response')
+    expect(lines(decisions)).toEqual(['cancelled'])
+    expect(lines(cancels)).toHaveLength(1)
+    deferred.resolve('Allow (allow_once, option 1)')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(lines(decisions)).toEqual(['cancelled'])
   })
 
   it('does not carry a permission decision into the next turn', async () => {

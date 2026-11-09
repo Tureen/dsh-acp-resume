@@ -21,6 +21,7 @@
 | 6 | 真机与装机验收 | 真 kiro-cli 冒烟剧本 + pack 安装 desktop profile | GUI 中模型经四工具完成:建会话→两轮→杀进程→重连记得上文→空闲释放→再连 | ☐(0.1.2 已装机待走剧本) |
 | 7 | 持久会话面板(D15) | 双面包:node 半 sidebarRightTabs+remote、client 半页签组件;注册表增 title/turnCount | PANEL-DESIGN.md §4 验收清单全过(含"续聊不新增卡片") | ☐ |
 | 8 | 禁止 acp-chat 阻塞等待(D22) | `src/job-wait-gate.ts`(`tools/pre-execute` 拒绝运行中 acp-chat 的 `job_output wait:true`)+ `allowChatJobWait` 开关 + `tests/job-wait-gate.spec.ts` | 新套件 13 例全绿 + 全量回归 308 绿 | ☑ ae52f90 |
+| 9 | `permission: ask` + 启动指引(D23) | `permission: ask` 将 ACP 权限请求转给宿主用户确认，ENOENT 返回安全行动指引，四份用户文档增加新手配方 | one-shot 与持久工具 ask 放行、拒绝、无服务 fail-closed、取消清理，以及两入口 ENOENT 指引回归；全量 321 绿 | ☑ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

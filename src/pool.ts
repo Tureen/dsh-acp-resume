@@ -47,6 +47,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { AcpRunSpec } from './run.js'
 import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
+import type { PermissionRequestResolver } from './permission-request.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -99,6 +100,8 @@ export interface PoolSendHooks {
   readonly onFreshSession?: (reason: FreshSessionReason) => void
   /** Each assistant text chunk of this turn, in arrival order; their concatenation is `output`. */
   readonly onText?: (text: string) => void
+  /** Resolves this turn's ACP permission request under `permission: ask`; absent fails closed. */
+  readonly permissionResolver?: PermissionRequestResolver
 }
 
 /** Pool construction inputs: the spawn base plus durability knobs. */
@@ -487,7 +490,12 @@ export class AcpSessionPool {
     chat.busy = true
     this.clearIdleTimer(chat)
     const startedAt = Date.now()
-    const turnPromise = conn.prompt([{ type: 'text', text: message }], signal ?? new AbortController().signal, hooks.onText)
+    const turnPromise = conn.prompt(
+      [{ type: 'text', text: message }],
+      signal ?? new AbortController().signal,
+      hooks.onText,
+      hooks.permissionResolver,
+    )
     chat.busyPromise = turnPromise
     try {
       const turn = await turnPromise

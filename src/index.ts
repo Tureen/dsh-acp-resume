@@ -15,6 +15,8 @@
  */
 
 import type { Context, FiberState } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import z from '@deepseek-ai/schemastery'
 import type {
   ResolvedSubagentStartRequest,
@@ -31,6 +33,7 @@ import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
 import { type AgentEngineSetting, buildChildArgs } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
+import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
 
 // cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
 // cannot read at runtime; `satisfies` pins the literal to the declared member.
@@ -79,9 +82,10 @@ export interface Config {
    */
   effort?: string
   /**
-   * How to auto-answer the child's `session/request_permission` prompts:
-   * `reject` (default — decline every prompt) or `allow` (approve via the first
-   * `allow_once` or `allow_always` option). No prompt is surfaced to a human.
+   * How to answer the child's `session/request_permission` prompts: `reject`
+   * (default), `allow` (select the first allow-shaped option), or `ask`
+   * (forward each request to the host user's confirmation UI). `ask` fails
+   * closed when the host has no user-questions service or no answerer.
    */
   permission: PermissionPolicy
   /**
@@ -127,7 +131,7 @@ export const Config: z<Config> = z.object({
   // so the flag is only appended when the user pins a model/effort.
   model: z.string(),
   effort: z.string(),
-  permission: z.union(['allow', 'reject'] as const).default('reject'),
+  permission: z.union(['allow', 'reject', 'ask'] as const).default('reject'),
   env: z.dict(z.string()).default({}),
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
@@ -162,7 +166,12 @@ class AcpProvider implements SubagentProvider {
   // Context contract: an out-of-process ACP child starts fresh — no parent conversation crosses the process boundary.
   readonly inheritsParentContext = false
 
-  constructor(readonly name: string, private readonly ctx: Context, private readonly config: ResolvedConfig) {}
+  constructor(
+    readonly name: string,
+    private readonly ctx: Context,
+    private readonly config: ResolvedConfig,
+    private readonly permissionResolverFor: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
+  ) {}
 
   start(request: ResolvedSubagentStartRequest) {
     if (request.signal.aborted) {
@@ -176,6 +185,7 @@ class AcpProvider implements SubagentProvider {
       this.ctx.logger.warn(`subagent-acp "${this.name}": child start failed: %o`, error)
       throw failure
     }
+    const permissionResolver = this.permissionResolverFor(request.parent)
     const spec: AcpRunSpec = {
       command: this.config.command,
       args: buildChildArgs(this.config.args, {
@@ -185,6 +195,7 @@ class AcpProvider implements SubagentProvider {
       }),
       cwd,
       permission: this.config.permission,
+      ...(permissionResolver === undefined ? {} : { permissionResolver }),
       env: this.config.env,
       disposeEofGraceMs: this.config.disposeEofGraceMs,
       disposeGraceMs: this.config.disposeGraceMs,
@@ -208,7 +219,11 @@ export function apply(ctx: Context, config: Config): void {
   if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
     throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
   }
-  ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved))
+  const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined => {
+    if (resolved.permission !== 'ask') return undefined
+    return userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
+  }
+  ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
   if (!resolved.enableChatTools) return
 
   const registryPath = resolved.registryPath === ''
@@ -245,7 +260,7 @@ export function apply(ctx: Context, config: Config): void {
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
-    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs)
+    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor)
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix)
     scope.effect(() => scope.tools.register(start))
     scope.effect(() => scope.tools.register(steer))

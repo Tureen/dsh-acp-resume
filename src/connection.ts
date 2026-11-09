@@ -31,6 +31,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
 import { acpStopReason, acpContentText, disposeAcpChild, type AcpRunSpec, type PermissionPolicy } from './run.js'
+import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
+import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestResolver } from './permission-request.js'
 
 export type { PermissionPolicy }
 
@@ -114,7 +116,7 @@ export interface AcpConnection {
    *   settlement are not delivered; a throwing observer is contained.
    * @returns this turn's text, stop reason, and optional diagnostic.
    */
-  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult>
+  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult>
   /**
    * Queue a steering message into the running turn via the private
    * `_session/steer` request (neither engine advertises it; ACP has no steer).
@@ -158,7 +160,7 @@ function connectionError(
   cause?: unknown,
 ): AcpConnectionError {
   return new AcpConnectionError(
-    `acp-resume: ${failureDiagnostic({ stage: facts.stage, category: facts.category, ...(facts.outcome === undefined ? {} : { outcome: facts.outcome }) })}`,
+    `acp-resume: ${failureDiagnostic({ stage: facts.stage, category: facts.category, ...(facts.outcome === undefined ? {} : { outcome: facts.outcome }) })}${facts.category === 'process-start' && isCommandNotFound(cause) ? `\n${COMMAND_NOT_FOUND_GUIDANCE}` : ''}`,
     {
       stage: facts.stage,
       category: facts.category,
@@ -202,7 +204,8 @@ function permissionRequestKind(kind: ToolKind | null | undefined): ToolKind | 'u
 }
 
 function permissionDiagnostic(permission: AcpPermissionDecision): string {
-  return `ACP unattended decision (policy: ${permission.policy}; request: ${permission.request}; decision: ${permission.decision})`
+  const source = permission.policy === 'ask' ? 'ACP user permission decision' : 'ACP unattended decision'
+  return `${source} (policy: ${permission.policy}; request: ${permission.request}; decision: ${permission.decision})`
 }
 
 /** Map one remote terminal reason to the optional safe failure line it needs (mirrors run.ts). */
@@ -320,6 +323,9 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   let latestPermission: AcpPermissionDecision | undefined
   const flags = { cancelled: false }
 
+  // Permission requests are meaningful only while a prompt owns this connection.
+  let activePermissionResolver: PermissionRequestResolver | undefined
+  let activePermissionSignal: AbortSignal | undefined
   const clientApp = createAcpClientApp({ name: 'dsh-acp-resume' })
     .onNotification(methods.client.session.update, ({ params }) => {
       const update = params.update
@@ -334,20 +340,19 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       // surfaced — the connection returns only the final answer text.
       return Promise.resolve()
     })
-    .onRequest(methods.client.session.requestPermission, ({ params }) => {
-      if (spec.permission === 'allow') {
-        const allow = params.options.find(o => o.kind === 'allow_once' || o.kind === 'allow_always')
-        if (allow !== undefined) {
-          latestPermission = { policy: 'allow', request: permissionRequestKind(params.toolCall.kind), decision: 'allowed' }
-          return Promise.resolve({ outcome: { outcome: 'selected', optionId: allow.optionId } })
-        }
-      }
+    .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+      const response = await resolvePermissionRequest(
+        spec.permission,
+        params,
+        activePermissionSignal ?? new AbortController().signal,
+        activePermissionResolver,
+      )
       latestPermission = {
         policy: spec.permission,
         request: permissionRequestKind(params.toolCall.kind),
-        decision: 'denied',
+        decision: permissionWasAllowed(params, response) ? 'allowed' : 'denied',
       }
-      return Promise.resolve({ outcome: { outcome: 'cancelled' } })
+      return response
     })
 
   const connection = clientApp.connect(ndJsonStream(
@@ -497,13 +502,15 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
         ...(typeof messageId === 'string' ? { messageId } : {}),
       }
     },
-    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void): Promise<AcpTurnResult> {
+    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
       // Per-turn state: a notifyCancel between turns or a previous turn's
       // permission decision must not leak into this turn.
       flags.cancelled = false
       latestPermission = undefined
       turnText = ''
       turnTextObserver = onText
+      activePermissionResolver = permissionResolver
+      activePermissionSignal = promptSignal
       acceptingUpdates = true
       let turnCancelled = false
       let turnCancelSettled!: () => void
@@ -518,6 +525,8 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       const settleTurn = (): void => {
         acceptingUpdates = false
         turnTextObserver = undefined
+        activePermissionResolver = undefined
+        activePermissionSignal = undefined
       }
       const turnOutput = (): readonly ContentBlock[] => turnText === '' ? [] : [{ type: 'text', text: turnText }]
       let diagnostic: string | undefined

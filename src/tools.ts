@@ -19,8 +19,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpSteerUnsupportedError } from './connection.js'
 import { freshSessionNotice, type AcpSessionPool, type PoolSendResult } from './pool.js'
+import type { PermissionRequestResolver } from './permission-request.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -119,11 +121,19 @@ function jobLabel(pool: AcpSessionPool, chatId: string, message: string): string
  * send that rejects (reconnect failure, single-flight race) fails the job, or
  * ends it killed when the job's own cancellation caused it. Never rejects.
  */
-async function runTurnAsJob(pool: AcpSessionPool, chatId: string, message: string, signal: AbortSignal, job: JobHandle): Promise<JobOutcome> {
+async function runTurnAsJob(
+  pool: AcpSessionPool,
+  chatId: string,
+  message: string,
+  signal: AbortSignal,
+  job: JobHandle,
+  permissionResolver: PermissionRequestResolver | undefined,
+): Promise<JobOutcome> {
   try {
     const result = await pool.send(chatId, message, signal, {
       onFreshSession: (reason) => { job.append(`${freshSessionNotice(reason)}\n`) },
       onText: (text) => { job.append(text) },
+      ...(permissionResolver === undefined ? {} : { permissionResolver }),
     })
     if (result.stopReason === 'completed') {
       if (result.output.trim() === '') job.append(EMPTY_OUTPUT)
@@ -177,8 +187,14 @@ const SEND_OUTPUT = {
  * @param pool - the pool the tool drives.
  * @param toolPrefix - name prefix shared by the five tools.
  * @param jobs - the job registry, when the host composes one.
+ * @param permissionResolverFor - binds one model call's user-confirmation bridge when `permission: ask` is configured.
  */
-export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace): ToolDefinitionOf {
+export function chatSendTool(
+  pool: AcpSessionPool,
+  toolPrefix: string,
+  jobs?: ChatJobsFace,
+  permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
+): ToolDefinitionOf {
   const name = `${toolPrefix}send`
   if (jobs === undefined) {
     return defineTool({
@@ -194,7 +210,10 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
       async execute(args, exec) {
         exec.signal.throwIfAborted()
         if (!pool.knows(args.chatId)) throw unknownChatError(toolPrefix, args.chatId)
-        const result = await pool.send(args.chatId, args.message, exec.signal)
+        const permissionResolver = permissionResolverFor?.(exec.agent)
+        const result = await pool.send(args.chatId, args.message, exec.signal, {
+          ...(permissionResolver === undefined ? {} : { permissionResolver }),
+        })
         if (result.stopReason !== 'completed') throw failedTurnError(result)
         const body = result.output.trim() === '' ? EMPTY_OUTPUT : result.output
         return { text: result.freshSession ? `${resultFreshSessionNotice(result)}\n${body}` : body }
@@ -218,6 +237,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
     async execute(args, exec) {
       exec.signal.throwIfAborted()
       const { chatId, message } = args
+      const permissionResolver = permissionResolverFor?.(exec.agent)
       if (!pool.knows(chatId)) throw unknownChatError(toolPrefix, chatId)
       pool.assertSendable(chatId)
       // The job owns the turn's cancellation from here on: the tool call ends
@@ -232,7 +252,7 @@ export function chatSendTool(pool: AcpSessionPool, toolPrefix: string, jobs?: Ch
         // the chat before its first await, so the preflight above and the
         // claim leave no gap for a parallel send on the same chat.
         run: job => ({
-          done: runTurnAsJob(pool, chatId, message, controller.signal, job),
+          done: runTurnAsJob(pool, chatId, message, controller.signal, job, permissionResolver),
           cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: chat job killed')) },
         }),
       })

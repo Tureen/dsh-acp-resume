@@ -24,8 +24,36 @@ The Persistent chats panel in the right sidebar shows each chat's state, turn co
 ## Key configuration
 
 - `command`: The external ACP agent executable. The default example uses `kiro-cli`.
-- `permission`: Automatically handles agent permission requests. The bundled patch defaults to `allow`; with manual wiring, set `allow` or `reject` explicitly as needed.
+- `permission`: `allow` approves automatically, `reject` denies automatically, and `ask` forwards every request to the host user-confirmation interface. The bundle defaults to `allow`; `ask` denies when no confirmation service or valid answer is available.
 - `agentEngine: none`: Set this when the agent does not accept kiro's `--agent-engine` argument, so the plugin does not append it.
+
+### Starter recipes
+
+These are top-level overrides in the profile's `cordis.patch.yml` while the bundle is enabled. Do not add another `- insert:` block.
+
+**Default kiro-cli.** No override is needed. Install `kiro-cli` and ensure it is on `PATH`; the bundled configuration already uses `command: kiro-cli` and `args: [acp]`.
+
+**Specific kiro-cli path.**
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/kiro-cli
+    args: [acp]
+```
+
+**Another ACP agent and ask for every permission.**
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/other-acp-agent
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+```
 
 See the [README](../README.en.md#configuration) for all configuration fields, defaults, and manual wiring.
 

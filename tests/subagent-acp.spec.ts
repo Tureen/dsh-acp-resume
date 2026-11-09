@@ -10,6 +10,7 @@ import { PassThrough, type Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
@@ -56,9 +57,9 @@ interface SetupEnv {
 
 /**
  * Mount the ACP backend pointed at the mock server, scripted by `mockEnv`.
- * `permission` selects the backend's auto-answer policy.
+ * `permission` selects the backend's automatic or interactive policy.
  */
-async function setup(mockEnv: SetupEnv = {}, permission: 'allow' | 'reject' = 'reject') {
+async function setup(mockEnv: SetupEnv = {}, permission: 'allow' | 'reject' | 'ask' = 'reject') {
   const ctx = new Context()
   await ctx.plugin(SessionProjectionRegistry)
   await mountWorkingDirectoryFixture(ctx)
@@ -1044,6 +1045,17 @@ describe('dsh-subagent-acp', () => {
     await run.dispose()
   })
 
+  it('forwards an ask permission prompt through the one-shot provider', async () => {
+    const ctx = await setup({ MOCK_PERMISSION: '1', MOCK_TEXT: 'approved by user' }, 'ask')
+    await ctx.plugin(UserQuestionService)
+    ctx.on('user-questions/request', request => ({
+      answers: request.questions.map(question => ({ id: question.id, selected: ['Allow (allow_once, option 1)'] })),
+    }))
+    const run = await startExternalActivation(ctx, 'acp', request())
+    await expect(run.result).resolves.toMatchObject({ output: [{ type: 'text', text: 'approved by user' }], stopReason: 'completed' })
+    await run.dispose()
+  })
+
   it('falls back to cancelled under the allow policy when the child offers no allow option', async () => {
     // The child asks permission but offers ONLY reject-shaped options, so an
     // allow-policy client finds nothing to select and must answer cancelled.
@@ -1245,7 +1257,7 @@ describe('dsh-subagent-acp', () => {
     ).catch((cause: unknown) => cause)
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe(
-      `subagent-acp: ${expectedFailure('stage: initialize; category: transport')}`,
+      `subagent-acp: ${expectedFailure('stage: initialize; category: process-start')}\nACP agent command was not found (ENOENT). Install the default agent (kiro-cli), or override command and args in a top-level config layer. For agents that reject --agent-engine, set agentEngine: 'none'. See README Configuration.`,
     )
     expect((error as Error).message).not.toContain(privateCommand)
   })
@@ -1351,7 +1363,7 @@ describe('dsh-subagent-acp', () => {
       env: {},
     })
     await expect(startExternalActivation(ctx, 'acp', request())).rejects.toThrow(
-      `subagent-acp: ${expectedFailure('stage: initialize; category: transport')}`,
+      /subagent-acp: Subagent failure \(provider: ACP; stage: initialize; category: process-start\)\nACP agent command was not found \(ENOENT\)/,
     )
   })
 

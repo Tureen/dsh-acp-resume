@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:已发布到 npm(0.1.17)。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
+状态:待发布 0.1.18。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间的行为目前由 mock 服务器的测试覆盖;只在 kiro-cli 上有过实测,其他 ACP agent 未实测。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -54,7 +54,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         model: glm-5                 # 默认不设 = 服务器 auto 路由(按任务选模型)。设了就钉死,追加 --model <id>;args 里已写 --model 则以 args 为准
         effort: high                 # 默认不设 = 模型自身默认档。设了追加 --effort <档>(low/medium/high/xhigh/max,依模型而异);args 里已写 --effort 则以 args 为准
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
-        permission: allow            # schema 兜底默认 reject;同官方语义:allow / reject(见下「permission 的两处默认值」)
+        permission: allow            # bundle 默认自动选择允许项;也可用 reject 或 ask(见下文)
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
         enableChatTools: true        # 默认 true;false 时只注册 one-shot provider
         toolPrefix: acp_chat_        # 默认 acp_chat_;五个工具名的前缀
@@ -67,7 +67,35 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 `agentEngine` 对一次性 provider 与持久会话两条路径都生效。默认 `v3` 会给子进程追加 `--agent-engine v3`,这是 kiro-cli 的引擎选择旗标;换用其他 ACP agent 时,若它不认该旗标(多数会因未知参数退出),把 `agentEngine` 设为 `none` 即不再追加。`none` 只影响追加:你在 `args` 里自己写的 `--agent-engine` 照常原样传给子进程。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
 
-**permission 的两处默认值。** 启用 bundle 时,自带的 `cordis.patch.yml` 把 `permission` 设为 `allow`(无人值守地放行 agent 的权限请求,与 `command: kiro-cli` 一起作为开箱默认)。不走补丁、按上例手工 `- insert:` 接线而没写 `permission` 时,Config schema 的兜底默认是 `reject`。两者不一致是有意的:补丁是为 kiro-cli 开箱即用调的默认,schema 兜底取更保守的一侧。换用其他 agent 或想收紧时,在 profile 里用顶层同 id 覆盖显式写 `permission: reject`。
+**permission 策略。** `allow` 自动选择第一个 `allow_once` 或 `allow_always` 选项。`reject` 是 schema 兜底默认值，拒绝每一项请求。`ask` 将每次请求转发给宿主的用户确认界面，并等待用户选择；服务、回答者或有效回答不可用时会拒绝请求。自带 `cordis.patch.yml` 为 kiro-cli 设为 `permission: allow`。手动用 `- insert:` 接线时省略该字段则使用保守的 `reject` 默认值。
+
+### 新手配方
+
+以下都是 bundle 已启用时写进 profile 的**顶层同 id 覆盖**。不要再添加第二个 `- insert:`。
+
+**使用默认 kiro-cli。** 无需覆盖：只要已安装 `kiro-cli` 且它在 `PATH` 中，自带配置已使用 `command: kiro-cli` 与 `args: [acp]`。
+
+**使用指定路径的 kiro-cli。** `kiro-cli` 安装在 `PATH` 之外时，覆盖它的绝对路径：
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/kiro-cli
+    args: [acp]
+```
+
+**换用其他 ACP agent，并逐次询问权限。** 覆盖可执行文件和参数；该 agent 不认 kiro 的引擎旗标时关闭追加，并把权限请求转给宿主用户确认界面：
+
+```yaml
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /absolute/path/to/other-acp-agent
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+```
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
@@ -118,12 +146,12 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;314 绿 = 官方协议面 67 + connection 24 + pool 60 + tools 13 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest;321 绿 = 官方协议面 68 + connection 28 + pool 60 + tools 15 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- 基线:源码经 `dsh-v0.2.2-rc.1` 对照，`src/run.ts` 与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 一致；DSH peer 钉 `~0.2.2-rc.1`，Cordis peer 钉 `~4.1.0`;
+- 基线:源码经 `dsh-v0.2.2-rc.1` 对照，除 D11 记录的 `permission: ask` 与 ENOENT 窄例外外，`src/run.ts` 与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1` 一致；DSH peer 钉 `~0.2.2-rc.1`，Cordis peer 钉 `~4.1.0`;
 - 条件运行的用例:真实子进程类 24 例需要官方 checkout 里的 `spawn.ts`(npm 分发包不含)。官方 checkout(路径由环境变量 `DSH_OFFICIAL_CHECKOUT` 指定,未设置时用测试里的默认位置)在场时全绿、退出码 0;不在时这 24 例自动跳过(见 DECISIONS D8);
-- 双实现并存:run.ts 保持官方原版不重构(D11);connection.ts 是池专用姊妹实现;
+- 双实现并存:除 D11 记录的 `permission: ask` 权限决策器与 ENOENT 指引窄例外外，run.ts 保持官方基线、不重构;connection.ts 是池专用姊妹实现;
 - 参考用官方源码 checkout:tag `dsh-v0.2.2-rc.1`(只读对照)。
 
 ## License
