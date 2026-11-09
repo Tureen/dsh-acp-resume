@@ -1,6 +1,8 @@
+[English](README.en.md)
+
 # dsh-acp-resume
 
-A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese.
+A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
