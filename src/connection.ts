@@ -233,6 +233,10 @@ function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value))
 }
 
+function hasProcessErrorCode(error: Error | undefined): error is Error {
+  return error !== undefined && typeof Reflect.get(error, 'code') === 'string'
+}
+
 /**
  * Open one ACP connection: spawn the child, wire the client app, run the
  * startup transaction (`initialize` then `session/new` or `session/load`),
@@ -440,11 +444,20 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
   } catch (error: unknown) {
     signal?.removeEventListener('abort', onAbort)
     const cancelledBeforeCleanup = flags.cancelled
-    // Protocol failures are classified from the reply itself; only stream or
-    // process failures wait (bounded by the grace) for exit facts.
+    // A process-level failure before initialize is authoritative even when
+    // ACP stdout closed first. Wait once for its bounded observation before
+    // interpreting the first protocol error, then prefer `processFailure`.
+    const observedOutcome = !cancelledBeforeCleanup && startupStage === 'initialize' && !(error instanceof AcpConnectionError)
+      ? await observeOutcome()
+      : undefined
     let failure: AcpConnectionError | undefined
     if (!cancelledBeforeCleanup) {
-      if (error instanceof AcpConnectionError) {
+      const startupProcessFailure = startupStage === 'initialize' && hasProcessErrorCode(processFailure)
+        ? processFailure
+        : undefined
+      if (startupProcessFailure !== undefined) {
+        failure = connectionError({ stage: 'initialize', category: 'process-start' }, startupProcessFailure)
+      } else if (error instanceof AcpConnectionError) {
         failure = error
       } else if (error instanceof RequestError) {
         failure = connectionError({ stage: startupStage, category: 'protocol', jsonRpcCode: error.code }, error)
@@ -453,15 +466,13 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
       } else if (processFailure !== undefined) {
         failure = connectionError({ stage: startupStage, category: 'process-start' }, processFailure)
       } else {
-        const observedOutcome = await observeOutcome()
-        failure = processFailure !== undefined
-          ? connectionError({ stage: startupStage, category: 'process-start' }, processFailure)
-          : observedOutcome === undefined
-            ? connectionError({ stage: startupStage, category: 'transport' }, error)
-            : connectionError({ stage: startupStage, category: 'process-exit', outcome: observedOutcome }, error)
+        failure = observedOutcome === undefined
+          ? connectionError({ stage: startupStage, category: 'transport' }, error)
+          : connectionError({ stage: startupStage, category: 'process-exit', outcome: observedOutcome }, error)
       }
     }
-    try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
+    const reported = startupStage === 'initialize' && hasProcessErrorCode(processFailure) ? processFailure : error
+    try { spec.onError?.(toError(reported), 'error') } catch { /* sink cannot replace the failure */ }
     await dispose().catch((cleanupError: unknown) => {
       // Startup classification owns the rejection; a failed cleanup is still reported.
       try { spec.onError?.(toError(cleanupError), 'error') } catch { /* sink cannot replace the failure */ }

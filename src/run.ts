@@ -286,12 +286,23 @@ function reportFailure(spec: AcpRunSpec, error: unknown): void {
   }
 }
 
+function hasProcessErrorCode(error: Error | undefined): error is Error {
+  return error !== undefined && typeof Reflect.get(error, 'code') === 'string'
+}
+
 /** Classify an unpublished failure from the active protocol operation and observed process facts. */
 function startupFailure(
   error: unknown,
   stage: Extract<AcpFailureStage, 'initialize' | 'new-session'>,
   outcome: SubprocessOutcome | undefined,
+  processFailure: Error | undefined,
 ): AcpRunFailure {
+  // Linux managed subprocesses can close ACP stdout before they publish the
+  // runner's ENOENT through `done`. After the bounded observation, that
+  // process-level failure is authoritative until initialize has completed.
+  if (stage === 'initialize' && hasProcessErrorCode(processFailure)) {
+    return new AcpRunFailure({ stage: 'initialize', category: 'process-start' }, processFailure)
+  }
   if (isCommandNotFound(error)) return new AcpRunFailure({ stage: 'initialize', category: 'process-start' }, error)
   return new AcpRunFailure(
     /* v8 ignore next -- Windows anonymous pipes cannot expose a live-child protocol close during startup. */
@@ -512,7 +523,7 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
         kind: 'failed',
         failure: error instanceof AcpRunFailure
           ? error
-          : startupFailure(error, startupStage, observedOutcome),
+          : startupFailure(error, startupStage, observedOutcome, processFailure),
       } as const
     if (startup.kind === 'cancelled') {
       // Local cancellation owns the startup outcome; only cleanup failure is

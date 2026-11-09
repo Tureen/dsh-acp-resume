@@ -1,0 +1,29 @@
+# 在发布 tag 前于 Ubuntu 运行完整回归，覆盖无官方 checkout 的 D8 跳过路径。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm install -g pnpm@11
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      # CI 不提供官方源码 checkout；D8 的 24 个真实子进程用例会自动跳过。
+      - run: pnpm test
