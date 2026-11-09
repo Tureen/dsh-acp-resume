@@ -51,6 +51,21 @@ jobs:
 
       - run: npm install -g pnpm@11
 
+      # npm staged publishing:发布后版本元数据需数分钟传播;过早生成索引会拿不到新版本。
+      - name: 等待 npm 注册表传播
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 40); do
+            if npm view "dsh-acp-resume@${ver}" version >/dev/null 2>&1; then
+              echo "registry 已可见 ${ver}"
+              exit 0
+            fi
+            echo "[$i] 尚未见 ${ver},30s 后重试"
+            sleep 30
+          done
+          echo "等待超时:注册表仍未见 ${ver}"
+          exit 1
+
       - run: git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git "$RUNNER_TEMP/deepseek-harness"
 
       - run: pnpm --dir "$RUNNER_TEMP/deepseek-harness" install --frozen-lockfile --filter @deepseek-ai/dsh-plugin-market-generator...
