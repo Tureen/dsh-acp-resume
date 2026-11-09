@@ -2,7 +2,7 @@
  * Child-process CLI flag handling shared by the one-shot provider, the
  * session pool, and the reconnect fingerprint (D19). The plugin appends a few
  * spawn-level flags to the configured args unless the user already set them:
- * `--agent-engine <engine>` (the KAS engine selector) and, when configured,
+ * `--agent-engine <engine>` (the KAS engine selector; `'none'` turns this one off) and, when configured,
  * `--model <id>` / `--effort <level>` (model routing, off by default so the
  * server keeps auto-routing). The reconnect fingerprint ignores all three:
  * a saved remote session loads across engines, and `auto` already swaps models
@@ -14,6 +14,12 @@
 
 /** Engines the `--agent-engine` flag accepts. */
 export type AgentEngine = 'v1' | 'v2' | 'v3'
+
+/**
+ * The `agentEngine` Config value: an engine to append, or `'none'` to append
+ * no `--agent-engine` flag at all (for agents that do not know it, D19).
+ */
+export type AgentEngineSetting = AgentEngine | 'none'
 
 const ENGINE_FLAG = '--agent-engine'
 const MODEL_FLAG = '--model'
@@ -43,8 +49,8 @@ function hasFlag(args: readonly string[], flag: string): boolean {
  * when the user did not already set it in `args`.
  */
 export interface ChildFlags {
-  /** The KAS engine selector appended as `--agent-engine <engine>`. */
-  readonly engine: AgentEngine
+  /** The KAS engine selector appended as `--agent-engine <engine>`; `'none'` appends nothing. */
+  readonly engine: AgentEngineSetting
   /** When set, the model id appended as `--model <id>` (otherwise server auto-routes). */
   readonly model?: string
   /** When set, the effort level appended as `--effort <level>`. */
@@ -65,7 +71,7 @@ function appendFlag(args: string[], flag: string, value: string | undefined): vo
  */
 export function buildChildArgs(args: readonly string[], flags: ChildFlags): string[] {
   const next = [...args]
-  appendFlag(next, ENGINE_FLAG, flags.engine)
+  appendFlag(next, ENGINE_FLAG, flags.engine === 'none' ? undefined : flags.engine)
   appendFlag(next, MODEL_FLAG, flags.model)
   appendFlag(next, EFFORT_FLAG, flags.effort)
   return next

@@ -29,7 +29,7 @@ import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS,
 import { AcpSessionPool } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
-import { type AgentEngine, buildChildArgs } from './engine.js'
+import { type AgentEngineSetting, buildChildArgs } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
 
 // cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
@@ -52,11 +52,13 @@ export interface Config {
    * appended to {@link args} (default `v3`, kiro-cli's KAS engine, which also
    * supports mid-turn steering). If {@link args} already contains
    * `--agent-engine`, that explicit choice wins and nothing is appended.
+   * Set `'none'` to never append the flag, for ACP agents that do not know it
+   * (an agent that rejects unknown flags would otherwise fail to start).
    * Reconnecting a saved chat ignores the engine (sessions load across
    * engines); if the new engine cannot load it, the chat degrades to a fresh
    * session as usual (D19). Applies to both the one-shot provider and the chats.
    */
-  agentEngine: AgentEngine
+  agentEngine: AgentEngineSetting
   /**
    * Model id the child's sessions are pinned to, appended as `--model <id>`
    * (e.g. `claude-opus-5.5`, `glm-5`). Left unset by default so the server
@@ -120,7 +122,7 @@ export const Config: z<Config> = z.object({
   providerName: z.string().default('acp-resume'),
   command: z.string().required(),
   args: z.array(z.string()).default([]),
-  agentEngine: z.union(['v1', 'v2', 'v3'] as const).default('v3'),
+  agentEngine: z.union(['v1', 'v2', 'v3', 'none'] as const).default('v3'),
   // Optional: no .required()/.default() ⇒ absent when unset (schemastery 3.18.5),
   // so the flag is only appended when the user pins a model/effort.
   model: z.string(),

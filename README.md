@@ -1,8 +1,8 @@
 # dsh-acp-resume
 
-A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps external agents such as kiro-cli alive across turns and reconnects through `session/load` after the process exits. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese.
+A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese.
 
-DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 agent(如 kiro-cli)持续多轮协作。
+DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
 状态:**开发中**。阶段二(连接原语、会话池、五个工具与接线)已实现,并完成一轮六维评审修复(D16);待真机 kiro-cli 冒烟与装机验收,进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -46,11 +46,11 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
       config:
         command: /path/to/agent-cli  # 必填:子 agent 可执行文件
         args: [acp]                  # 默认 []
-        agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加(D19)
+        agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3 / none。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加;none = 完全不追加,供不认该旗标的 agent 使用(D19)
         model: glm-5                 # 默认不设 = 服务器 auto 路由(按任务选模型)。设了就钉死,追加 --model <id>;args 里已写 --model 则以 args 为准
         effort: high                 # 默认不设 = 模型自身默认档。设了追加 --effort <档>(low/medium/high/xhigh/max,依模型而异);args 里已写 --effort 则以 args 为准
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
-        permission: allow            # 默认 reject;同官方语义:allow / reject
+        permission: allow            # schema 兜底默认 reject;同官方语义:allow / reject(见下「permission 的两处默认值」)
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
         enableChatTools: true        # 默认 true;false 时只注册 one-shot provider
         toolPrefix: acp_chat_        # 默认 acp_chat_;五个工具名的前缀
@@ -61,7 +61,9 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         registryPath: ''             # 默认空串 = $DSH_HOME/storages/acp-resume/registry.json;自定义时必须是绝对路径
 ```
 
-`agentEngine` 对一次性 provider 与持久会话两条路径都生效,命令须认识 `--agent-engine`(kiro-cli 认识)。已知限制:不认该旗标的 agent 目前没有关闭追加的开关。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
+`agentEngine` 对一次性 provider 与持久会话两条路径都生效。默认 `v3` 会给子进程追加 `--agent-engine v3`,这是 kiro-cli 的引擎选择旗标;换用其他 ACP agent 时,若它不认该旗标(多数会因未知参数退出),把 `agentEngine` 设为 `none` 即不再追加。`none` 只影响追加:你在 `args` 里自己写的 `--agent-engine` 照常原样传给子进程。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
+
+**permission 的两处默认值。** 启用 bundle 时,自带的 `cordis.patch.yml` 把 `permission` 设为 `allow`(无人值守地放行 agent 的权限请求,与 `command: kiro-cli` 一起作为开箱默认)。不走补丁、按上例手工 `- insert:` 接线而没写 `permission` 时,Config schema 的兜底默认是 `reject`。两者不一致是有意的:补丁是为 kiro-cli 开箱即用调的默认,schema 兜底取更保守的一侧。换用其他 agent 或想收紧时,在 profile 里用顶层同 id 覆盖显式写 `permission: reject`。
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
@@ -108,7 +110,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;308 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 13 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest;311 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;

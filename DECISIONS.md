@@ -165,7 +165,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **v2 创建的会话可被 v3 `session/load`,上下文完好**(实测)。这是引擎默认值可以直接切、不会让旧会话作废的前提。
 
 决策:
-- **`agentEngine` 配置**:`v1 | v2 | v3`,默认 `v3`。启动子进程时在 args 末尾追加 `--agent-engine <值>`;池的 `specBase` 与 one-shot provider 两处都追加。用户的 `args` 里已含 `--agent-engine`(含 `--agent-engine=v2` 写法)时不追加,以用户显式为准。已知限制:不认这个旗标的 agent 没有关闭追加的开关(本包目前只面向 kiro-cli)。
+- **`agentEngine` 配置**:`v1 | v2 | v3`,默认 `v3`。启动子进程时在 args 末尾追加 `--agent-engine <值>`;池的 `specBase` 与 one-shot provider 两处都追加。用户的 `args` 里已含 `--agent-engine`(含 `--agent-engine=v2` 写法)时不追加,以用户显式为准。已知限制(2026-11-09 已解除,见文末修订):原先不认这个旗标的 agent 没有关闭追加的开关。
 - **指纹放宽(修订 B12/D16 的重连校验)**:重连时 `command` 仍须严格相等;`args` 比较前**剔除 `--agent-engine` 及其值**(两种写法),其余差异照旧拒绝。理由:会话跨引擎可加载已实证;若某个引擎确实读不了,`session/load` 会被协议级拒绝,自然走 D6 的降级新会话兜底(注记照旧),不需要在指纹层提前拦。注册表记录的 args 含追加后的旗标,旧记录(无旗标)与新配置比较时同样等价。
 - **`acp_chat_steer(chatId, message)`**:
   - 连接层 `AcpConnection.steer(message)` 对活连接发 `_session/steer {sessionId, message}`;`-32601 Method not found` 抛 `AcpSteerUnsupportedError`(按类识别,不解析文案);其他错误原样上抛。应答里 `queued` 缺省按 true 处理(请求成功即被接受),`messageId` 有则透传。
@@ -182,6 +182,15 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **生效语义是 spawn 级**:对既有会话,钉死的模型/档位要等下次重连(新进程)才应用,运行中进程不变——文档与 Config JSDoc 都写明这点,避免用户误以为改配置能即时切活跃会话的模型。
 - **指纹排除清单扩为三旗标**:重连指纹比较时剔除的从 `--agent-engine` 扩到 `--agent-engine` / `--model` / `--effort`(各自的分离与 `=` 写法及值)。理由:`auto` 本身就在会话内按任务动态换模型,会话存的是对话不是模型;模型/档位差异不像 `command` 差异那样构成"换了一个 agent"。实现上原 `stripAgentEngine` 泛化为 `stripVolatileFlags`;追加逻辑泛化为 `buildChildArgs(args, {engine, model?, effort?})`。(2026-11-05 精简:`stripAgentEngine` 别名与 `withAgentEngine` / `hasAgentEngineFlag` 两个薄封装为零生产引用的死导出,已删除;生产只用 `buildChildArgs` / `stripVolatileFlags`。engine.spec 的两例改以这两个活函数直接断言,等价覆盖、例数不变。)
 - 测试 188 → 266 的其余增量含本轮 7 例(engine helper 2 + 两条 spawn 路径 4 + pool 模型/档位指纹 1;其余为上游其他改动)。变异自检:model/effort 不追加、指纹漏剔、忽略用户已设旗标、空串当有效值、one-shot 路径漏拼、指纹剔除过头——六类故意改坏均被测试抓红。
+
+修订(2026-11-09,`agentEngine` 可显式关闭追加):
+- 问题:原语义下,只要 `args` 里没写 `--agent-engine`,每次拉起子进程都会追加 `--agent-engine v3`,没有关闭途径(上文"已知限制")。非 kiro 的 ACP agent 不认该旗标,多半因未知参数退出,导致"换 `command` 即可换 agent"并不成立。发布前修掉。
+- 决策:`agentEngine` 取值从 `v1 | v2 | v3` 扩为 `v1 | v2 | v3 | none`,**默认仍为 `v3`**,用户不动配置时行为不变。`none` 表示完全不追加。选 `none` 而不是新增布尔字段,是因为 schemastery ~3.18.5 的 `z.union([...] as const).default(...)` 已是该字段的既有写法,一个字段表达"选哪个引擎或不选",不会出现 `agentEngine: v2` 与"关闭"两个字段互相矛盾的组合。
+- 实现:`engine.ts` 新增类型 `AgentEngineSetting = AgentEngine | 'none'`,`buildChildArgs` 对 `'none'` 跳过 `--agent-engine`;`AgentEngine` 本身不变。两条 spawn 路径(池 `specBase` 与 one-shot provider)共用 `buildChildArgs`,因此同时生效。`--model` / `--effort` 的追加不受影响。
+- 与用户 `args` 的关系:`none` 只管"是否追加"。用户自己在 `args` 里写的 `--agent-engine`(两种写法)照常原样传给子进程,不会被删。
+- 指纹一致性:重连指纹比较仍用 `stripVolatileFlags` 剔除 `--agent-engine` 及其值,不区分该旗标是追加的还是用户写的。关闭态下注册表记录的 args 不含旗标,与此前记录(含追加的旗标)或之后改回 `v3` 的配置比较时,剔除后都相等,不会因切换 `agentEngine` 而拒绝旧会话。
+- 测试:engine.spec 增 3 例(helper 的 `none` 一例、池路径 `none` 的实际 argv 一例、one-shot 路径 `none` 的实际 argv 一例)。
+- 未验证:没有在真实的非 kiro ACP agent 上实测过关闭态;只验证了不追加旗标。
 
 ## D18 按轮日志 + 会话详情页签(2026-11-04)
 

@@ -116,6 +116,14 @@ describe('engine flag helpers', () => {
     expect(buildChildArgs(['acp', '--agent-engine=v2'], { engine: 'v3' })).toEqual(['acp', '--agent-engine=v2'])
   })
 
+  it("appends no --agent-engine for engine 'none' (still honours model/effort and user args)", () => {
+    expect(buildChildArgs(['acp'], { engine: 'none' })).toEqual(['acp'])
+    expect(buildChildArgs([], { engine: 'none' })).toEqual([])
+    expect(buildChildArgs(['acp', '--agent-engine=v2'], { engine: 'none' })).toEqual(['acp', '--agent-engine=v2'])
+    expect(buildChildArgs(['acp'], { engine: 'none', model: 'glm-5', effort: 'high' }))
+      .toEqual(['acp', '--model', 'glm-5', '--effort', 'high'])
+  })
+
   it('strips --agent-engine and its value, leaving every other arg in order', () => {
     expect(stripVolatileFlags(['a', '--agent-engine', 'v3', 'b'])).toEqual(['a', 'b'])
     expect(stripVolatileFlags(['a', '--agent-engine=v2', 'b'])).toEqual(['a', 'b'])
@@ -157,6 +165,14 @@ describe('engine flag on the spawn paths', () => {
 
   it('chat pool: leaves the args alone when the user already passed the flag', async () => {
     expect(await chatArgv({ args: [mockServer, '--agent-engine', 'v1'] })).toEqual(['--agent-engine', 'v1'])
+  })
+
+  it("chat pool: agentEngine 'none' spawns without the flag", async () => {
+    expect(await chatArgv({ args: [mockServer], agentEngine: 'none' })).toEqual([])
+  })
+
+  it("one-shot provider: agentEngine 'none' spawns without the flag", async () => {
+    expect(await oneShotArgv({ args: [mockServer], agentEngine: 'none' })).toEqual([])
   })
 
   it('one-shot provider: appends --agent-engine v3 by default', async () => {
