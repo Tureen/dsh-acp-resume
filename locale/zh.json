@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "可续聊 ACP 子代理",
+    "description": "与 kiro-cli 等外部 ACP 代理保持持久会话:支持多轮追问,进程退出后可重连续聊。"
+  }
+}

@@ -11,15 +11,23 @@
       "default": "./lib/index.js"
     },
     "./client": "./lib/client.js",
-    "./src/*": "./src/*",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
     "lib/*.js",
-    "lib/client.js",
-    "lib/client.js.map",
     "lib/types/**/*.d.ts"
+  ],
+  "icon": "./icon.svg",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "acp",
+    "subagent",
+    "kiro"
   ],
   "license": "MIT",
   "scripts": {
@@ -83,7 +91,8 @@
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "dsh": ">=0.2.1-rc.5 <0.2.2-0"
   },
   "dsh": {
     "bundle": {

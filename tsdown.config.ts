@@ -31,7 +31,7 @@ export default defineConfig({
   platform: 'browser',
   target: 'es2024',
   dts: false,
-  sourcemap: true,
+  sourcemap: false,
   clean: false,
   deps: {
     neverBundle: (specifier: string) => SHARED.has(specifier),

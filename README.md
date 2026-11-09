@@ -1,5 +1,7 @@
 # dsh-acp-resume
 
+A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps external agents such as kiro-cli alive across turns and reconnects through `session/load` after the process exits. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.1-rc.5 <0.2.2-0`, Node >= 24). The documentation below is in Chinese.
+
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 agent(如 kiro-cli)持续多轮协作。
 
 状态:**开发中**。阶段二(连接原语、会话池、五个工具与接线)已实现,并完成一轮六维评审修复(D16);待真机 kiro-cli 冒烟与装机验收,进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
@@ -69,17 +71,21 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ## 安装与升级
 
-本包未发布到 npm,以本地 tgz 装进 DSH profile(以 desktop profile 为例,目录 `~/.dsh/profiles/desktop/`)。
+**主路径:从 npm 安装。** 需要 DSH `>=0.2.1-rc.5 <0.2.2-0`(包里的 `engines.dsh` 声明了这个范围,不满足时安装会被拒绝)和 Node >= 24:
 
-- **tgz 放稳定位置**,如 `~/.dsh/local-plugins/`,不要放 `/tmp`。profile 的 `package.json` 以 `file:` 路径引用 tgz,系统重启清掉 `/tmp` 后,profile 内任何插件增删(都会触发 pnpm install)都会因找不到该文件而失败。
-- **升级必须改版本号**。同版本号重新 pack 不生效:pnpm 按锁文件里的哈希认包,版本与路径不变时沿用旧缓存。
-- 升级顺序:
-  1. 改本仓库 `package.json` 的 `version`;
-  2. `pnpm build`;
-  3. `pnpm pack --pack-destination ~/.dsh/local-plugins`(`prepack` 会先清空 `lib/` 再编译,保证不打进陈旧产物);
-  4. 改 profile `package.json` 的依赖为新 tgz 路径,如 `"dsh-acp-resume": "file:/Users/<you>/.dsh/local-plugins/dsh-acp-resume-<版本>.tgz"`;
-  5. 在 profile 目录内 `pnpm install`;
-  6. 重启 DSH App。
+```sh
+dsh plugin --profile <name> add dsh-acp-resume
+```
+
+`<name>` 是 profile 名(DSH App 的默认 profile 目录是 `~/.dsh/profiles/desktop/`)。装好后包会出现在该 profile 的 `dsh.profile.bundles` 里,重启 DSH 生效。升级用 `dsh plugin --profile <name> add dsh-acp-resume@<版本>`;卸载用 `dsh plugin --profile <name> remove dsh-acp-resume`。
+
+**备选:本地 tgz。** 在本仓库 `pnpm build` 后 `pnpm pack --pack-destination <稳定目录>`(`prepack` 会先清空 `lib/` 再编译,保证不打进陈旧产物),再 `dsh plugin --profile <name> add <tgz 路径>`。
+
+- tgz 放稳定位置,如 `~/.dsh/local-plugins/`,不要放 `/tmp`。profile 的 `package.json` 以 `file:` 路径引用 tgz,系统清掉 `/tmp` 后,profile 内任何插件增删(都会触发 pnpm install)都会因找不到该文件而失败。
+- 升级必须改版本号。同版本号重新 pack 不生效:pnpm 按锁文件里的哈希认包,版本与路径不变时沿用旧缓存。
+
+**不支持 Git 安装。** 本包不带 `prepare` 脚本,`lib/` 也不入库,`github:` 方式装到的只有源码、加载会失败。要支持得写自包含的 `prepare`,用户还得在 profile 的 `pnpm-workspace.yaml` 里为本包开 `allowBuilds`(等于允许安装时执行包内代码),代价见官方 `docs/user/develop/basic/publish.md` 的 "Installing from GitHub" 一节。请用 npm 或 tgz。
+
 - **bundle 与 profile insert 二选一,勿双挂**。profile 的 `dsh.profile.bundles` 列了 `dsh-acp-resume`(插件页开关打开)时,本包自带的 `cordis.patch.yml` 已经 insert 了插件;profile 再 insert 一次会注册两个同名 provider,报 `DUPLICATE_PROVIDER`。启用 bundle 时改配置用顶层同 id 覆盖:
 
   ```yaml
@@ -102,11 +108,11 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 ```sh
 pnpm install && pnpm build     # 构建 lib/
-pnpm test                      # vitest;295 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 13 + turn-log 18
+pnpm test                      # vitest;308 绿 = 官方协议面 67 + connection 24 + pool 57 + tools 12 + jobs 12 + panel 16 + client 70 + steer 5 + engine 13 + turn-log 18 + job-wait-gate 13
 ```
 
 - 基线:源码复制自 `@deepseek-ai/dsh-subagent-acp@0.2.1-rc.5`,peer 钉 `~0.2.1-rc.5`;
-- 条件运行的用例:真实子进程类 24 例需要官方 checkout 里的 `spawn.ts`(npm 分发包不含)。checkout 在 `/Users/Tulane/Developer/open-source-projects/deepseek-harness`(可用 `DSH_OFFICIAL_CHECKOUT` 覆盖)时全绿、退出码 0;不在时这 24 例自动跳过(见 DECISIONS D8);
+- 条件运行的用例:真实子进程类 24 例需要官方 checkout 里的 `spawn.ts`(npm 分发包不含)。官方 checkout(路径由环境变量 `DSH_OFFICIAL_CHECKOUT` 指定,未设置时用测试里的默认位置)在场时全绿、退出码 0;不在时这 24 例自动跳过(见 DECISIONS D8);
 - 双实现并存:run.ts 保持官方原版不重构(D11);connection.ts 是池专用姊妹实现;
 - 参考用官方源码 checkout:分支 `my-subagent-acp` @ `dsh-v0.2.1-rc.5`(只读对照)。
 

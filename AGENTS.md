@@ -26,6 +26,8 @@ src/
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
                  (defineTool + ctx.tools.register,不走 ctx.subagents);有 ctx.jobs 时 send 注册
                  acp-chat 后台任务并立即返回 jobId(D17),无 jobs 时同步等待、轮非 completed 抛工具错误
+locale/         en.json / zh.json:插件显示元数据(meta.title/description),经 exports 的 ./locale/*.json 暴露
+icon.svg        插件图标,由 package.json 顶层 icon 字段声明;locale 与图标都须在 files 里
 tests/
   subagent-acp.spec.ts   官方协议面回归(含 42 例协议面门槛)
   connection.spec.ts     连接原语

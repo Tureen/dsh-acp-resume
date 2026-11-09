@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Resumable ACP subagent",
+    "description": "Keep a persistent session with an external ACP agent such as kiro-cli: multi-turn follow-ups, and reconnect after the process exits."
+  }
+}
