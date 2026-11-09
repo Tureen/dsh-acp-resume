@@ -89,7 +89,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 `<name>` is the profile name (the default profile directory of the DSH App is `~/.dsh/profiles/desktop/`). After installing, the package appears in that profile's `dsh.profile.bundles`, and takes effect after DSH restarts. To upgrade, use `dsh plugin --profile <name> add dsh-acp-resume@<version>`; to uninstall, use `dsh plugin --profile <name> remove dsh-acp-resume`.
 
-**Install from Discover (experimental).** Enable the **Custom plugin markets** experimental switch on the Plugins page. Then open **Discover**, select **Add index source**, and enter `https://tureen.github.io/dsh-acp-resume/index.json`. When the index loads, install from the `dsh-acp-resume` card and restart DSH.
+**Install from Discover (experimental).** On the **Plugins** page, find and enable **Custom plugin indexes** directly under **Experimental plugins**. A **Discover** tab then appears. Open it, choose **Add index source**, and enter `https://tureen.github.io/dsh-acp-resume/index.json`. When the index loads, choose Install on the `dsh-acp-resume` card, confirm the version and source, then restart DSH.
 
 **Alternative: a local tgz.** After `pnpm build` in this repository, run `pnpm pack --pack-destination <stable directory>` (`prepack` clears `lib/` and recompiles first, so no stale output is packed), then `dsh plugin --profile <name> add <path to the tgz>`.
 

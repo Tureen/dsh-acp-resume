@@ -87,7 +87,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 `<name>` 是 profile 名(DSH App 的默认 profile 目录是 `~/.dsh/profiles/desktop/`)。装好后包会出现在该 profile 的 `dsh.profile.bundles` 里,重启 DSH 生效。升级用 `dsh plugin --profile <name> add dsh-acp-resume@<版本>`;卸载用 `dsh plugin --profile <name> remove dsh-acp-resume`。
 
-**从 Discover 安装(实验性)。** 在插件页打开 **Custom plugin markets** 实验开关，然后切到 **Discover**，选择 **Add index source**，填入 `https://tureen.github.io/dsh-acp-resume/index.json`。索引加载后，在 `dsh-acp-resume` 卡片上安装，重启 DSH 生效。
+**从 Discover 安装(实验性)。** 在 **插件** 页的 **实验性插件** 下直接找到并打开 **自定义插件索引**。随后会出现 **发现** 页签；打开它，选择 **添加索引源**，填入 `https://tureen.github.io/dsh-acp-resume/index.json`。索引加载后，在 `dsh-acp-resume` 卡片上选择安装并确认版本与来源，重启 DSH 生效。
 
 **备选:本地 tgz。** 在本仓库 `pnpm build` 后 `pnpm pack --pack-destination <稳定目录>`(`prepack` 会先清空 `lib/` 再编译,保证不打进陈旧产物),再 `dsh plugin --profile <name> add <tgz 路径>`。
 

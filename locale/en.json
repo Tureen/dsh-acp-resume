@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Resumable ACP subagent",
-    "description": "Keep a persistent chat with an external ACP agent and reconnect via session/load after the process exits. Tested with kiro-cli; set command to use another ACP agent."
+    "description": "Keep a persistent chat with an external ACP agent and reconnect via session/load after the process exits. Tested with kiro-cli; set command to use another ACP agent.",
+    "detail": "docs/detail.en.md"
   }
 }

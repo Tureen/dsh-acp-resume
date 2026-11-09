@@ -18,6 +18,7 @@
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json",
+    "docs",
     "lib/*.js",
     "lib/types/**/*.d.ts"
   ],
