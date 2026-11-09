@@ -83,6 +83,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 dsh plugin --profile <name> add dsh-acp-resume
 ```
 
+> **提示：** 若安装报 `ERR_PNPM_TARBALL_EXTRACT` 或校验和错误，是 dsh 默认的 `minimumReleaseAge` 供应链防护过滤了刚发布的版本；npm 首发包还可能伴随无效的占位版本 `0.0.0-stage`。请显式钉版本：`dsh plugin --profile <name> add dsh-acp-resume@<版本>`，dsh 会将该版本写入 profile 的 `minimumReleaseAgeExclude`，可立即安装。版本发布一段时间后，不钉版本也会恢复正常。
+
 `<name>` 是 profile 名(DSH App 的默认 profile 目录是 `~/.dsh/profiles/desktop/`)。装好后包会出现在该 profile 的 `dsh.profile.bundles` 里,重启 DSH 生效。升级用 `dsh plugin --profile <name> add dsh-acp-resume@<版本>`;卸载用 `dsh plugin --profile <name> remove dsh-acp-resume`。
 
 **备选:本地 tgz。** 在本仓库 `pnpm build` 后 `pnpm pack --pack-destination <稳定目录>`(`prepack` 会先清空 `lib/` 再编译,保证不打进陈旧产物),再 `dsh plugin --profile <name> add <tgz 路径>`。

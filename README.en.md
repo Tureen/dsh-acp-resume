@@ -85,6 +85,8 @@ The three duration fields must be positive and no greater than Node's timer limi
 dsh plugin --profile <name> add dsh-acp-resume
 ```
 
+> **Note:** If installation reports `ERR_PNPM_TARBALL_EXTRACT` or a checksum error, dsh's default `minimumReleaseAge` supply-chain protection has filtered out the newly published version. A first npm release can also include the invalid placeholder version `0.0.0-stage`. Pin the version explicitly: `dsh plugin --profile <name> add dsh-acp-resume@<version>`. dsh writes that version to the profile's `minimumReleaseAgeExclude`, so installation succeeds immediately. The unpinned command works again after the release has aged for a while.
+
 `<name>` is the profile name (the default profile directory of the DSH App is `~/.dsh/profiles/desktop/`). After installing, the package appears in that profile's `dsh.profile.bundles`, and takes effect after DSH restarts. To upgrade, use `dsh plugin --profile <name> add dsh-acp-resume@<version>`; to uninstall, use `dsh plugin --profile <name> remove dsh-acp-resume`.
 
 **Alternative: a local tgz.** After `pnpm build` in this repository, run `pnpm pack --pack-destination <stable directory>` (`prepack` clears `lib/` and recompiles first, so no stale output is packed), then `dsh plugin --profile <name> add <path to the tgz>`.
