@@ -2,6 +2,17 @@
   "format": 1,
   "title": "Tureen's DSH Plugins",
   "description": "Community plugin market for DeepSeek Harness",
+  "metadata": {
+    "sortKeys": {
+      "npm_weekly_downloads": {
+        "title": {
+          "en": "npm weekly downloads",
+          "zh": "npm 周下载量"
+        },
+        "order": "desc"
+      }
+    }
+  },
   "plugins": [
     {
       "name": "dsh-acp-resume",
@@ -26,9 +37,22 @@
           "acp",
           "subagent",
           "kiro"
-        ]
+        ],
+        "sortKeys": {
+          "npm_weekly_downloads": 805
+        }
       },
       "versions": [
+        {
+          "version": "0.1.19",
+          "publishTimestamp": 1794888070,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.3"
+          }
+        },
         {
           "version": "0.1.18",
           "publishTimestamp": 1794217059,
