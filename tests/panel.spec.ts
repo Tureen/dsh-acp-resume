@@ -23,7 +23,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import * as acp from '../src/index.ts'
 import { AcpResumePanelService, PANEL_SERVICE_KEY } from '../src/panel.ts'
-import { AcpSessionPool } from '../src/pool.ts'
+import { AcpSessionPool, type BackendSpec } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
@@ -45,7 +45,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-function makePool(env: Record<string, string> = {}): { pool: AcpSessionPool; registryPath: string } {
+function makePool(env: Record<string, string> = {}, backends?: ReadonlyMap<string, BackendSpec>): { pool: AcpSessionPool; registryPath: string } {
   const registryPath = join(tempDir('acp-resume-panel-'), 'registry.json')
   const pool = new AcpSessionPool({
     specBase: {
@@ -59,6 +59,7 @@ function makePool(env: Record<string, string> = {}): { pool: AcpSessionPool; reg
     },
     registryPath,
     idleTimeoutMs: 600_000,
+    ...(backends === undefined ? {} : { backends }),
   })
   pools.push(pool)
   return { pool, registryPath }
@@ -105,6 +106,17 @@ describe('AcpResumePanelService', () => {
     await pool.send(chat.chatId, '暗号是什么')
     expect(panel.list()).toEqual(pool.listChats())
     expect(panel.list()[0]).toMatchObject({ title: '记住暗号P', turnCount: 2, active: true })
+  })
+
+  it('list rows carry backend and backendCount', async () => {
+    const review: BackendSpec = {
+      name: 'review', description: 'review',
+      specBase: { command: process.execPath, args: [mockServer], permission: 'reject', env: {}, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+    }
+    const { pool } = makePool({}, new Map([['review', review]]))
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd(), undefined, { backend: 'review' })
+    expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'review', backendCount: 2 })])
   })
 
   it('projects a running prompt in list and as the first synthetic turns entry', async () => {

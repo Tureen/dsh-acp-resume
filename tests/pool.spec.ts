@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { AcpConnectionError } from '../src/connection.ts'
-import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSessionNotice, type PoolOptions } from '../src/pool.ts'
+import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSessionNotice, type BackendSpec, type PoolOptions } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -49,6 +49,7 @@ interface PoolSetup {
   registryPath?: string
   onWarn?: (message: string) => void
   onError?: (error: Error) => void
+  backends?: ReadonlyMap<string, BackendSpec>
 }
 
 function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: string; spawns: SpawnLog } {
@@ -73,6 +74,7 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
     },
     registryPath,
     idleTimeoutMs: setup.idleTimeoutMs ?? 600_000,
+    ...(setup.backends === undefined ? {} : { backends: setup.backends }),
     ...(setup.onWarn === undefined ? {} : { onWarn: setup.onWarn }),
   }
   const pool = new AcpSessionPool(options)
@@ -91,7 +93,7 @@ function registryRemote(registryPath: string, chatId: string): string | undefine
   return file.sessions.find(s => s.chatId === chatId)?.remoteSessionId
 }
 
-interface RegistryRow { chatId: string; remoteSessionId: string; title?: string; turnCount?: number; ownerSessionId?: string; label?: string }
+interface RegistryRow { chatId: string; remoteSessionId: string; title?: string; turnCount?: number; ownerSessionId?: string; label?: string; backend?: string }
 
 function registryRow(registryPath: string, chatId: string): RegistryRow | undefined {
   const file = JSON.parse(readFileSync(registryPath, 'utf8')) as { sessions: RegistryRow[] }
@@ -835,6 +837,73 @@ describe('AcpSessionPool', () => {
     await expect(pool.send('chat-mix', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(registryRemote(registryPath, 'chat-mix')).toBe('remote-z')
+  })
+
+  it('routes two backends to their own argv', async () => {
+    const review: BackendSpec = {
+      name: 'review', description: 'review',
+      specBase: { command: process.execPath, args: [mockServer, '--backend=review'], permission: 'reject', env: { MOCK_ECHO_ARGV: '1' }, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+    }
+    const { pool } = makePool({ env: { MOCK_ECHO_ARGV: '1' }, backends: new Map([['review', review]]) })
+    const defaultChat = await pool.start(process.cwd())
+    const reviewChat = await pool.start(process.cwd(), undefined, { backend: 'review' })
+    expect((await pool.send(defaultChat.chatId, 'p')).output).toBe('[]')
+    expect((await pool.send(reviewChat.chatId, 'p')).output).toBe('["--backend=review"]')
+  })
+
+  it('writes default for a start without backend', async () => {
+    const { pool, registryPath } = makePool()
+    const chat = await pool.start(process.cwd())
+    expect(registryRow(registryPath, chat.chatId)?.backend).toBe('default')
+  })
+
+  it('reads legacy registry rows without backend as default', async () => {
+    const { env } = storeEnv('acp-resume-legacy-backend-')
+    const first = makePool({ env })
+    const chat = await first.pool.start(process.cwd())
+    await first.pool.disposeAll()
+    writeFileSync(first.registryPath, JSON.stringify({ version: 1, sessions: [{ chatId: chat.chatId, remoteSessionId: chat.remoteSessionId, cwd: process.cwd(), command: process.execPath, args: [mockServer], lastActive: 1 }] }))
+    const second = makePool({ env, registryPath: first.registryPath })
+    expect(second.pool.listChats()[0]).toMatchObject({ chatId: chat.chatId, backend: 'default', backendCount: 1 })
+  })
+
+  it('fails sends to a removed backend without spawning', async () => {
+    const registryPath = join(tempDir('acp-resume-removed-backend-'), 'registry.json')
+    writeFileSync(registryPath, JSON.stringify({ version: 1, sessions: [{ chatId: 'chat-review', remoteSessionId: 'remote-review', cwd: process.cwd(), backend: 'review', command: process.execPath, args: [mockServer], lastActive: 1 }] }))
+    const { pool, spawns } = makePool({ registryPath })
+    await expect(pool.send('chat-review', 'p')).rejects.toThrow('chat chat-review uses unavailable backend review')
+    expect(spawns.children).toHaveLength(0)
+  })
+
+  it('reconnects a non-default backend through its own spec', async () => {
+    const { env } = storeEnv('acp-resume-review-reconnect-', { MOCK_ECHO_ARGV: '1' })
+    const review: BackendSpec = {
+      name: 'review', description: 'review',
+      specBase: { command: process.execPath, args: [mockServer, '--backend=review'], permission: 'reject', env, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+    }
+    const first = makePool({ backends: new Map([['review', review]]) })
+    const chat = await first.pool.start(process.cwd(), undefined, { backend: 'review' })
+    await first.pool.close(chat.chatId)
+    expect((await first.pool.send(chat.chatId, 'p')).output).toBe('["--backend=review"]')
+  })
+
+  it('keeps in-flight turns on two backends independent', async () => {
+    const dir = tempDir('acp-resume-backend-flight-')
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const review: BackendSpec = {
+      name: 'review', description: 'review',
+      specBase: { command: process.execPath, args: [mockServer], permission: 'reject', env: { MOCK_PROMPT_HOLD: hold }, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+    }
+    const { pool } = makePool({ env: { MOCK_PROMPT_HOLD: hold }, backends: new Map([['review', review]]) })
+    const a = await pool.start(process.cwd())
+    const b = await pool.start(process.cwd(), undefined, { backend: 'review' })
+    const pendingA = pool.send(a.chatId, 'default turn')
+    const pendingB = pool.send(b.chatId, 'review turn')
+    await until(() => pool.chatInfo(a.chatId)?.inFlight !== undefined && pool.chatInfo(b.chatId)?.inFlight !== undefined, 'both backend turns')
+    await expect(pool.send(a.chatId, 'again')).rejects.toThrow(/already has a prompt in flight/)
+    rmSync(hold)
+    await expect(Promise.all([pendingA, pendingB])).resolves.toHaveLength(2)
   })
 
   it('sets a corrupt registry aside, warns, and starts empty', () => {

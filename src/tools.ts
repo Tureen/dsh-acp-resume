@@ -276,56 +276,67 @@ export interface BackendChoice { readonly name: string; readonly description: st
 export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backends: readonly BackendChoice[] = []): ToolDefinitionOf[] {
   const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
 
-  const multipleBackends = backends.length > 1
-  const backendDescription = multipleBackends ? ` Available backends:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}` : ''
-  const start = defineTool({
-    name: `${toolPrefix}start`,
-    description: 'Start a persistent chat session with the external ACP agent (for example kiro-cli). '
-      + `Returns a chatId you pass to ${toolPrefix}send. The conversation context usually survives between messages, `
-      + `process release, and host restarts; if the agent lost the session, the next ${toolPrefix}send says so.${backendDescription}`,
-    parameters: {
-      cwd: {
-        type: 'string',
-        required: true,
-        description: 'Absolute working directory for the chat session (the agent works here).',
+  const backendDescription = ` Available backends:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}`
+  // Keep the legacy single-backend definition literal: D24 promises byte-for-byte
+  // compatibility for models that cached the 0.1.20 tool schema.
+  const start = backends.length <= 1
+    ? defineTool({
+      name: `${toolPrefix}start`,
+      description: 'Start a persistent chat session with the external ACP agent (for example kiro-cli). '
+        + `Returns a chatId you pass to ${toolPrefix}send. The conversation context usually survives between messages, `
+        + `process release, and host restarts; if the agent lost the session, the next ${toolPrefix}send says so.`,
+      parameters: {
+        cwd: { type: 'string', required: true, description: 'Absolute working directory for the chat session (the agent works here).' },
+        label: { type: 'string', description: `Optional short name for the chat (at most ${LABEL_MAX} characters), shown by ${toolPrefix}list so you can tell chats apart later.` },
       },
-      label: {
-        type: 'string',
-        description: `Optional short name for the chat (at most ${LABEL_MAX} characters), shown by ${toolPrefix}list so you can tell chats apart later.`,
+      output: {
+        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true } } },
+        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId}; send messages with ${toolPrefix}send` }],
       },
-      ...(multipleBackends ? { backend: { type: 'string', description: `Optional backend name; omit for default. Available backends: ${backends.map(backend => backend.name).join(', ')}` } } : {}),
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          chatId: { type: 'string', required: true },
-          remoteSessionId: { type: 'string', required: true },
-        },
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        exec.signal.throwIfAborted()
+        const label = args.label?.trim() ?? ''
+        if (label.length > LABEL_MAX) throw new Error(`label is ${label.length} characters; keep it at most ${LABEL_MAX}`)
+        const ownerSessionId = exec.agent?.id
+        const chat = await pool.start(args.cwd, exec.signal, {
+          ...(label === '' ? {} : { label }),
+          ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
+        })
+        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
       },
-      render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId}; send messages with ${toolPrefix}send` }],
-    },
-    isConcurrencySafe: () => true,
-    async execute(args, exec) {
-      exec.signal.throwIfAborted()
-      const label = args.label?.trim() ?? ''
-      if (label.length > LABEL_MAX) throw new Error(`label is ${label.length} characters; keep it at most ${LABEL_MAX}`)
-      // Attribution only (D20): the calling DSH session, so the panel can filter
-      // "this session" vs "other sessions". Agent.id IS the session id (same
-      // source as the D17 job owner). It gates nothing — tools stay global.
-      const ownerSessionId = exec.agent?.id
-      if (multipleBackends && args.backend !== undefined && !backends.some(backend => backend.name === args.backend)) {
-        throw new Error(`unknown backend ${args.backend}; available backends: ${backends.map(backend => backend.name).join(', ')}`)
-      }
-      const chat = await pool.start(args.cwd, exec.signal, {
-        ...(label === '' ? {} : { label }),
-        ...(args.backend === undefined ? {} : { backend: args.backend }),
-        ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
-      })
-      return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
-    },
-  })
+    })
+    : defineTool({
+      name: `${toolPrefix}start`,
+      description: 'Start a persistent chat session with the configured external ACP agent. '
+        + `Returns a chatId you pass to ${toolPrefix}send. The conversation context usually survives between messages, `
+        + `process release, and host restarts; if the agent lost the session, the next ${toolPrefix}send says so.${backendDescription}`,
+      parameters: {
+        cwd: { type: 'string', required: true, description: 'Absolute working directory for the chat session (the agent works here).' },
+        label: { type: 'string', description: `Optional short name for the chat (at most ${LABEL_MAX} characters), shown by ${toolPrefix}list so you can tell chats apart later.` },
+        backend: { type: 'string', description: `Optional backend name; omit for default. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true } } },
+        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId}; send messages with ${toolPrefix}send` }],
+      },
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        exec.signal.throwIfAborted()
+        const label = args.label?.trim() ?? ''
+        if (label.length > LABEL_MAX) throw new Error(`label is ${label.length} characters; keep it at most ${LABEL_MAX}`)
+        const ownerSessionId = exec.agent?.id
+        if (args.backend !== undefined && !backends.some(backend => backend.name === args.backend)) {
+          throw new Error(`unknown backend ${args.backend}; available backends: ${backends.map(backend => backend.name).join(', ')}`)
+        }
+        const chat = await pool.start(args.cwd, exec.signal, {
+          ...(label === '' ? {} : { label }),
+          ...(args.backend === undefined ? {} : { backend: args.backend }),
+          ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
+        })
+        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
+      },
+    })
 
   const list = defineTool({
     name: `${toolPrefix}list`,

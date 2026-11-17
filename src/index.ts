@@ -261,10 +261,10 @@ export function apply(ctx: Context, config: Config): void {
   if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
     throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
   }
-  const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined => {
-    if (resolved.permission !== 'ask') return undefined
-    return userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
-  }
+  // The connection applies each selected backend's policy. Always supplying the
+  // bridge lets a named `permission: ask` backend ask while the default rejects.
+  const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined =>
+    userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
   const backends = backendSpecs(ctx, resolved)
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
   if (!resolved.enableChatTools) return

@@ -22,7 +22,7 @@
 | 7 | 持久会话面板(D15) | 双面包:node 半 sidebarRightTabs+remote、client 半页签组件;注册表增 title/turnCount | PANEL-DESIGN.md §4 验收清单全过(含"续聊不新增卡片") | ☐ |
 | 8 | 禁止 acp-chat 阻塞等待(D22) | `src/job-wait-gate.ts`(`tools/pre-execute` 拒绝运行中 acp-chat 的 `job_output wait:true`)+ `allowChatJobWait` 开关 + `tests/job-wait-gate.spec.ts` | 新套件 13 例全绿 + 全量回归 308 绿 | ☑ ae52f90 |
 | 9 | `permission: ask` + 启动指引(D23) | `permission: ask` 将 ACP 权限请求转给宿主用户确认，ENOENT 返回安全行动指引，四份用户文档增加新手配方 | one-shot 与持久工具 ask 放行、拒绝、无服务 fail-closed、取消清理，以及两入口 ENOENT 指引回归；全量 321 绿 | ☑ |
-| 10 | D24 多后端命名空间 | 配置/工具面/池/注册表/面板 + 测试 | 新基线全绿；单后端配置下工具定义与旧版逐字节一致；双后端 e2e 用例证明 chat 始终路由所属后端 | ◐ |
+| 10 | D24 多后端命名空间 | 配置/工具面/池/注册表/面板 + 测试 | 343 绿；0.1.20 单后端工具定义夹具逐字节一致；双后端 argv 路由、非默认重连与并发单飞均已验证 | ☑ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

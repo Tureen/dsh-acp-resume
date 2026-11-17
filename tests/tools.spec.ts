@@ -10,7 +10,7 @@
  * @module dsh-acp-resume/tests/tools.spec
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
 import { AcpSessionPool } from '../src/pool.ts'
-import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { chatStaticTools, registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
 import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -180,6 +180,37 @@ describe('chat tools', () => {
   it('rejects an already-aborted call before touching the pool', async () => {
     const { call } = mountTools({})
     await expect(call('start', { cwd: process.cwd() }, AbortSignal.abort())).rejects.toThrow()
+  })
+
+  it('single-backend start tool matches the 0.1.20 fixture byte for byte', () => {
+    const start = chatStaticTools({} as AcpSessionPool, 'acp_chat_').find(tool => tool.name === 'acp_chat_start') as Definition
+    const actual = JSON.stringify({ name: start.name, description: start.description, parameters: start.parameters }, null, 2)
+    const fixture = readFileSync(new URL('./fixtures/acp-chat-start-single-backend.json', import.meta.url), 'utf8').trim()
+    expect(actual).toBe(fixture)
+  })
+
+  it('single-backend start tool has no backend parameter', () => {
+    const start = chatStaticTools({} as AcpSessionPool, 'acp_chat_').find(tool => tool.name === 'acp_chat_start') as Definition
+    expect(start.parameters).not.toHaveProperty('backend')
+  })
+
+  it('multi-backend descriptions are neutral and user override wins', () => {
+    const start = chatStaticTools({} as AcpSessionPool, 'acp_chat_', [
+      { name: 'default', description: 'default (agent)' },
+      { name: 'review', description: '用户指定的评审后端' },
+    ]).find(tool => tool.name === 'acp_chat_start') as Definition
+    expect(start.description).toContain('review: 用户指定的评审后端')
+    expect(start.description).toContain('configured external ACP agent')
+    expect(start.description).not.toContain('kiro-cli')
+  })
+
+  it('invalid backend name errors with available names', async () => {
+    const starts: unknown[] = []
+    const start = chatStaticTools({ start: async (...args: unknown[]) => { starts.push(args); return { chatId: 'x', remoteSessionId: 'y' } } } as unknown as AcpSessionPool, 'acp_chat_', [
+      { name: 'default', description: 'default' }, { name: 'review', description: 'review' },
+    ]).find(tool => tool.name === 'acp_chat_start') as Definition
+    await expect(start.execute({ cwd: process.cwd(), backend: 'missing' }, exec())).rejects.toThrow('unknown backend missing; available backends: default, review')
+    expect(starts).toEqual([])
   })
 })
 

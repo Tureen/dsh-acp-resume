@@ -1,0 +1,20 @@
+{
+  "name": "acp_chat_start",
+  "description": "Start a persistent chat session with the external ACP agent (for example kiro-cli). Returns a chatId you pass to acp_chat_send. The conversation context usually survives between messages, process release, and host restarts; if the agent lost the session, the next acp_chat_send says so.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "cwd": {
+        "type": "string",
+        "description": "Absolute working directory for the chat session (the agent works here)."
+      },
+      "label": {
+        "type": "string",
+        "description": "Optional short name for the chat (at most 80 characters), shown by acp_chat_list so you can tell chats apart later."
+      }
+    },
+    "required": [
+      "cwd"
+    ]
+  }
+}

@@ -132,6 +132,13 @@ describe('ChatsPanel', () => {
     expect((second.getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('shows a backend badge only when more than one backend is configured', () => {
+    const { rerender, container } = render(<ChatsPanel {...props(ready([chat({ backend: 'review', backendCount: 2 })]))} />)
+    expect(within(container.querySelector('[data-chat-id]') as HTMLElement).getByText('后端 review')).toBeTruthy()
+    rerender(<ChatsPanel {...props(ready([chat({ backend: 'review', backendCount: 1 })]))} />)
+    expect(container.querySelector('[data-tag]')).toBeNull()
+  })
+
   it('puts active chats first and released ones under a collapsed group, both newest first', () => {
     // Snapshot order is newest first across both kinds (ChatsSource sorts).
     const rows = [
@@ -1190,9 +1197,15 @@ describe('snapshot-equal (D21)', () => {
   it('chatEqual compares every rendered field, including ownerSessionId', () => {
     const base = chat({ label: 'x', title: 't', turnCount: 3, ownerSessionId: 's1' })
     expect(chatEqual(base, { ...base })).toBe(true)
-    for (const diff of [{ label: 'y' }, { title: 'u' }, { turnCount: 4 }, { active: false }, { lastActive: base.lastActive + 1 }, { cwd: '/z' }, { remoteSessionId: 'r2' }, { ownerSessionId: 's2' }] as Partial<PanelChat>[]) {
+    for (const diff of [{ label: 'y' }, { title: 'u' }, { turnCount: 4 }, { active: false }, { lastActive: base.lastActive + 1 }, { cwd: '/z' }, { remoteSessionId: 'r2' }, { ownerSessionId: 's2' }, { backend: 'review' }, { backendCount: 2 }] as Partial<PanelChat>[]) {
       expect(chatEqual(base, { ...base, ...diff })).toBe(false)
     }
+  })
+
+  it('chatEqual tracks backend', () => {
+    const base = chat({ backend: 'default', backendCount: 2 })
+    expect(chatEqual(base, { ...base, backend: 'review' })).toBe(false)
+    expect(chatEqual(base, { ...base, backendCount: 1 })).toBe(false)
   })
 
   it('chatsEqual is order- and length-sensitive', () => {

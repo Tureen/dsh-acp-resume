@@ -74,7 +74,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 官方 mock 无 load 分支;扩展为内存会话表:load 命中恢复历史,未命中可配置报错/空,支撑池生命周期测试。
 
-修订(2026-11-17,D24 设计):多后端实施时，mock 会话表、session/load 场景和跨进程用例按注册表 `backend` 字段区分；旧测试记录未带该字段时按默认后端解释。该设计不改变当前 mock 或 D9 的单后端行为，待 D24 获确认后实施。
+修订(2026-11-17,D24 实施):mock 不感知 backend 概念；不同 argv 与会话存储区使双后端的 session/load 场景隔离。注册表旧记录未带 `backend` 时按默认后端解释。
 
 ## D11 撤销 run.ts 消重重构,双实现并存(2026-11-04;2026-11-09 permission: ask 窄例外修订)
 
@@ -330,10 +330,10 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 前置事实已完成(2026-11-17，主会话协议直连探针):环境为本机 macOS 的 Antigravity ACP Server `agy` 1.5.9。`initialize` 返回 `loadSession: true`、`sessionCapabilities {resume, close, load, list, additionalDirectories}`、`promptCapabilities {image, embeddedContext}` 与 4 项 authMethods；两轮对话正常，回答分别为 `NOTED`、`5`，每轮约 2–3 秒。SIGKILL 后重生并以同一 sessionId `session/load`，暗号 `ZX-9427` 完整找回，历史保留。兼容性发现：`session/prompt` 只接受 `[{type:'text', text}]` 数组，字符串返回 `-32602`；`session/update` 通知嵌套在 `params.update`，`sessionUpdate` 位于 `params.update.sessionUpdate`，不同于 kiro 的平铺形态 `params.sessionUpdate`。另观察到自动会话标题 `session_info_update`、`usage_update(used/size, 1 MiB 窗口)`、`session/new.models.availableModels` 的 gemini-3.8-flash 系列和 `user_message_chunk` 回显。
 
 修订(2026-11-17,实施裁定):注册表 `backend` 是字段加法，文件版本保持 1；读时缺省为 `default`，不迁移、不写版本 2，以免旧插件把新文件当损坏件搬走。`PooledChatInfo` 投影必有 `backend` 与有效后端数 `backendCount`；wire DTO 可选，徽标仅 `backendCount > 1` 显示，不新增 Remote。命名表禁止保留名 `default`，名称匹配 `[A-Za-z0-9_-]{1,32}`；每后端另有 `env`，叠加全局 env，凭据不跨后端泄漏。one-shot 固定默认后端，多厂商 one-shot 另行决策；后端重命名或删除使既有 chat send 明确失败，不迁移、不猜测回落。连接层仅对池路径归一化平铺/嵌套 update，run.ts 依 D11 不动。
-- **配置形态，加法且向后兼容**：保留现有顶层 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，其语义变为**默认后端**。新增可选 `backends` 命名表；每个命名后端包含同一组 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，以及可选 `description`，后者可覆盖内置文案。`backends` 中出现一项即启用该后端，删除即关闭；不再增加独立 `enabled` 旗子。每个后端自行消化旗标策略与权限语义，不污染其他后端。
+- **配置形态，加法且向后兼容**：保留现有顶层 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，其语义变为**默认后端**。新增可选 `backends` 命名表；每个命名后端包含同一组 `command` / `args` / `agentEngine` / `permission` / `model` / `effort` / `env`，以及可选 `description`，后者可覆盖内置文案。`backends` 中出现一项即启用该后端，删除即关闭；不再增加独立 `enabled` 旗子。每个后端自行消化旗标策略与权限语义，不污染其他后端。
 - **工具面自适应**：注册时从已解析配置计算有效后端。总数为 1 时，`acp_chat_start` **不含** `backend` 参数，工具定义与今日单后端版本逐字节一致。总数至少为 2 时，`acp_chat_start` 增加可选 string 参数 `backend`。其说明逐后端列出一行中性描述：用户 `description` 优先，缺省为“后端名 + command 基名”；禁止“实测充分”“推荐”等评价性或优先级措辞。其余四个工具不改变参数面。
 - **chat 级绑定**：`acp_chat_start` 创建 chat 时选定后端。`chatId → backend` 终身绑定；`send` / `steer` / `close` / `list` 均按注册表保存的后端路由，不会因之后编辑默认后端而改写既有 chat。
-- **注册表与兼容**：`RegistryEntry` 增加必需 `backend` 字段，注册表版本升级。旧记录缺字段时解释为默认后端，不迁移、不丢弃。重连既有的 `command + args` 指纹比较天然构成后端身份校验，无需另设身份机制。D9 的 mock 与跨进程 load 测试按该字段扩展。
+- **注册表与兼容**：`RegistryEntry` 增加可选 `backend` 字段，注册表保持版本 1。旧记录缺字段时解释为默认后端，不迁移、不丢弃。重连既有的 `command + args` 指纹比较天然构成后端身份校验，无需另设身份机制。D9 的 mock 与跨进程 load 测试以不同 argv 和会话存储区覆盖。
 - **池命名空间**：连接管理按 `(backend, chat)` 命名空间进行。每个后端有独立连接、空闲计时和配置投影；每 chat 单飞规则不变，不为跨后端新增排队或共享 busy 状态。
 - **权限与旗标**：`permission` / `agentEngine` / `model` / `effort` 只读取 chat 所属后端的配置。Antigravity 一类把提问混入 `session/request_permission` 的语义，由该后端自身的 `permission`，例如 `ask`，天然隔离。
 - **面板**：每条 chat 行增加所属后端的中性徽标；只有一个有效后端时隐藏该徽标。列表、详情页签、在途轮投影、轮次日志和资源操作的其他语义不变。
@@ -342,4 +342,4 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 ### 后果与实施门槛
 
-D24 获确认后，配置、工具定义、池、注册表、面板和测试需作为一项原子增量实现。验收至少包括：单后端配置的 `acp_chat_start` 定义与旧版逐字节一致；双后端端到端用例证明两个 chat 可并存且始终路由各自后端；新的全量测试基线为绿。没有 Antigravity 多轮与杀进程 `session/load` 报告，不将该后端写为完成支持。
+D24 已作为一项原子增量实现。验收覆盖：0.1.20 单后端 `acp_chat_start` 夹具逐字节一致；双后端 argv 路由、非默认后端 `session/load` 重连、两后端在途轮互不干扰；全量基线 343 绿。Antigravity 的多轮和杀进程 `session/load` 探针结果仅记录协议兼容事实，不构成产品支持承诺。
