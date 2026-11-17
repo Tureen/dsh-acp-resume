@@ -4,10 +4,10 @@
 
 ## 前置就绪清单(2026-11-04 已达成)
 
-- ☑ 独立仓库与骨架(首建基线 0.2.1-rc.5,构建绿,42 协议面用例绿,首提交 a606019;当前 D2 基线见 `dsh-v0.2.2-rc.1`)
+- ☑ 独立仓库与骨架(首建基线 0.2.1-rc.5,构建绿,42 协议面用例绿,首提交 a606019;当前 D2 基线见 `dsh-v0.2.2-rc.3` / master pin `ff6db9df9f37db545e8b124b9043269f17256a34`)
 - ☑ 设计与决策文档(DESIGN.md / DECISIONS.md / README.md,提交 7dce3e9 起)
 - ☑ 实施依赖补齐(@deepseek-ai/dsh-tools、@deepseek-ai/dsh-home-paths,dev + peer)
-- ☑ 参考源码 checkout(官方仓库 tag dsh-v0.2.2-rc.1,只读;D8 的 24 个真实子进程用例在该基线运行)
+- ☑ 参考源码 checkout(官方仓库 master pin `ff6db9df9f37db545e8b124b9043269f17256a34`，0.2.2-rc.3 状态,只读;D8 的 24 个真实子进程用例在该基线运行)
 
 ## 步骤
 

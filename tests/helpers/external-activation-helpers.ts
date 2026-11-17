@@ -69,7 +69,8 @@ export async function startExternalActivation(
   return ctx.subagents.startActivation({
     provider,
     label: label ?? 'External test task',
-    request: { ...execution, parent },
+    ...execution,
+    parent,
     signal,
     delivery: 'caller',
   })

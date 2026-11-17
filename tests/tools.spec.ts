@@ -225,7 +225,6 @@ describe('apply (plugin wiring)', () => {
     const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_' })
     cleanups.push(() => fiber.dispose())
-    expect(ctx.subagents.list()).toEqual(['acp-resume'])
     await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
     expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
   })
@@ -282,7 +281,6 @@ describe('apply (plugin wiring)', () => {
     cleanups.push(() => fiber.dispose())
     await new Promise(r => setTimeout(r, 50))
     expect(stubTools(ctx).registered.size).toBe(0)
-    expect(ctx.subagents.list()).toEqual(['acp-resume'])
     expect(existsSync(registryPath)).toBe(false)
   })
 

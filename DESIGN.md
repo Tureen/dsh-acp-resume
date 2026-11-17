@@ -1,8 +1,8 @@
 # dsh-acp-resume 设计(阶段二:持久会话池)
 
-基线:@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1 源码(阶段一已复制,行为一致,42 个协议面用例绿)。
+基线:@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3 源码(阶段一已复制,行为一致,42 个协议面用例绿)。
 
-> 修订(2026-11-09,D23):`permission: ask` 与 ENOENT 行动指引是 D11 许可的窄例外；其余 `src/run.ts` 行为仍以官方 tag `dsh-v0.2.2-rc.1` 为基线。DSH peer 钉 `~0.2.2-rc.1`、Cordis peer 钉 `~4.1.0`;`engines.dsh` 仅设最低版本 `>=0.2.2-rc.1`，上限策略及 0.3+ 风险以 D2 为准。
+> 修订(2026-11-09,D2):当前基线已升至 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3`;除 D11 记录的 `permission: ask` 与 ENOENT 行动指引窄例外外，`src/run.ts` 与 npm 包 `src/run.ts` 一致。官方 checkout 固定到 `ff6db9df9f37db545e8b124b9043269f17256a34`（master 的 rc.3 状态）；DSH peer 钉 `~0.2.2-rc.3`、Cordis peer 保持 `~4.1.0`;`engines.dsh` 仅设最低版本 `>=0.2.2-rc.3`，上限策略及 0.3+ 风险以 D2 为准。
 目标:为 ACP 外部子代理提供可续聊会话——进程保活、远端会话号落盘、死后 session/load 重连——且与官方 one-shot 链路完全隔离。
 
 ## 定型认知(前置调研结论)
@@ -48,5 +48,5 @@
 
 - kiro load 对 cwd 敏感 → 注册表回放原 cwd,冒烟前置验证;
 - kiro 会话积累 → close 文档提示 --delete-session;
-- App 升级 peer 失配 → 钉 DSH `~0.2.2-rc.1`、Cordis `~4.1.0`,升级重装+回归;
+- App 升级 peer 失配 → 钉 DSH `~0.2.2-rc.3`、Cordis `~4.1.0`,升级重装+回归;
 - 官方未来做 continuable ACP → 注册表结构可平移迁移。

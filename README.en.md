@@ -4,11 +4,11 @@
 
 A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods but has **only been tested with kiro-cli** so far; mid-turn steering (`_session/steer`) is a kiro-specific extension, and the steering tool reports a clear error when the agent does not support it. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
 
-Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.1` and Node >= 24).
+Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3` and Node >= 24).
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.18 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.19 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -107,7 +107,7 @@ The three duration fields must be positive and no greater than Node's timer limi
 
 ## Install and upgrade
 
-**Main path: install from npm.** Requires DSH `>=0.2.2-rc.1` (the package's `engines.dsh` sets only a minimum version and no installation ceiling for later DSH release lines) and Node >= 24:
+**Main path: install from npm.** Requires DSH `>=0.2.2-rc.3` (the package's `engines.dsh` sets only a minimum version and no installation ceiling for later DSH release lines) and Node >= 24:
 
 ```sh
 dsh plugin --profile <name> add dsh-acp-resume
@@ -151,10 +151,10 @@ pnpm install && pnpm build     # build lib/
 pnpm test                      # vitest; 321 green = official protocol surface 68 + connection 28 + pool 60 + tools 15 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- Baseline: checked against `dsh-v0.2.2-rc.1`; except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.1`. DSH peers are pinned to `~0.2.2-rc.1`, and the Cordis peer to `~4.1.0`;
+- Baseline: checked against npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` `src/run.ts` and official checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34`. Except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3`. DSH peers are pinned to `~0.2.2-rc.3`, and the Cordis peer remains `~4.1.0`;
 - Conditionally run cases: the 24 real-child-process cases need `spawn.ts` from the official checkout (not included in the npm distribution). When the official checkout (its path given by the environment variable `DSH_OFFICIAL_CHECKOUT`; when unset, the default location in the tests is used) is present, everything is green and the exit code is 0; when it is absent, these 24 cases are skipped automatically (see DECISIONS D8);
 - Two implementations side by side: except for D11's narrow `permission: ask` and ENOENT guidance changes, run.ts follows the official baseline and is not refactored; connection.ts is the sibling implementation dedicated to the pool;
-- Official source checkout used for reference: tag `dsh-v0.2.2-rc.1` (read-only comparison).
+- Official source checkout used for reference: pin `ff6db9df9f37db545e8b124b9043269f17256a34` (master's 0.2.2-rc.3 state, read-only comparison).
 
 ## License
 
