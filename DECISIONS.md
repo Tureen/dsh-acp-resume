@@ -74,6 +74,8 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 官方 mock 无 load 分支;扩展为内存会话表:load 命中恢复历史,未命中可配置报错/空,支撑池生命周期测试。
 
+修订(2026-11-17,D24 设计):多后端实施时，mock 会话表、session/load 场景和跨进程用例按注册表 `backend` 字段区分；旧测试记录未带该字段时按默认后端解释。该设计不改变当前 mock 或 D9 的单后端行为，待 D24 获确认后实施。
+
 ## D11 撤销 run.ts 消重重构,双实现并存(2026-11-04;2026-11-09 permission: ask 窄例外修订)
 
 决策:第 2 步原计划"startAcpRun 重构为 openAcpConnection 薄包装"实施后回归退化 5 例,当场撤销,run.ts 恢复官方原版;connection.ts 作为池专用姊妹实现与官方驱动并存。
@@ -235,6 +237,9 @@ D15 追注(2026-11-04):v2 增加会话详情页签,见 D18;D15 "只读视图 + �
 
 D15 修订(2026-11-17,在途轮可见):列表与详情页签额外投影当前池实例内每 chat 至多一条在途 prompt 的完整已发送消息和 `startedAt`；列表显示「进行中」与持续时长，详情将合成 `running` 条目置顶并由浏览器侧截断、展开全文。该信息只在 `LiveChat` 内存中存在，轮结算、关闭、purge、池重启后即消失；不写注册表、不写按轮日志、不计入 `turns.total`，D18 不变。未加入 agent 流式输出、思考、工具调用或面板内输入/取消；时长只按现有面板轮询节奏更新，不增高频刷新。
 
+D15 修订(2026-11-17,D24 设计):多后端实施时，面板每行增加 chat 所属后端的中性徽标；仅一个有效后端时不显示。列表、详情页签、在途轮投影、轮次日志和资源操作其余语义不变，待 D24 获确认后实施。
+
+
 D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 静默退 30 秒),并要求数据源快照引用稳定;详见 D21。数据/工具语义不变。
 
 ## D20 会话归属:元数据 + 视图过滤,不是访问控制(2026-11-05)
@@ -313,3 +318,29 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 - **两条路径**:one-shot `run.ts` 与池的 `connection.ts` 都使用同一权限决策器。run.ts 的接入是 D11 记录的窄例外；connection 只在当前 prompt 存在 ask 决策器时转发，轮外或连接已取消的权限请求 fail closed。`allow` 继续选择第一个 allow-shaped option，`reject` 继续 cancelled，保持既有行为。
 
 后果:新增 `dsh-user-questions` peer/dev 依赖与按调用临时绑定的权限决策器；ask 用户需要宿主已组合该服务和其界面回答者。测试覆盖 one-shot 与持久工具的允许、持久连接的拒绝与无回答者 fail-closed、既有 allow/reject 自动策略以及取消期间清理；所有路径只回传 ACP 原始 optionId，不把选项文本当授权事实。
+
+## D24 多后端命名空间(2026-11-17,待确认)
+
+### 动机
+
+本插件需要同时接入多个 ACP agent 厂商。`kiro-cli` 是已实测的主力后端；Google Antigravity 的 `agy acp` 已完成握手实测，`initialize` 返回 `loadSession: true`，且 `sessionCapabilities` 含 `resume` / `close` / `load` / `list`。后续的 gemini-cli、opencode 也可按同型后端接入。
+
+现状只有一个全局后端。切换 `command` / `args` 会让旧 chat 的远端会话号失去正确路由，形成孤儿记录；也无法让多个后端同时服务不同 chat。
+
+前置事实：主会话另行执行并附录 Antigravity 的多轮对话与杀进程后 `session/load` 重连实测报告。D24 设计以已有握手能力为前提，完整多轮/重连结论在报告补录前不宣称完成。
+
+### 裁定
+
+- **配置形态，加法且向后兼容**：保留现有顶层 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，其语义变为**默认后端**。新增可选 `backends` 命名表；每个命名后端包含同一组 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，以及可选 `description`，后者可覆盖内置文案。`backends` 中出现一项即启用该后端，删除即关闭；不再增加独立 `enabled` 旗子。每个后端自行消化旗标策略与权限语义，不污染其他后端。
+- **工具面自适应**：注册时从已解析配置计算有效后端。总数为 1 时，`acp_chat_start` **不含** `backend` 参数，工具定义与今日单后端版本逐字节一致。总数至少为 2 时，`acp_chat_start` 增加可选 string 参数 `backend`。其说明逐后端列出一行中性描述：用户 `description` 优先，缺省为“后端名 + command 基名”；禁止“实测充分”“推荐”等评价性或优先级措辞。其余四个工具不改变参数面。
+- **chat 级绑定**：`acp_chat_start` 创建 chat 时选定后端。`chatId → backend` 终身绑定；`send` / `steer` / `close` / `list` 均按注册表保存的后端路由，不会因之后编辑默认后端而改写既有 chat。
+- **注册表与兼容**：`RegistryEntry` 增加必需 `backend` 字段，注册表版本升级。旧记录缺字段时解释为默认后端，不迁移、不丢弃。重连既有的 `command + args` 指纹比较天然构成后端身份校验，无需另设身份机制。D9 的 mock 与跨进程 load 测试按该字段扩展。
+- **池命名空间**：连接管理按 `(backend, chat)` 命名空间进行。每个后端有独立连接、空闲计时和配置投影；每 chat 单飞规则不变，不为跨后端新增排队或共享 busy 状态。
+- **权限与旗标**：`permission` / `agentEngine` / `model` / `effort` 只读取 chat 所属后端的配置。Antigravity 一类把提问混入 `session/request_permission` 的语义，由该后端自身的 `permission`，例如 `ask`，天然隔离。
+- **面板**：每条 chat 行增加所属后端的中性徽标；只有一个有效后端时隐藏该徽标。列表、详情页签、在途轮投影、轮次日志和资源操作的其他语义不变。
+- **steer**：按 chat 所属后端调用；agent 不支持 `_session/steer` 时复用既有 `-32601` 降级机制。能力失败不污染其他后端，也不修改现有 steer 语义。
+- **明确不做**：不修改 D6 或 D18；不在代码中按产品名硬编码 `kiro` / `agy` 分支；不增加流式输出展示或高频轮询。
+
+### 后果与实施门槛
+
+D24 获确认后，配置、工具定义、池、注册表、面板和测试需作为一项原子增量实现。验收至少包括：单后端配置的 `acp_chat_start` 定义与旧版逐字节一致；双后端端到端用例证明两个 chat 可并存且始终路由各自后端；新的全量测试基线为绿。没有 Antigravity 多轮与杀进程 `session/load` 报告，不将该后端写为完成支持。
