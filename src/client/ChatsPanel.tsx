@@ -17,7 +17,7 @@
  */
 
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
-import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Modal, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import { chatAddress } from './chat-address.ts'
 import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, SelectorHook, TabInfoHook } from './face.ts'
 import type { PanelTranslate } from './locales.ts'
@@ -146,6 +146,7 @@ function ChatCard({ chat, now, pending, origin, onRelease, onDelete, onOpen, t }
             {chat.label === undefined ? null : <span style={styles.id}> {short}</span>}
           </span>
         </button>
+        {(chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? <Tag tone="neutral">{t('backendBadge', { name: chat.backend })}</Tag> : null}
         <Button size="sm" variant="ghost" disabled={pending || !chat.active} aria-label={t('releaseLabel', { chatId: short })}
           onClick={(event: MouseEvent) => { event.stopPropagation(); onRelease(chat) }}>{t('release')}</Button>
         <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}

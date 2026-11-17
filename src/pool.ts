@@ -65,6 +65,10 @@ export interface PooledChatInfo {
   readonly lastActive: number
   /** Session id of the DSH chat that opened this chat (D20); absent for chats started before attribution, or without a calling session. */
   readonly ownerSessionId?: string
+  /** Backend that owns this chat; old records read as `default`. */
+  readonly backend: string
+  /** Number of configured backends, for optional panel badges. */
+  readonly backendCount: number
   /** Current prompt state, kept only in pool memory and omitted after settlement (D15). */
   readonly inFlight?: InFlightTurn
 }
@@ -74,6 +78,8 @@ export type FreshSessionReason = 'load-rejected' | 'repeated-errors'
 
 /** Number of consecutive settled `error` turns before the next send starts a fresh remote session (D6). */
 export const CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD = 3
+/** Stable identity of the legacy top-level backend (D24). */
+export const DEFAULT_BACKEND = 'default'
 
 /** Return the model-facing notice for a fresh-session fallback. */
 export function freshSessionNotice(reason: FreshSessionReason): string {
@@ -107,9 +113,17 @@ export interface PoolSendHooks {
 }
 
 /** Pool construction inputs: the spawn base plus durability knobs. */
-export interface PoolOptions {
-  /** Everything except `cwd` of the per-run spawn spec (command/args/env/…). */
+export interface BackendSpec {
+  readonly name: string
+  readonly description: string
   readonly specBase: Omit<AcpRunSpec, 'cwd'>
+}
+
+export interface PoolOptions {
+  /** Everything except `cwd` of the default backend's per-run spawn spec. */
+  readonly specBase: Omit<AcpRunSpec, 'cwd'>
+  /** Named backends in addition to the default backend (D24). */
+  readonly backends?: ReadonlyMap<string, BackendSpec>
   /** Registry file path; created (with parent dirs) on first change. */
   readonly registryPath: string
   /** Idle window (ms) after a settled turn before the process is released; positive, ≤ `MAX_TIMER_DELAY_MS`. */
@@ -130,6 +144,8 @@ interface RegistryEntry {
   turnCount?: number
   /** Optional (D20); the DSH session that opened the chat. Older registries omit it. */
   ownerSessionId?: string
+  /** Missing only in version-1 records, which route to the default backend. */
+  backend?: string
   command: string
   args: readonly string[]
   lastActive: number
@@ -141,6 +157,8 @@ export interface PoolStartOptions {
   readonly label?: string
   /** The DSH session opening the chat, recorded for panel attribution (D20); empty/undefined means none. */
   readonly ownerSessionId?: string
+  /** Backend selected at chat creation; omitted means the default backend. */
+  readonly backend?: string
 }
 
 /** One prompt currently running on a pooled chat; a volatile panel projection, not a turn-log record. */
@@ -327,6 +345,7 @@ export class AcpSessionPool {
    * discards it.
    */
   private readonly starting = new Map<string, OpenWindow>()
+  private readonly backends: ReadonlyMap<string, BackendSpec>
   private readonly registry: ChatRegistry
   private readonly turnLog: TurnLog
   private disposed = false
@@ -336,6 +355,7 @@ export class AcpSessionPool {
     if (!Number.isFinite(idle) || idle <= 0 || idle > MAX_TIMER_DELAY_MS) {
       throw new Error(`acp-resume: idleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`)
     }
+    this.backends = new Map([[DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: DEFAULT_BACKEND, specBase: opts.specBase }], ...(opts.backends ?? new Map()).entries()])
     this.registry = new ChatRegistry(opts.registryPath, opts.onWarn)
     this.turnLog = new TurnLog(join(dirname(opts.registryPath), 'turns'), opts.onWarn)
   }
@@ -350,6 +370,8 @@ export class AcpSessionPool {
       ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
       ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
       ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
+      backend: this.backendName(e),
+      backendCount: this.backends.size,
       ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
@@ -377,12 +399,15 @@ export class AcpSessionPool {
     // Fail loud at the earliest resolvable point, mirroring the official provider start.
     assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const label = options.label?.trim() ?? ''
+    const backend = options.backend ?? DEFAULT_BACKEND
+    const backendSpec = this.backends.get(backend)
+    if (backendSpec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
     const ownerSessionId = options.ownerSessionId?.trim() ?? ''
     const chatId = `chat-${randomUUID()}`
     const now = Date.now()
     const controller = new AbortController()
     const opening = (async (): Promise<AcpConnection> => {
-      const conn = await openAcpConnection({ ...this.opts.specBase, cwd }, { mode: 'new' }, windowSignal(controller, signal))
+      const conn = await openAcpConnection({ ...backendSpec.specBase, cwd }, { mode: 'new' }, windowSignal(controller, signal))
       if (this.disposed) await this.discard(conn, 'acp-resume: pool already disposed')
       if (controller.signal.aborted) await this.discard(conn, `acp-resume: chat ${chatId} was released before it started`)
       this.registry.upsert({
@@ -391,8 +416,9 @@ export class AcpSessionPool {
         cwd,
         ...(label === '' ? {} : { label }),
         ...(ownerSessionId === '' ? {} : { ownerSessionId }),
-        command: this.opts.specBase.command,
-        args: this.opts.specBase.args,
+        backend,
+        command: backendSpec.specBase.command,
+        args: backendSpec.specBase.args,
         lastActive: now,
       })
       this.track(chatId, conn)
@@ -409,7 +435,7 @@ export class AcpSessionPool {
       this.starting.delete(chatId)
     }
     this.assertLive()
-    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), active: true, lastActive: now }
+    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendCount: this.backends.size, active: true, lastActive: now }
   }
 
   /**
@@ -652,8 +678,16 @@ export class AcpSessionPool {
   }
 
   /** A saved session is only reloaded by the agent that created it. */
+  private backendName(entry: RegistryEntry): string { return entry.backend ?? DEFAULT_BACKEND }
+
+  private specFor(entry: RegistryEntry): Omit<AcpRunSpec, 'cwd'> {
+    const backend = this.backends.get(this.backendName(entry))
+    if (backend === undefined) throw new Error(`acp-resume: chat ${entry.chatId} uses unavailable backend ${this.backendName(entry)}`)
+    return backend.specBase
+  }
+
   private assertSameAgent(entry: RegistryEntry): void {
-    const { command, args } = this.opts.specBase
+    const { command, args } = this.specFor(entry)
     // Engine/model/effort are not part of the fingerprint (D19): saved sessions
     // load across engines, and `auto` already swaps models within a session.
     if (entry.command === command && Array.isArray(entry.args) && sameArgs(stripVolatileFlags(entry.args), stripVolatileFlags(args))) return
@@ -682,7 +716,7 @@ export class AcpSessionPool {
 
   /** Reconnect a saved remote session, or skip load after repeated failed turns (D6). */
   private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
-    const spec = { ...this.opts.specBase, cwd: entry.cwd }
+    const spec = { ...this.specFor(entry), cwd: entry.cwd }
     if (forceFresh) {
       const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
       return { conn, freshSessionReason: 'repeated-errors' }

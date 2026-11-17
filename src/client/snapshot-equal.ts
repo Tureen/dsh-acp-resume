@@ -27,6 +27,8 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.inFlight?.chatId === b.inFlight?.chatId
     && a.inFlight?.message === b.inFlight?.message
     && a.inFlight?.startedAt === b.inFlight?.startedAt
+    && a.backend === b.backend
+    && a.backendCount === b.backendCount
 }
 
 /** Two chat lists hold the same rows in the same order. */

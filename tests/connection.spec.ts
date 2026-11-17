@@ -17,7 +17,7 @@ import type { AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { Context } from '@deepseek-ai/cordis'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import { AcpConnectionError, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
+import { AcpConnectionError, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
 import { userQuestionPermissionResolver } from '../src/permission-request.ts'
 import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -105,6 +105,18 @@ afterEach(async () => {
   await Promise.allSettled(connections.splice(0).map(c => c.dispose()))
   await Promise.allSettled(questionContexts.splice(0).map(ctx => ctx.fiber.dispose()))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('normalizeInboundMessage', () => {
+  it('wraps a flat session update', () => {
+    expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'a' } } }))
+      .toEqual([{ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'a' } } } }])
+  })
+  it('splits array content in order', () => {
+    expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } } })?.map((x: any) => x.params.update.content.text)).toEqual(['a', 'b'])
+  })
+  it('passes non-update messages through', () => { expect(normalizeInboundMessage({ method: 'other', params: {} })).toEqual([{ method: 'other', params: {} }]) })
+  it('drops malformed updates', () => { expect(normalizeInboundMessage({ method: 'session/update', params: {} })).toBeUndefined() })
 })
 
 describe('openAcpConnection / AcpConnection', () => {

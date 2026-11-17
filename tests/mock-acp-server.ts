@@ -66,6 +66,7 @@
  *                        `{queued:true, messageId:'steer-test'}`.
  * - `MOCK_NO_STEER`    — if `1`, `_session/steer` is not registered (the SDK
  *                        answers -32601 Method not found), for the degrade path.
+ * - `MOCK_FLAT_SESSION_UPDATE` / `MOCK_UPDATE_CONTENT_ARRAY` / `MOCK_SPLIT_UPDATE_WRITES` — emit flat, array-content, or split-write session/update variants.
  * - `MOCK_ECHO_ARGV`   — if `1`, the answer is the JSON of `process.argv.slice(2)`
  *                        (the args the agent process was spawned with).
  * - `MOCK_LOAD_READY` / `MOCK_LOAD_GO` — `session/load` touches READY, then
@@ -143,6 +144,9 @@ const PERMISSION_READY_FILE = process.env.MOCK_PERMISSION_READY_FILE
 const PERMISSION_DECISION_FILE = process.env.MOCK_PERMISSION_DECISION_FILE
 const NO_ALLOW = process.env.MOCK_NO_ALLOW === '1'
 const THOUGHT = process.env.MOCK_THOUGHT === '1'
+const FLAT_SESSION_UPDATE = process.env.MOCK_FLAT_SESSION_UPDATE === '1'
+const UPDATE_CONTENT_ARRAY = process.env.MOCK_UPDATE_CONTENT_ARRAY === '1'
+const SPLIT_UPDATE_WRITES = process.env.MOCK_SPLIT_UPDATE_WRITES === '1'
 const CRASH_ON_INITIALIZE = process.env.MOCK_CRASH_ON_INITIALIZE === '1'
 const NO_LOAD_CAPABILITY = process.env.MOCK_NO_LOAD_CAPABILITY === '1'
 const CANCEL_FILE = process.env.MOCK_CANCEL_FILE

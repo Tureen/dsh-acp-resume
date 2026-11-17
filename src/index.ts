@@ -28,7 +28,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
-import { AcpSessionPool } from './pool.js'
+import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
 import { type AgentEngineSetting, buildChildArgs } from './engine.js'
@@ -41,6 +41,19 @@ const FIBER_ACTIVE = 2 satisfies FiberState.ACTIVE
 
 export const name = 'acp-resume'
 export const inject = ['subagents', 'subprocess']
+
+/** Per-chat ACP backend settings added by D24. */
+export interface BackendConfig {
+  command: string
+  args: string[]
+  agentEngine: AgentEngineSetting
+  model?: string
+  effort?: string
+  permission: PermissionPolicy
+  env: Record<string, string>
+  /** Neutral user-facing description; omitted falls back to name and command basename. */
+  description?: string
+}
 
 /** Config: how to spawn and drive the child ACP agent process. */
 export interface Config {
@@ -108,6 +121,8 @@ export interface Config {
   idleTimeoutMs?: number
   /** Registry file for durable chats; defaults to $DSH_HOME/storages/acp-resume/registry.json. */
   registryPath?: string
+  /** Optional named ACP backends; top-level settings remain the default backend. */
+  backends?: Record<string, BackendConfig>
   /** Name prefix for the five persistent-chat tools (default `acp_chat_`). */
   toolPrefix?: string
   /** Register the persistent-chat tools alongside the one-shot provider (default true). */
@@ -137,6 +152,15 @@ export const Config: z<Config> = z.object({
   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
   idleTimeoutMs: z.number().default(600_000),
   registryPath: z.string().default(''),
+  backends: z.dict(z.object({
+    command: z.string().required(),
+    args: z.array(z.string()).default([]),
+    agentEngine: z.union(['v1', 'v2', 'v3', 'none'] as const).default('v3'),
+    model: z.string(), effort: z.string(),
+    permission: z.union(['allow', 'reject', 'ask'] as const).default('reject'),
+    env: z.dict(z.string()).default({}),
+    description: z.string(),
+  })),
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
   allowChatJobWait: z.boolean().default(false),
@@ -210,6 +234,24 @@ class AcpProvider implements SubagentProvider {
   }
 }
 
+function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string, BackendSpec> {
+  const base = (backend: BackendConfig): Omit<AcpRunSpec, 'cwd'> => ({
+    command: backend.command,
+    args: buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
+    permission: backend.permission, env: { ...config.env, ...backend.env }, disposeEofGraceMs: config.disposeEofGraceMs, disposeGraceMs: config.disposeGraceMs,
+    spawn: spec => ctx.subprocess.spawn(spec),
+    onError: (error, stopReason) => { ctx.logger.warn(`acp-resume chat child failed (${stopReason}): ${error.message}`) },
+  })
+  const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
+  const named = Object.entries(config.backends ?? {})
+  if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
+  const entries: [string, BackendSpec][] = named.map(([name, value]) => [
+    name, { name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value) },
+  ])
+  entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: `${DEFAULT_BACKEND} (${defaultBackend.command.split('/').at(-1) ?? defaultBackend.command})`, specBase: base(defaultBackend) }])
+  return new Map(entries)
+}
+
 export function apply(ctx: Context, config: Config): void {
   // schemastery (Config) has already filled every defaulted field.
   const resolved = config as ResolvedConfig
@@ -223,6 +265,7 @@ export function apply(ctx: Context, config: Config): void {
     if (resolved.permission !== 'ask') return undefined
     return userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
   }
+  const backends = backendSpecs(ctx, resolved)
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
   if (!resolved.enableChatTools) return
 
@@ -238,22 +281,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => pool?.disposeAll())
   ctx.inject(['tools'], (scope) => {
     pool ??= new AcpSessionPool({
-      specBase: {
-        command: resolved.command,
-        args: buildChildArgs(resolved.args, {
-          engine: resolved.agentEngine,
-          ...(config.model === undefined ? {} : { model: config.model }),
-          ...(config.effort === undefined ? {} : { effort: config.effort }),
-        }),
-        permission: resolved.permission,
-        env: resolved.env,
-        disposeEofGraceMs: resolved.disposeEofGraceMs,
-        disposeGraceMs: resolved.disposeGraceMs,
-        spawn: spec => ctx.subprocess.spawn(spec),
-        onError: (error, stopReason) => {
-          ctx.logger.warn(`acp-resume "${resolved.providerName}": chat child failed (${stopReason}): ${error.message}`)
-        },
-      },
+      specBase: backends.get(DEFAULT_BACKEND)!.specBase,
+      backends,
       registryPath,
       idleTimeoutMs: resolved.idleTimeoutMs,
       onWarn: message => { ctx.logger.warn(message) },
@@ -261,7 +290,7 @@ export function apply(ctx: Context, config: Config): void {
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
     const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor)
-    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix)
+    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })))
     scope.effect(() => scope.tools.register(start))
     scope.effect(() => scope.tools.register(steer))
     // Send follows the job registry, as the official bash tool does: the inline

@@ -137,6 +137,42 @@ export type OpenAcpMode =
   | { readonly mode: 'new' }
   | { readonly mode: 'load'; readonly sessionId: string }
 
+/** Normalize vendor `session/update` wire variants before the strict ACP SDK parser. */
+export function normalizeInboundMessage(line: unknown): unknown[] | undefined {
+  if (typeof line !== 'object' || line === null || Reflect.get(line, 'method') !== 'session/update') return [line]
+  const params = Reflect.get(line, 'params')
+  if (typeof params !== 'object' || params === null) return undefined
+  const update = Reflect.get(params, 'update')
+  const flat = update === undefined && Reflect.has(params, 'sessionUpdate')
+  const normalized = flat ? { sessionUpdate: Reflect.get(params, 'sessionUpdate'), content: Reflect.get(params, 'content') } : update
+  if (typeof normalized !== 'object' || normalized === null || typeof Reflect.get(normalized, 'sessionUpdate') !== 'string') return undefined
+  const contents = Reflect.get(normalized, 'content')
+  const cleanParams = flat ? { sessionId: Reflect.get(params, 'sessionId') } : params
+  const messages = Array.isArray(contents) ? contents.map(content => ({ ...line as object, params: { ...cleanParams as object, update: { ...normalized as object, content } } })) : [{ ...line as object, params: { ...cleanParams as object, update: normalized } }]
+  return messages
+}
+
+function normalizeAcpInbound(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+  const normalize = (chunk: Uint8Array, controller: TransformStreamDefaultController<Uint8Array>, flush = false): void => {
+    pending += decoder.decode(chunk, { stream: !flush })
+    const lines = pending.split('\n')
+    pending = flush ? '' : (lines.pop() ?? '')
+    for (const line of lines) {
+      if (line === '') continue
+      try {
+        const messages = normalizeInboundMessage(JSON.parse(line))
+        if (messages === undefined) continue
+        for (const message of messages) controller.enqueue(encoder.encode(`${JSON.stringify(message)}\n`))
+      } catch { controller.enqueue(encoder.encode(`${line}\n`)) }
+    }
+    if (flush && pending !== '') { controller.enqueue(encoder.encode(pending)); pending = '' }
+  }
+  return source.pipeThrough(new TransformStream({ transform(chunk, controller) { normalize(chunk, controller) }, flush(controller) { normalize(new Uint8Array(), controller, true) } }))
+}
+
 /** Fixed safe failure text derived only from structured facts (mirrors run.ts). */
 function failureDiagnostic(facts: { stage: string; category: string; stopReason?: string; outcome?: SubprocessOutcome }): string {
   const fields = [
@@ -361,7 +397,7 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
 
   const connection = clientApp.connect(ndJsonStream(
     NodeWritable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-    NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+    normalizeAcpInbound(NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>),
   ))
   const agent = connection.agent
 

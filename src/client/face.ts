@@ -28,6 +28,10 @@ export interface PanelChat {
   readonly ownerSessionId?: string
   /** The prompt currently running, supplied from pool memory only. */
   readonly inFlight?: { readonly chatId: string; readonly message: string; readonly startedAt: number }
+  /** Chat backend identity; absent with an older host. */
+  readonly backend?: string
+  /** Configured backend count; controls whether a badge is useful. */
+  readonly backendCount?: number
 }
 
 /** The panel's published view of the pool. */

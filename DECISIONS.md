@@ -319,7 +319,7 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 后果:新增 `dsh-user-questions` peer/dev 依赖与按调用临时绑定的权限决策器；ask 用户需要宿主已组合该服务和其界面回答者。测试覆盖 one-shot 与持久工具的允许、持久连接的拒绝与无回答者 fail-closed、既有 allow/reject 自动策略以及取消期间清理；所有路径只回传 ACP 原始 optionId，不把选项文本当授权事实。
 
-## D24 多后端命名空间(2026-11-17,待确认)
+## D24 多后端命名空间(2026-11-17,已实施)
 
 ### 动机
 
@@ -327,10 +327,9 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 现状只有一个全局后端。切换 `command` / `args` 会让旧 chat 的远端会话号失去正确路由，形成孤儿记录；也无法让多个后端同时服务不同 chat。
 
-前置事实：主会话另行执行并附录 Antigravity 的多轮对话与杀进程后 `session/load` 重连实测报告。D24 设计以已有握手能力为前提，完整多轮/重连结论在报告补录前不宣称完成。
+前置事实已完成(2026-11-17，主会话协议直连探针):环境为本机 macOS 的 Antigravity ACP Server `agy` 1.5.9。`initialize` 返回 `loadSession: true`、`sessionCapabilities {resume, close, load, list, additionalDirectories}`、`promptCapabilities {image, embeddedContext}` 与 4 项 authMethods；两轮对话正常，回答分别为 `NOTED`、`5`，每轮约 2–3 秒。SIGKILL 后重生并以同一 sessionId `session/load`，暗号 `ZX-9427` 完整找回，历史保留。兼容性发现：`session/prompt` 只接受 `[{type:'text', text}]` 数组，字符串返回 `-32602`；`session/update` 通知嵌套在 `params.update`，`sessionUpdate` 位于 `params.update.sessionUpdate`，不同于 kiro 的平铺形态 `params.sessionUpdate`。另观察到自动会话标题 `session_info_update`、`usage_update(used/size, 1 MiB 窗口)`、`session/new.models.availableModels` 的 gemini-3.8-flash 系列和 `user_message_chunk` 回显。
 
-### 裁定
-
+修订(2026-11-17,实施裁定):注册表 `backend` 是字段加法，文件版本保持 1；读时缺省为 `default`，不迁移、不写版本 2，以免旧插件把新文件当损坏件搬走。`PooledChatInfo` 投影必有 `backend` 与有效后端数 `backendCount`；wire DTO 可选，徽标仅 `backendCount > 1` 显示，不新增 Remote。命名表禁止保留名 `default`，名称匹配 `[A-Za-z0-9_-]{1,32}`；每后端另有 `env`，叠加全局 env，凭据不跨后端泄漏。one-shot 固定默认后端，多厂商 one-shot 另行决策；后端重命名或删除使既有 chat send 明确失败，不迁移、不猜测回落。连接层仅对池路径归一化平铺/嵌套 update，run.ts 依 D11 不动。
 - **配置形态，加法且向后兼容**：保留现有顶层 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，其语义变为**默认后端**。新增可选 `backends` 命名表；每个命名后端包含同一组 `command` / `args` / `agentEngine` / `permission` / `model` / `effort`，以及可选 `description`，后者可覆盖内置文案。`backends` 中出现一项即启用该后端，删除即关闭；不再增加独立 `enabled` 旗子。每个后端自行消化旗标策略与权限语义，不污染其他后端。
 - **工具面自适应**：注册时从已解析配置计算有效后端。总数为 1 时，`acp_chat_start` **不含** `backend` 参数，工具定义与今日单后端版本逐字节一致。总数至少为 2 时，`acp_chat_start` 增加可选 string 参数 `backend`。其说明逐后端列出一行中性描述：用户 `description` 优先，缺省为“后端名 + command 基名”；禁止“实测充分”“推荐”等评价性或优先级措辞。其余四个工具不改变参数面。
 - **chat 级绑定**：`acp_chat_start` 创建 chat 时选定后端。`chatId → backend` 终身绑定；`send` / `steer` / `close` / `list` 均按注册表保存的后端路由，不会因之后编辑默认后端而改写既有 chat。

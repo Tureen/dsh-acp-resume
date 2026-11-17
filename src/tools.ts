@@ -271,14 +271,18 @@ export function chatSendTool(
  * @param pool - the pool the tools drive.
  * @param toolPrefix - name prefix shared by the five tools.
  */
-export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolDefinitionOf[] {
+export interface BackendChoice { readonly name: string; readonly description: string }
+
+export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backends: readonly BackendChoice[] = []): ToolDefinitionOf[] {
   const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
 
+  const multipleBackends = backends.length > 1
+  const backendDescription = multipleBackends ? ` Available backends:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}` : ''
   const start = defineTool({
     name: `${toolPrefix}start`,
     description: 'Start a persistent chat session with the external ACP agent (for example kiro-cli). '
       + `Returns a chatId you pass to ${toolPrefix}send. The conversation context usually survives between messages, `
-      + `process release, and host restarts; if the agent lost the session, the next ${toolPrefix}send says so.`,
+      + `process release, and host restarts; if the agent lost the session, the next ${toolPrefix}send says so.${backendDescription}`,
     parameters: {
       cwd: {
         type: 'string',
@@ -289,6 +293,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolD
         type: 'string',
         description: `Optional short name for the chat (at most ${LABEL_MAX} characters), shown by ${toolPrefix}list so you can tell chats apart later.`,
       },
+      ...(multipleBackends ? { backend: { type: 'string', description: `Optional backend name; omit for default. Available backends: ${backends.map(backend => backend.name).join(', ')}` } } : {}),
     },
     output: {
       schema: {
@@ -310,8 +315,12 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string): ToolD
       // "this session" vs "other sessions". Agent.id IS the session id (same
       // source as the D17 job owner). It gates nothing — tools stay global.
       const ownerSessionId = exec.agent?.id
+      if (multipleBackends && args.backend !== undefined && !backends.some(backend => backend.name === args.backend)) {
+        throw new Error(`unknown backend ${args.backend}; available backends: ${backends.map(backend => backend.name).join(', ')}`)
+      }
       const chat = await pool.start(args.cwd, exec.signal, {
         ...(label === '' ? {} : { label }),
+        ...(args.backend === undefined ? {} : { backend: args.backend }),
         ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
       })
       return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }

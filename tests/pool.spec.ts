@@ -745,7 +745,7 @@ describe('AcpSessionPool', () => {
     }))
     const warnings: string[] = []
     const second = makePool({ env, registryPath, onWarn: (m) => { warnings.push(m) } })
-    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), active: false, lastActive: 1 }])
+    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), backend: 'default', backendCount: 1, active: false, lastActive: 1 }])
     const after = await second.pool.send('chat-legacy', '  旧条目的第一轮  ')
     expect(after.stopReason).toBe('completed')
     expect(after.freshSession).toBe(false)
@@ -765,7 +765,7 @@ describe('AcpSessionPool', () => {
     })
     writeFileSync(registryPath, content)
     const { pool, spawns } = makePool({ registryPath })
-    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), active: false, lastActive: 1 }])
+    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), backend: 'default', backendCount: 1, active: false, lastActive: 1 }])
     await expect(pool.send('chat-other', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(readFileSync(registryPath, 'utf8')).toBe(content)
@@ -838,7 +838,7 @@ describe('AcpSessionPool', () => {
   })
 
   it('sets a corrupt registry aside, warns, and starts empty', () => {
-    for (const content of ['{not json', JSON.stringify({ version: 2, sessions: [] }), JSON.stringify({ version: 1 })]) {
+    for (const content of ['{not json', JSON.stringify({ version: 3, sessions: [] }), JSON.stringify({ version: 1 })]) {
       const dir = tempDir('acp-resume-corrupt-')
       const registryPath = join(dir, 'registry.json')
       writeFileSync(registryPath, content)
