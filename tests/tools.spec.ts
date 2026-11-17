@@ -177,6 +177,51 @@ describe('chat tools', () => {
     }
   })
 
+  it('lists only chats from the calling session by default', async () => {
+    const { registry, pool } = mountTools({})
+    const mine = await pool.start(process.cwd(), undefined, { ownerSessionId: 'session-mine-1234' })
+    const other = await pool.start(process.cwd(), undefined, { ownerSessionId: 'session-other-5678' })
+    const legacy = await pool.start(process.cwd())
+    const list = registry.tools.get('acp_chat_list') as Definition
+    const output = await list.execute({}, { signal: new AbortController().signal, agent: { id: 'session-mine-1234' } } as unknown as ToolRunContext) as { text: string }
+    expect(output.text).toContain(mine.chatId)
+    expect(output.text).not.toContain(other.chatId)
+    expect(output.text).not.toContain(legacy.chatId)
+    expect(output.text).toContain('owner session-')
+  })
+
+  it('has no scope parameter and describes current-session discovery', () => {
+    const { registry } = mountTools({})
+    const list = registry.tools.get('acp_chat_list') as Definition
+    expect(list.parameters).not.toHaveProperty('scope')
+    expect(list.description).toContain('created by the current DSH session')
+  })
+
+  it('allows another session to send to a known chat id', async () => {
+    const { registry, pool } = mountTools({ MOCK_TEXT: 'cross-session answer' })
+    const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'session-owner-1234' })
+    const send = registry.tools.get('acp_chat_send') as Definition
+    await expect(send.execute({ chatId: chat.chatId, message: 'continue' }, { signal: new AbortController().signal, agent: { id: 'session-other-5678' } } as unknown as ToolRunContext))
+      .resolves.toEqual({ text: 'cross-session answer' })
+  })
+
+  it('falls back to every chat when list has no calling session', async () => {
+    const { call, pool } = mountTools({})
+    const owned = await pool.start(process.cwd(), undefined, { ownerSessionId: 'session-other-5678' })
+    const legacy = await pool.start(process.cwd())
+    const output = (await call('list', {})).text as string
+    expect(output).toContain(owned.chatId)
+    expect(output).toContain(legacy.chatId)
+  })
+
+  it('prints the owner id prefix in a listed chat', async () => {
+    const { registry, pool } = mountTools({})
+    const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner-123456789' })
+    const list = registry.tools.get('acp_chat_list') as Definition
+    const output = await list.execute({}, exec()) as { text: string }
+    expect(output.text).toContain(`${chat.chatId} | owner owner-12 |`)
+  })
+
   it('rejects an already-aborted call before touching the pool', async () => {
     const { call } = mountTools({})
     await expect(call('start', { cwd: process.cwd() }, AbortSignal.abort())).rejects.toThrow()

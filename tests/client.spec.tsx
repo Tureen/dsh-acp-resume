@@ -52,6 +52,7 @@ const t = translator(zh)
 const NOW = 1_800_000_000_000
 const UUID_A = 'a1b2c3d4-0000-4000-8000-000000000001'
 const UUID_B = 'e5f6a7b8-0000-4000-8000-000000000002'
+const TEST_SESSION = 'test-session-0001'
 
 function chat(overrides: Partial<PanelChat> = {}): PanelChat {
   return {
@@ -60,6 +61,7 @@ function chat(overrides: Partial<PanelChat> = {}): PanelChat {
     cwd: '/tmp',
     active: true,
     lastActive: NOW - 3 * 60_000,
+    ownerSessionId: TEST_SESSION,
     ...overrides,
   }
 }
@@ -80,7 +82,7 @@ function props(snapshot: ChatsSnapshot, overrides: Partial<ChatsPanelProps> = {}
   return {
     useChats: staticHook(snapshot),
     useTabInfo: tabInfo().hook,
-    currentSessionId: undefined,
+    currentSessionId: TEST_SESSION,
     refresh: vi.fn(),
     close: vi.fn(async () => {}),
     purge: vi.fn(async () => {}),
@@ -237,69 +239,44 @@ describe('ChatsPanel attribution filter (D20)', () => {
   const rows = (): PanelChat[] => [
     chat({ chatId: 'chat-mine', ownerSessionId: MY_SESSION, lastActive: NOW - 1_000 }),
     chat({ chatId: 'chat-other', ownerSessionId: OTHER_SESSION, lastActive: NOW - 2_000 }),
-    chat({ chatId: 'chat-legacy', lastActive: NOW - 3_000 }),
+    chat({ chatId: 'chat-legacy', ownerSessionId: undefined, lastActive: NOW - 3_000 }),
   ]
   const ids = (container: HTMLElement): (string | null)[] => [...container.querySelectorAll('li')].map(li => li.getAttribute('data-chat-id'))
 
-  it('marks each card with its origin: this session (unmarked), other session, unknown', () => {
+  it('strictly shows only chats owned by the visible session', () => {
     const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
-    const meta = (id: string): HTMLElement => container.querySelector(`[data-chat-id="${id}"] [data-origin]`) as HTMLElement
-    expect(meta('chat-mine').getAttribute('data-origin')).toBe('mine')
-    expect(meta('chat-mine').textContent).not.toContain('其他会话')
-    expect(meta('chat-mine').textContent).not.toContain('来源未知')
-    expect(meta('chat-mine').textContent).not.toContain('本会话')
-    expect(meta('chat-other').getAttribute('data-origin')).toBe('other')
-    expect(meta('chat-other').textContent).toContain('其他会话')
-    expect(meta('chat-legacy').getAttribute('data-origin')).toBe('unknown')
-    expect(meta('chat-legacy').textContent).toContain('来源未知')
-  })
-
-  it('defaults to "all"; toggling to "this session" shows only this session\'s chats and back', () => {
-    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
-    // Default view: all three, count says 共 3 条.
-    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
-    expect((container.querySelector('[data-count="all"]') as HTMLElement).textContent).toBe('共 3 条')
-    const toggle = screen.getByRole('button', { name: '过滤范围' })
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(toggle.textContent).toBe('全部')
-
-    fireEvent.click(toggle)
     expect(ids(container)).toEqual(['chat-mine'])
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    expect(toggle.textContent).toBe('本会话')
-    expect((container.querySelector('[data-count="mine"]') as HTMLElement).textContent).toBe('本会话 1 条 / 共 3 条')
-
-    fireEvent.click(toggle)
-    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
+    expect((container.querySelector('[data-chat-id="chat-mine"] [data-owner]') as HTMLElement).textContent).toContain('归属 session-')
+    expect(container.querySelector('[data-chat-id="chat-other"]')).toBeNull()
+    expect(container.querySelector('[data-chat-id="chat-legacy"]')).toBeNull()
   })
 
-  it('the "this session" filter shows a notice, not the empty state, when this session opened nothing', () => {
-    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: 'session-fresh-9999' })} />)
-    fireEvent.click(screen.getByRole('button', { name: '过滤范围' }))
-    expect(ids(container)).toEqual([])
-    expect(container.querySelector('[data-empty="mine"]')?.textContent).toBe('本会话 0 条 / 共 3 条')
-    // Not the "no persistent chats" empty state: the chats exist, just not this session's.
-    expect(screen.queryByText('暂无持久会话')).toBeNull()
-  })
-
-  it('offers no filter and no origin marks when no session is on screen', () => {
-    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: undefined })} />)
+  it('has no all-chats scope toggle', () => {
+    render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
     expect(screen.queryByRole('button', { name: '过滤范围' })).toBeNull()
-    // Owner is known but there is no viewer to compare against, so owned chats read as "other".
-    expect((container.querySelector('[data-chat-id="chat-mine"] [data-origin]') as HTMLElement).getAttribute('data-origin')).toBe('other')
-    expect((container.querySelector('[data-chat-id="chat-legacy"] [data-origin]') as HTMLElement).getAttribute('data-origin')).toBe('unknown')
-    expect(ids(container)).toEqual(['chat-mine', 'chat-other', 'chat-legacy'])
+    expect(screen.queryByText('全部')).toBeNull()
   })
 
-  it('has the filter and origin copy in both locales', () => {
-    for (const key of ['filterAll', 'filterMine', 'filterLabel', 'countAll', 'countMine', 'originOther', 'originUnknown'] as const) {
+  it('shows a session-empty notice when only foreign or legacy rows exist', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: 'session-fresh-9999' })} />)
+    expect(ids(container)).toEqual([])
+    expect(container.querySelector('[data-empty="session"]')?.textContent).toContain('本会话 0 条 / 共 3 条')
+    expect(container.querySelector('[data-empty="session"]')?.textContent).toContain('当前会话尚未创建持久会话。')
+  })
+
+  it('shows no profile-global rows when the sidebar has no session identity', () => {
+    const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: undefined })} />)
+    expect(ids(container)).toEqual([])
+    expect(container.querySelector('[data-empty="session"]')).toBeTruthy()
+  })
+
+  it('has the owner and session-empty copy in both locales', () => {
+    for (const key of ['countMine', 'owner', 'emptySessionHint'] as const) {
       expect(zh[key]).toBeTruthy()
       expect(en[key]).toBeTruthy()
     }
     const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION, t: translator(en) })} />)
-    expect((container.querySelector('[data-chat-id="chat-other"] [data-origin]') as HTMLElement).textContent).toContain('other session')
-    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
-    expect((container.querySelector('[data-count="mine"]') as HTMLElement).textContent).toBe('This session 1 of 3')
+    expect((container.querySelector('[data-chat-id="chat-mine"] [data-owner]') as HTMLElement).textContent).toContain('Owner session-')
   })
 })
 
@@ -551,7 +528,7 @@ describe('apply (client wiring)', () => {
     expect(services.bodies[1]?.component).toBe(ChatDetail)
     expect(services.bodies[2]?.component).toBe(ChatDetailTitle)
 
-    renderBody(body.options.inject() as ChatsPanelInjected)
+    renderBody((body.options.inject as (sessionId: string) => ChatsPanelInjected)(TEST_SESSION))
     expect(await screen.findByText('记住暗号P')).toBeTruthy()
     expect(rpc.calls[0]).toEqual(['/api', 'acpResume/list', { args: {} }])
     rows = []

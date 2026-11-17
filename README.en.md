@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.21 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.22 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -36,7 +36,7 @@ The official package and the existing kiro path are left completely untouched. T
 |---|---|
 | `acp_chat_start` | Create a persistent session and return its handle, chatId |
 | `acp_chat_send` | Send a message to a session; after the process dies, reconnects automatically and restores the context. When the host has a jobs service, it returns a background job id immediately and streams the answer into that job. Do not hard-`wait` on it (a wait on a running one is rejected); a notification in the conversation wakes the model when it finishes, then read it with `job_output` without `wait`, and stop it with `job_kill` (D22). Without a jobs service it waits and returns the final answer (D17) |
-| `acp_chat_list` | List active and persisted sessions |
+| `acp_chat_list` | List active and persisted chats created by the current DSH session. Legacy and other-session chats are not discoverable here, but remain operable when their chatId is known |
 | `acp_chat_close` | Release the session process (the record stays and can be reconnected; `purge` also deletes the record) |
 | `acp_chat_steer` | Add an instruction to a turn **in flight**: the queued message takes effect at the next tool/message boundary without interrupting the current step; to stop immediately use `job_kill` / `acp_chat_close`. Errors when there is no turn in flight (use send instead); when the agent does not implement the private extension `_session/steer`, it reports "the current agent does not support steering" (D19) |
 | **Persistent chats panel** (right sidebar, D15/D18) | A per-session view of status / turn count / summary, the sent message and elapsed time of a running turn, with release and delete; click a card to open that session's detail tab (metadata + running turn + each settled turn's question and answer, outcome, reconnect events). See [PANEL-DESIGN.md](PANEL-DESIGN.md) |

@@ -23,6 +23,7 @@
 | 8 | 禁止 acp-chat 阻塞等待(D22) | `src/job-wait-gate.ts`(`tools/pre-execute` 拒绝运行中 acp-chat 的 `job_output wait:true`)+ `allowChatJobWait` 开关 + `tests/job-wait-gate.spec.ts` | 新套件 13 例全绿 + 全量回归 308 绿 | ☑ ae52f90 |
 | 9 | `permission: ask` + 启动指引(D23) | `permission: ask` 将 ACP 权限请求转给宿主用户确认，ENOENT 返回安全行动指引，四份用户文档增加新手配方 | one-shot 与持久工具 ask 放行、拒绝、无服务 fail-closed、取消清理，以及两入口 ENOENT 指引回归；全量 321 绿 | ☑ |
 | 10 | D24 多后端命名空间 | 配置/工具面/池/注册表/面板 + 测试 | 343 绿；0.1.20 单后端工具定义夹具逐字节一致；双后端 argv 路由、非默认重连与并发单飞均已验证 | ☑ |
+| 11 | D20 可见性语义 | 工具和侧栏按 owner 严格发现；操作面保持 chatId 直达 | 工具严格过滤/headless 回退/跨会话操作，侧栏 seat 会话过滤与 owner 标识均已验证 | ☑ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

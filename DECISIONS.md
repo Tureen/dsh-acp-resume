@@ -242,23 +242,19 @@ D15 修订(2026-11-17,D24 设计):多后端实施时，面板每行增加 chat �
 
 D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 静默退 30 秒),并要求数据源快照引用稳定;详见 D21。数据/工具语义不变。
 
-## D20 会话归属:元数据 + 视图过滤,不是访问控制(2026-11-05)
+## D20 会话归属:默认发现面严格过滤,操作面不设访问控制(2026-11-05;2026-11-17 修订)
 
-问题:面板 / `acp_chat_list` 展示的是 profile 级全局注册表,同一台机器上所有 DSH 会话看到同一份持久会话。用户想知道"哪条是我这个会话开的",但不希望动跨会话续聊的能力(任何会话都能对任何 chat 续聊,是本包的立身特性,D3/D5)。
+问题:持久 chat 注册表是 profile 级全局数据。用户要让模型工具和侧栏默认只发现当前 DSH 会话创建的 chat，同时保留跨会话拿到 chatId 后继续操作的能力。
 
-用户裁定(轻量方案):注册表记录创建会话;面板加过滤;模型工具不设访问限制。
+用户裁定(2026-11-17):发现面按 owner 会话严格过滤，操作面不做所有权校验。
 
 决策:
-- **归属是元数据,不是权限边界。** 新增可选 `ownerSessionId` 记录"哪个 DSH 会话开的",仅供显示与视图过滤。池的每个方法、五个模型工具、host 的每个 Remote 方法都照旧服务每一条 chat——不按 owner 拦截任何读写。跨会话续聊不变。
-- **采集点(tools.ts)**:`acp_chat_start` 的 execute 里取 `exec.agent?.id` 作为 `ownerSessionId` 传给 `pool.start`。`Agent.id` 即 `SessionId`(`@deepseek-ai/dsh-agent` 契约),与 D17 后台任务的 `owner: exec.agent.id` 同源。无 agent 的上下文(官方 spec setup、无会话的直接调用)不带该字段。只有 `start` 采集;`send`/`list`/`close`/`steer` 不涉及。
-- **注册表(pool.ts)**:`RegistryEntry` 与 `PooledChatInfo` 增可选 `ownerSessionId`;`PoolStartOptions` 增该字段(trim,空串视为无)。注册表 **version 不动**;`settledEntry` 用 `...entry` 透传,续聊/重连/结算都保留它。`listChats` 照 `label` 的姿势透出——有才出键,无则省。旧注册表无此字段 = **「来源未知」**,读入不告警、不迁移。
-- **host 半(panel.ts)**:零改动。字段随 `PooledChatInfo` 流过 `list` 与 `turns.chat`。**不做服务端过滤**——过滤是纯视图关注,client 自己有会话身份,服务端按 owner 过滤反而会把"看得到但不是我开的"这一信息藏掉,与"全局可见、可溯源"的裁定相悖。
-- **client 半(ChatsPanel)**:会话型 seat 的 `inject(sessionId)` 提供当前会话 id(不引官方 client 类型,沿用结构化类型纪律)。头部加过滤切换「全部 / 本会话」,**默认「全部」**(理由见下)。无会话在屏时不提供该切换。每张卡片元信息行标来源:本会话=不标(常态、无需噪音)、其他会话=标「其他会话」、旧记录=标「来源未知」。计数随视角:全部态「共 N 条」,本会话态「本会话 M 条 / 共 N 条」;本会话态为空时显示该计数提示而非"暂无持久会话"空态(chat 存在,只是不属本会话)。文案中英齐全。
-- **默认过滤视角取「全部」**:新会话刚打开面板时,「本会话」视角必然为空(它还没开过任何 chat),默认到它会让用户以为"持久会话凭空消失了"。默认「全部」保证面板始终展示真实全貌,用户主动点「本会话」才收窄。这也符合"可见优先、过滤是叠加"的轻量定位。
+- **归属采集与兼容**：`acp_chat_start` 从 `exec.agent?.id` 取得 `ownerSessionId`，传给 `pool.start`。注册表版本保持不变；旧记录缺失 owner 不迁移、不回填。
+- **工具发现面**：`acp_chat_list` 固定只返回 `ownerSessionId === exec.agent.id` 的记录。无 agent 的 headless 调用退化为全量，避免无会话身份时误报空列表。旧记录在正常会话列表中不可发现。
+- **面板发现面**：host `list()` 仍全量返回，浏览器半直接使用会话型 seat 的 `inject(sessionId)` 提供的当前会话 id 过滤卡片。无 sessionId 时不显示 profile 全局记录。面板不提供「全部」逃逸或额外 Remote；每张可见卡片显示 owner 前 8 位。
+- **操作面不是权限边界**：`send` / `steer` / `close` / `purge` 不按 owner 检查。任何会话只要知道 chatId 就能操作它；池、工具和 host Remote 均不增加访问限制。
 
-旧记录语义:`ownerSessionId` 缺失恒为「来源未知」,永不猜测、永不回填。无会话在屏(`currentSessionId` 为 undefined)时,有主的 chat 也无从比对,一律显示为「其他会话」(没有"我"可对照),这是刻意的——避免把别的会话开的 chat 误标成本会话。
-
-后果:注册表多一个可选字段;`PooledChatInfo`/`PanelChat` 各加一字段;ChatsPanel 加过滤态与来源标注;测试 271 → 280(pool +5、client +5)。host 半与注册表 version 不变。已知局限:`ownerSessionId` 只在 `start` 落一次,事后无法为旧 chat 补齐;真机 GUI 中 `inject(sessionId)` 是否在无会话时确为 undefined [未验证],以 jsdom 测试与官方 seat 契约为据,装机冒烟确认。
+后果:owner 只控制默认发现性，不限制访问。测试覆盖工具的严格过滤、headless 回退、owner 输出和跨会话 send，以及侧栏严格过滤与 seat 会话 id 注入。
 
 ## D21 面板轮询降本:快照引用稳定 + 自适应节奏 + host 读缓存(2026-11-05)
 

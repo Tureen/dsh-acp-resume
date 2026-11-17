@@ -67,9 +67,10 @@ function formatIdle(then: number, now: number): string {
 /** Longest label accepted by the start tool. */
 const LABEL_MAX = 80
 
-function describeChat(chat: { chatId: string; remoteSessionId: string; cwd: string; label?: string; active: boolean; lastActive: number }, now: number): string {
+function describeChat(chat: { chatId: string; remoteSessionId: string; cwd: string; label?: string; ownerSessionId?: string; active: boolean; lastActive: number }, now: number): string {
   const label = chat.label === undefined ? '' : ` | label ${JSON.stringify(chat.label)}`
-  return `${chat.chatId}${label} | remote ${chat.remoteSessionId} | ${chat.active ? 'live process' : 'released (reconnects on next send)'} | idle ${formatIdle(chat.lastActive, now)} (${new Date(chat.lastActive).toISOString()}) | cwd ${chat.cwd}`
+  const owner = chat.ownerSessionId === undefined ? '' : ` | owner ${chat.ownerSessionId.slice(0, 8)}`
+  return `${chat.chatId}${label}${owner} | remote ${chat.remoteSessionId} | ${chat.active ? 'live process' : 'released (reconnects on next send)'} | idle ${formatIdle(chat.lastActive, now)} (${new Date(chat.lastActive).toISOString()}) | cwd ${chat.cwd}`
 }
 
 /** First line of the diagnostic, capped; empty when there is none. */
@@ -340,7 +341,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
 
   const list = defineTool({
     name: `${toolPrefix}list`,
-    description: 'List the persistent ACP chats known to this harness: chatId, label (if any), remote session id, liveness, '
+    description: 'List persistent ACP chats created by the current DSH session: chatId, label (if any), owner, remote session id, liveness, '
       + `idle time, and working directory. Released chats reconnect on their next ${toolPrefix}send.`,
     parameters: {},
     output: {
@@ -356,7 +357,12 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       exec.signal.throwIfAborted()
-      const chats = pool.listChats()
+      const ownerSessionId = exec.agent?.id
+      // Headless calls have no DSH session identity, so filtering would make a
+      // misleading empty list. Normal model calls always use strict ownership.
+      const chats = ownerSessionId === undefined
+        ? pool.listChats()
+        : pool.listChats().filter(chat => chat.ownerSessionId === ownerSessionId)
       const now = Date.now()
       const text = chats.length === 0
         ? 'no persistent chats'

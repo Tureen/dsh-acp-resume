@@ -6,11 +6,10 @@
  * Active chats come first; released ones
  * sit under a "Released (N)" group header, collapsed by default, with the
  * open state kept in component state only. Both groups keep the snapshot's
- * newest-first order. A header filter (D20) switches between all chats
- * (default) and the ones this DSH session opened; each card's origin — this
- * session, another session, or unknown (chats started before attribution) —
- * shows in its meta row. The filter is a pure view concern: the list stays
- * profile-global, nothing is hidden by access. Pure props: data arrives
+ * newest-first order. The panel is strictly scoped to chats opened by the visible DSH session (D20);
+ * each card shows its recorded owner in its meta row. This is discovery only:
+ * knowing a chat id still permits operations from any session. The host list
+ * remains profile-global; this component only filters its local view. Pure props: data arrives
  * through the bound `useChats` hook, the current session id and commands
  * through props, copy through `t`.
  * @module dsh-acp-resume/client/ChatsPanel
@@ -27,18 +26,9 @@ export type ChatsPanelProps = Omit<ChatsPanelInjected, 'hooks'> & {
   readonly useChats: SelectorHook<ChatsSnapshot>
   /** The framework's tab-info hook: its `tab.actions.openResource` opens a detail tab. */
   readonly useTabInfo: TabInfoHook
-  /** The DSH session viewing the panel; `undefined` when none is on screen (the "this session" filter is then unavailable). */
+  /** The DSH session viewing the panel; without one no owned chats are discoverable. */
   readonly currentSessionId: string | undefined
   readonly t: PanelTranslate
-}
-
-/** Which chats the panel shows: every chat in the profile registry, or only the ones this session opened. */
-type ChatFilter = 'all' | 'mine'
-
-/** How a chat relates to the viewing session. */
-function originOf(chat: PanelChat, currentSessionId: string | undefined): 'mine' | 'other' | 'unknown' {
-  if (chat.ownerSessionId === undefined) return 'unknown'
-  return currentSessionId !== undefined && chat.ownerSessionId === currentSessionId ? 'mine' : 'other'
 }
 
 /** Tool the empty state points the user to. */
@@ -113,20 +103,18 @@ interface ChatCardProps {
   readonly chat: PanelChat
   readonly now: number
   readonly pending: boolean
-  readonly origin: 'mine' | 'other' | 'unknown'
   readonly onRelease: (chat: PanelChat) => void
   readonly onDelete: (chat: PanelChat) => void
   readonly onOpen: (chat: PanelChat) => void
   readonly t: PanelTranslate
 }
 
-/** The origin label shown in a card's meta row; "this session" chats carry none (the common, unremarkable case). */
-function originLabel(t: PanelTranslate, origin: 'mine' | 'other' | 'unknown'): string | undefined {
-  if (origin === 'mine') return undefined
-  return origin === 'other' ? t('originOther') : t('originUnknown')
+/** The recorded owner shown in a card's meta row; legacy rows have no owner. */
+function ownerLabel(t: PanelTranslate, chat: PanelChat): string {
+  return chat.ownerSessionId === undefined ? t('originUnknown') : t('owner', { id: chat.ownerSessionId.slice(0, 8) })
 }
 
-function ChatCard({ chat, now, pending, origin, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
+function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
   const short = shortChatId(chat.chatId)
   const turns = chat.turnCount === undefined ? t('noValue') : String(chat.turnCount)
   const status = [
@@ -153,9 +141,9 @@ function ChatCard({ chat, now, pending, origin, onRelease, onDelete, onOpen, t }
           onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
       </div>
       <p style={styles.line}>{chat.title === undefined ? t('noValue') : chat.title}</p>
-      <p style={styles.meta} data-origin={origin}>
+      <p style={styles.meta} data-owner={chat.ownerSessionId === undefined ? 'unknown' : chat.ownerSessionId.slice(0, 8)}>
         {status}
-        {originLabel(t, origin) === undefined ? null : <> · <span style={styles.origin}>{originLabel(t, origin)}</span></>}
+        <> · <span style={styles.origin}>{ownerLabel(t, chat)}</span></>
       </p>
       <p style={styles.meta}>{t('cwd', { cwd: chat.cwd })} · {t('remote', { id: chat.remoteSessionId.slice(0, 8) })}</p>
     </li>
@@ -174,8 +162,6 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
   const [confirming, setConfirming] = useState<PanelChat | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [releasedOpen, setReleasedOpen] = useState(false)
-  // Default to "all" so opening the panel in a fresh session never looks empty.
-  const [filter, setFilter] = useState<ChatFilter>('all')
 
   const run = (chatId: string, action: (chatId: string) => Promise<void>): void => {
     setPending(current => new Set(current).add(chatId))
@@ -190,18 +176,17 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
   }
 
   const now = snapshot.fetchedAt ?? 0
-  // "mine" needs a session on screen; without one the filter is not offered.
-  const canFilterMine = currentSessionId !== undefined
-  const effectiveFilter: ChatFilter = filter === 'mine' && canFilterMine ? 'mine' : 'all'
-  const visible = effectiveFilter === 'mine'
-    ? snapshot.chats.filter(c => originOf(c, currentSessionId) === 'mine')
-    : snapshot.chats
+  // The session-scoped seat gives the viewer identity. A missing identity has
+  // no discoverable owner set, so it deliberately shows no profile-global rows.
+  const visible = currentSessionId === undefined
+    ? []
+    : snapshot.chats.filter(chat => chat.ownerSessionId === currentSessionId)
   const activeChats = visible.filter(c => c.active)
   const releasedChats = visible.filter(c => !c.active)
   const cards = (chats: readonly PanelChat[]): ReactNode => (
     <ul style={styles.list}>
       {chats.map(chat => (
-        <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} origin={originOf(chat, currentSessionId)} t={t}
+        <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
           onOpen={(target) => { tab.actions.openResource(chatAddress(target.chatId)) }}
           onRelease={(target) => { run(target.chatId, close) }}
           onDelete={(target) => { setConfirming(target) }} />
@@ -214,12 +199,6 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
       <div style={styles.header}>
         <h2 style={styles.heading}>{t('title')}</h2>
         <div style={styles.controls}>
-          {canFilterMine ? (
-            <Button size="sm" variant="ghost" aria-label={t('filterLabel')} aria-pressed={effectiveFilter === 'mine'}
-              onClick={() => { setFilter(current => (current === 'mine' ? 'all' : 'mine')) }}>
-              {effectiveFilter === 'mine' ? t('filterMine') : t('filterAll')}
-            </Button>
-          ) : null}
           <Button size="sm" variant="ghost" onClick={() => { refresh() }}>{t('refresh')}</Button>
         </div>
       </div>
@@ -229,21 +208,16 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
       {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
       {snapshot.status === 'loading'
         ? <p style={styles.notice}>{t('loading')}</p>
-        : snapshot.chats.length === 0
+        : visible.length === 0
           ? (
-            <div style={styles.empty}>
-              <p style={styles.heading}>{t('emptyTitle')}</p>
-              <p style={styles.notice}>{t('emptyHint', { tool: START_TOOL })}</p>
+            <div style={styles.empty} data-empty="session">
+              <p style={styles.heading}>{snapshot.chats.length === 0 ? t('emptyTitle') : t('countMine', { count: 0, total: snapshot.chats.length })}</p>
+              <p style={styles.notice}>{snapshot.chats.length === 0 ? t('emptyHint', { tool: START_TOOL }) : t('emptySessionHint')}</p>
             </div>
           )
           : (
             <>
-              {effectiveFilter === 'mine'
-                ? <p style={styles.countNote} data-count="mine">{t('countMine', { count: visible.length, total: snapshot.chats.length })}</p>
-                : <p style={styles.countNote} data-count="all">{t('countAll', { count: snapshot.chats.length })}</p>}
-              {effectiveFilter === 'mine' && visible.length === 0
-                ? <p style={styles.notice} data-empty="mine">{t('countMine', { count: 0, total: snapshot.chats.length })}</p>
-                : null}
+              <p style={styles.countNote} data-count="mine">{t('countMine', { count: visible.length, total: snapshot.chats.length })}</p>
               {activeChats.length === 0 ? null : cards(activeChats)}
               {releasedChats.length === 0 ? null : (
                 <>

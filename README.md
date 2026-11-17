@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:待发布 0.1.21。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
+状态:待发布 0.1.22。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间的行为目前由 mock 服务器的测试覆盖;只在 kiro-cli 上有过实测,其他 ACP agent 未实测。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -34,7 +34,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 |---|---|
 | `acp_chat_start` | 建立持久会话,返回会话句柄 chatId |
 | `acp_chat_send` | 向指定会话发消息;进程死后自动重连恢复上下文。宿主装有 jobs 服务时立即返回后台任务 id,回答流式写入该任务;不要对它 `wait` 硬等(运行中的会被拒绝),完成后会话内通知唤醒,再用不带 `wait` 的 `job_output` 读,`job_kill` 停(D22);无 jobs 服务时等待并返回最终回答(D17) |
-| `acp_chat_list` | 列出活跃与持久化会话 |
+| `acp_chat_list` | 仅列出当前 DSH 会话创建的活跃与持久化会话；旧记录和其他会话创建的 chat 不会被发现，但知道 chatId 仍可操作 |
 | `acp_chat_close` | 释放会话进程(记录保留,可再连;`purge` 同时删记录) |
 | `acp_chat_steer` | 给**在途轮**插话:排队的消息在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。没有在途轮时报错(改用 send);agent 不实现私有扩展 `_session/steer` 时报「当前 agent 不支持插话」(D19) |
 | **持久会话面板**(右侧栏,D15/D18) | 按会话聚合的视图:状态/轮数/摘要,进行中轮的已发送消息与持续时长,释放与删除;点卡片打开该会话的详情页签(元信息 + 进行中轮 + 每轮问答、结局、重连事件)——见 [PANEL-DESIGN.md](PANEL-DESIGN.md) |
