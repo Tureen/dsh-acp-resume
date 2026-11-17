@@ -70,12 +70,22 @@ jobs:
 
       - run: pnpm --dir "$RUNNER_TEMP/deepseek-harness" install --frozen-lockfile --filter @deepseek-ai/dsh-plugin-market-generator...
 
-      - run: >-
-          pnpm --dir "$RUNNER_TEMP/deepseek-harness" --filter @deepseek-ai/dsh-plugin-market-generator start
-          --input "$GITHUB_WORKSPACE/market/plugins.txt"
-          --output "$GITHUB_WORKSPACE/docs/index.json"
-          --title "Tureen's DSH Plugins"
-          --description "Community plugin market for DeepSeek Harness"
+      # 生成器读 npm 元数据与最新版 tarball;新版本的 CDN 边缘可能瞬时 404,失败时 60s 后重试一次。
+      - name: 再生市场索引
+        run: |
+          set -e
+          gen() {
+            pnpm --dir "$RUNNER_TEMP/deepseek-harness" --filter @deepseek-ai/dsh-plugin-market-generator start \
+              --input "$GITHUB_WORKSPACE/market/plugins.txt" \
+              --output "$GITHUB_WORKSPACE/docs/index.json" \
+              --title "Tureen's DSH Plugins" \
+              --description "Community plugin market for DeepSeek Harness"
+          }
+          if ! gen; then
+            echo "首次生成失败,60 秒后重试一次"
+            sleep 60
+            gen
+          fi
 
       - name: 提交市场索引
         run: |
