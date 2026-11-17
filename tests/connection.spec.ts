@@ -389,6 +389,16 @@ describe('openAcpConnection / AcpConnection', () => {
     expect(second.diagnostic).toBeUndefined()
   })
 
+  it('accepts a flat session/update notification from an ACP agent', async () => {
+    const conn = await open(makeSpec({ MOCK_TEXT: 'flat answer', MOCK_FLAT_SESSION_UPDATE: '1' }).spec)
+    expect(text((await conn.prompt(ask('p'), live())).output)).toBe('flat answer')
+  })
+
+  it('keeps a split session/update line intact', async () => {
+    const conn = await open(makeSpec({ MOCK_TEXT: 'split answer', MOCK_SPLIT_UPDATE_WRITES: '1' }).spec)
+    expect(text((await conn.prompt(ask('p'), live())).output)).toBe('split answer')
+  })
+
   it('consumes a thought update without adding it to the output', async () => {
     const conn = await open(makeSpec({ MOCK_THOUGHT: '1', MOCK_TEXT: 'answer only' }).spec)
     const turn = await conn.prompt(ask('p'), live())

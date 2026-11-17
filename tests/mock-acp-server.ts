@@ -325,13 +325,16 @@ function makeAgent() {
       const answer = ECHO_ARGV ? JSON.stringify(process.argv.slice(2)) : REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
       // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
       // the observable process cwd + announced session cwd).
-      await conn.notify(methods.client.session.update, {
-        sessionId: params.sessionId,
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : answer },
-        },
-      })
+      const content = { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : answer }
+      const update = { sessionUpdate: 'agent_message_chunk', content: UPDATE_CONTENT_ARRAY ? [content] : content }
+      const payload = FLAT_SESSION_UPDATE ? { sessionId: params.sessionId, ...update } : { sessionId: params.sessionId, update }
+      if (SPLIT_UPDATE_WRITES) {
+        const raw = JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: payload }) + '\n'
+        process.stdout.write(raw.slice(0, Math.floor(raw.length / 2)))
+        process.stdout.write(raw.slice(Math.floor(raw.length / 2)))
+      } else {
+        await (conn as unknown as { notify(method: string, params: unknown): Promise<void> }).notify('session/update', payload)
+      }
       if (CRASH_AFTER_CHUNK) {
         await new Promise<void>((resolve) => { setImmediate(resolve) })
         process.exit(17)
