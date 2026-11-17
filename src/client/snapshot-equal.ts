@@ -11,7 +11,7 @@
  * @module dsh-acp-resume/client/snapshot-equal
  */
 
-import type { ChatsSnapshot, DetailSnapshot, EventItem, PanelChat, TurnItem } from './face.ts'
+import type { ChatsSnapshot, DetailSnapshot, EventItem, PanelChat, RunningItem, TurnItem } from './face.ts'
 
 /** Two chat rows carry the same facts (the fields the panel renders). */
 export function chatEqual(a: PanelChat, b: PanelChat): boolean {
@@ -24,6 +24,9 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.active === b.active
     && a.lastActive === b.lastActive
     && a.ownerSessionId === b.ownerSessionId
+    && a.inFlight?.chatId === b.inFlight?.chatId
+    && a.inFlight?.message === b.inFlight?.message
+    && a.inFlight?.startedAt === b.inFlight?.startedAt
 }
 
 /** Two chat lists hold the same rows in the same order. */
@@ -32,7 +35,7 @@ export function chatsEqual(a: readonly PanelChat[], b: readonly PanelChat[]): bo
 }
 
 /** Two history entries carry the same facts. Previews are strings, so `===` suffices. */
-function entryEqual(a: TurnItem | EventItem, b: TurnItem | EventItem): boolean {
+function entryEqual(a: TurnItem | EventItem | RunningItem, b: TurnItem | EventItem | RunningItem): boolean {
   if (a.kind !== b.kind) return false
   if (a.kind === 'turn' && b.kind === 'turn') {
     return a.seq === b.seq && a.startedAt === b.startedAt && a.at === b.at
@@ -43,11 +46,14 @@ function entryEqual(a: TurnItem | EventItem, b: TurnItem | EventItem): boolean {
   if (a.kind === 'event' && b.kind === 'event') {
     return a.seq === b.seq && a.event === b.event && a.at === b.at && a.message === b.message && a.error === b.error
   }
+  if (a.kind === 'running' && b.kind === 'running') {
+    return a.message === b.message && a.startedAt === b.startedAt
+  }
   return false
 }
 
-function entriesEqual(a: readonly (TurnItem | EventItem)[], b: readonly (TurnItem | EventItem)[]): boolean {
-  return a.length === b.length && a.every((entry, i) => entryEqual(entry, b[i] as TurnItem | EventItem))
+function entriesEqual(a: readonly (TurnItem | EventItem | RunningItem)[], b: readonly (TurnItem | EventItem | RunningItem)[]): boolean {
+  return a.length === b.length && a.every((entry, i) => entryEqual(entry, b[i] as TurnItem | EventItem | RunningItem))
 }
 
 /**

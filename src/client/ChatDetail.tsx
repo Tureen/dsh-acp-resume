@@ -24,8 +24,8 @@
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { parseChatAddress } from './chat-address.ts'
-import { relativeTime, shortChatId } from './ChatsPanel.tsx'
-import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, TabInfoHook, TurnItem } from './face.ts'
+import { relativeTime, shortChatId, elapsedTime } from './ChatsPanel.tsx'
+import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, RunningItem, TabInfoHook, TurnItem } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
 
 /** The detail body's props: the injected face plus the framework's tab-info hook and the locale seat. */
@@ -216,6 +216,29 @@ function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNo
   )
 }
 
+function RunningCard({ item, now, t }: { readonly item: RunningItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+  const [open, setOpen] = useState(false)
+  const preview = firstLine(item.message)
+  const expandable = preview.clipped
+  return (
+    <li style={styles.turn} data-running>
+      <div style={styles.turnTags}>
+        <Tag tone="info">{t('running')}</Tag>
+        <span style={styles.turnTime}>{elapsedTime(t, item.startedAt, now)}</span>
+      </div>
+      <div style={styles.qa}>
+        <div style={styles.qaBlock}>
+          <span style={styles.qaLabel}>{t('runningMessage')}</span>
+          {open ? <pre style={styles.full} data-running-full>{item.message}</pre> : <p style={styles.qaPreview}>{preview.text}</p>}
+        </div>
+        {expandable ? <button type="button" style={styles.expandButton} aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
+          {t(open ? 'runningCollapse' : 'runningExpand')}
+        </button> : null}
+      </div>
+    </li>
+  )
+}
+
 function EventCard({ item, now, t }: { readonly item: EventItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const text = item.event === 'session-lost'
     ? t('eventSessionLost')
@@ -290,7 +313,8 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
 
   const chat = snapshot.chat
   const now = snapshot.fetchedAt ?? 0
-  const newestFirst = [...snapshot.entries].reverse()
+  const running = snapshot.entries.find((item): item is RunningItem => item.kind === 'running')
+  const newestFirst = snapshot.entries.filter((item): item is TurnItem | EventItem => item.kind !== 'running').reverse()
   const turns = chat?.turnCount === undefined ? t('noValue') : String(chat.turnCount)
   const sep = <span style={styles.metaSep} aria-hidden="true">·</span>
   return (
@@ -331,17 +355,18 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
         <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
         {snapshot.entries.length === 0 ? null : <span style={styles.sectionCount}>{t('turns', { count: String(snapshot.total) })}</span>}
       </div>
-      {snapshot.status !== 'loading' && newestFirst.length === 0 ? <p style={styles.notice}>{t('noTurns')}</p> : null}
-      {newestFirst.length === 0 ? null : (
+      {snapshot.status !== 'loading' && running === undefined && newestFirst.length === 0 ? <p style={styles.notice}>{t('noTurns')}</p> : null}
+      {running === undefined && newestFirst.length === 0 ? null : (
         <ul style={styles.list}>
+          {running === undefined ? null : <RunningCard item={running} now={now} t={t} />}
           {newestFirst.map(item => item.kind === 'event'
             ? <EventCard key={item.seq} item={item} now={now} t={t} />
             : <TurnCard key={item.seq} item={item} now={now} open={expanded.has(item.seq)} full={fulls[item.seq]} onToggle={toggle} t={t} />)}
         </ul>
       )}
-      {snapshot.total > snapshot.entries.length ? (
+      {snapshot.total > newestFirst.length ? (
         <div style={styles.loadMoreWrap}>
-          <span style={styles.sectionCount}>{t('shownOf', { shown: snapshot.entries.length, total: snapshot.total })}</span>
+          <span style={styles.sectionCount}>{t('shownOf', { shown: newestFirst.length, total: snapshot.total })}</span>
           <Button size="sm" variant="ghost" onClick={() => { void source.loadMore() }}>{t('loadMore')}</Button>
         </div>
       ) : null}

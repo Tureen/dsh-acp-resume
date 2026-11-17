@@ -107,6 +107,24 @@ describe('AcpResumePanelService', () => {
     expect(panel.list()[0]).toMatchObject({ title: '记住暗号P', turnCount: 2, active: true })
   })
 
+  it('projects a running prompt in list and as the first synthetic turns entry', async () => {
+    const dir = tempDir('acp-resume-panel-running-')
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const { pool } = makePool({ MOCK_PROMPT_HOLD: hold })
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    const pending = pool.send(chat.chatId, '进行中消息')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(panel.list()[0]?.inFlight).toMatchObject({ chatId: chat.chatId, message: '进行中消息', startedAt: expect.any(Number) })
+    const turns = panel.turns(chat.chatId, 50)
+    expect(turns.entries[0]).toMatchObject({ kind: 'running', message: '进行中消息', startedAt: expect.any(Number) })
+    expect(turns.total).toBe(0)
+    rmSync(hold)
+    await pending
+    expect(panel.turns(chat.chatId, 50).entries[0]).toMatchObject({ kind: 'turn', message: '进行中消息' })
+  })
+
   it('close releases the process and keeps the record; the next send reconnects', async () => {
     const { pool, registryPath } = makePool()
     const { panel } = await mountPanel(pool)

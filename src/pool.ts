@@ -65,6 +65,8 @@ export interface PooledChatInfo {
   readonly lastActive: number
   /** Session id of the DSH chat that opened this chat (D20); absent for chats started before attribution, or without a calling session. */
   readonly ownerSessionId?: string
+  /** Current prompt state, kept only in pool memory and omitted after settlement (D15). */
+  readonly inFlight?: InFlightTurn
 }
 
 /** Reason the current send replaced its saved remote session. */
@@ -141,6 +143,13 @@ export interface PoolStartOptions {
   readonly ownerSessionId?: string
 }
 
+/** One prompt currently running on a pooled chat; a volatile panel projection, not a turn-log record. */
+export interface InFlightTurn {
+  readonly chatId: string
+  readonly message: string
+  readonly startedAt: number
+}
+
 /** An open window (`start` or reconnect) and the controller teardown aborts it with. */
 interface OpenWindow {
   readonly promise: Promise<unknown>
@@ -160,6 +169,8 @@ interface LiveChat {
   busy: boolean
   /** The in-flight turn's promise; a release cancels it and waits (bounded) for it to settle. */
   busyPromise: Promise<unknown> | undefined
+  /** The in-flight prompt's volatile panel projection; removed when this turn settles. */
+  inFlight: InFlightTurn | undefined
   /** Set once a release started; concurrent closes share it. */
   closing: Promise<void> | undefined
 }
@@ -339,6 +350,7 @@ export class AcpSessionPool {
       ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
       ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
       ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
+      ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
@@ -490,6 +502,8 @@ export class AcpSessionPool {
     chat.busy = true
     this.clearIdleTimer(chat)
     const startedAt = Date.now()
+    const inFlight: InFlightTurn = { chatId, message, startedAt }
+    chat.inFlight = inFlight
     const turnPromise = conn.prompt(
       [{ type: 'text', text: message }],
       signal ?? new AbortController().signal,
@@ -534,6 +548,7 @@ export class AcpSessionPool {
     } finally {
       chat.busy = false
       chat.busyPromise = undefined
+      if (chat.inFlight === inFlight) chat.inFlight = undefined
       if (!this.disposed) this.armIdle(chat)
     }
   }
@@ -720,7 +735,7 @@ export class AcpSessionPool {
   }
 
   private track(chatId: string, conn: AcpConnection): void {
-    const chat: LiveChat = { chatId, conn, idleTimer: undefined, busy: false, busyPromise: undefined, closing: undefined }
+    const chat: LiveChat = { chatId, conn, idleTimer: undefined, busy: false, busyPromise: undefined, inFlight: undefined, closing: undefined }
     this.live.set(chatId, chat)
     this.armIdle(chat)
   }

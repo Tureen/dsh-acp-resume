@@ -95,6 +95,16 @@ export function relativeTime(t: PanelTranslate, then: number, now: number): stri
   return t('daysAgo', { count: Math.floor(elapsed / DAY) })
 }
 
+export function elapsedTime(t: PanelTranslate, startedAt: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (seconds < 60) return t('runningSeconds', { count: seconds })
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return t('runningMinutes', { count: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return t('runningHours', { count: hours })
+  return t('runningDays', { count: Math.floor(hours / 24) })
+}
+
 function failure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -120,6 +130,7 @@ function ChatCard({ chat, now, pending, origin, onRelease, onDelete, onOpen, t }
   const short = shortChatId(chat.chatId)
   const turns = chat.turnCount === undefined ? t('noValue') : String(chat.turnCount)
   const status = [
+    ...(chat.inFlight === undefined ? [] : [t('running'), elapsedTime(t, chat.inFlight.startedAt, now)]),
     chat.active ? t('active') : t('released'),
     t('turns', { count: turns }),
     relativeTime(t, chat.lastActive, now),

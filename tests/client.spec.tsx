@@ -24,7 +24,7 @@ import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
 import { chatEqual, chatsEqual, detailSnapshotEqual, listSnapshotEqual } from '../src/client/snapshot-equal.ts'
 import type {
   ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
-  PanelChat, TabInfoHook, TurnItem,
+  PanelChat, RunningItem, TabInfoHook, TurnItem,
 } from '../src/client/face.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
@@ -729,6 +729,21 @@ describe('ChatDetail (D18)', () => {
     expect(within(event).getByText('5 分钟前')).toBeTruthy()
     // An event sits in a distinct left-rail container, not the turn-card style.
     expect((event.getAttribute('style') ?? '')).toMatch(/border-left/)
+  })
+
+  it('puts a running message above history and expands its full text locally', async () => {
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 90_000, message: `第一行\n${'长文本'.repeat(80)}` }
+    const source = fakeSource(detailSnapshot({ entries: [running, turn(1)] }))
+    const { injected } = detailProps(source)
+    const { container } = render(<ChatDetail {...injected} />)
+    const cards = [...container.querySelectorAll('li')]
+    expect(cards[0]?.hasAttribute('data-running')).toBe(true)
+    expect(within(cards[0] as HTMLElement).getByText('进行中')).toBeTruthy()
+    expect(within(cards[0] as HTMLElement).getByText('已运行 1 分钟')).toBeTruthy()
+    expect(within(cards[0] as HTMLElement).getByText('第一行')).toBeTruthy()
+    await act(async () => { fireEvent.click(within(cards[0] as HTMLElement).getByRole('button', { name: '展开进行中的消息' })) })
+    expect((cards[0] as HTMLElement).querySelector('[data-running-full]')?.textContent).toBe(running.message)
+    expect(source.loadEntry).not.toHaveBeenCalled()
   })
 
   it('shows a reconnect failure with the unsent message', () => {

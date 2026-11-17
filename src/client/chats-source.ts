@@ -56,7 +56,9 @@ function message(error: unknown): string {
  * payload equals the current snapshot keeps the existing object, so
  * `useSyncExternalStore` sees no change and the panel does not re-render. Only
  * a real change (or a status flip) publishes a new reference, and `fetchedAt`
- * then marks that change — it does not advance on unchanged polls. Polling runs
+ * then marks that change — it does not advance on unchanged polls. While a
+ * prompt runs, the existing poll cadence publishes its current snapshot so the
+ * displayed duration advances; it adds no timer or higher-frequency refresh.
  * fast while the data is moving and backs off to {@link IDLE_POLL_INTERVAL_MS}
  * after {@link QUIET_POLLS_BEFORE_BACKOFF} unchanged polls; a change or a
  * command resets it to fast.
@@ -153,9 +155,10 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     return this.disposed || id !== this.latest
   }
 
-  /** Publish only when content changed; otherwise keep the reference and step the backoff. */
+  /** Publish only when content changed, except active prompt duration refreshes at the existing poll cadence. */
   private publish(next: ChatsSnapshot): void {
-    if (listSnapshotEqual(this.snapshot, next)) {
+    const hasInFlight = next.chats.some(chat => chat.inFlight !== undefined)
+    if (!hasInFlight && listSnapshotEqual(this.snapshot, next)) {
       this.quietPolls += 1
       if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
         this.arm(this.idleIntervalMs)

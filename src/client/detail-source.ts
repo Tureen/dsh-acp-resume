@@ -11,7 +11,7 @@
 
 import { callPanel, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc } from './chats-source.ts'
 import { detailSnapshotEqual } from './snapshot-equal.ts'
-import type { DetailSnapshot, DetailSource, EventItem, FullEntry, PanelChat, TurnItem } from './face.ts'
+import type { DetailSnapshot, DetailSource, EventItem, FullEntry, PanelChat, RunningItem, TurnItem } from './face.ts'
 
 /** Entries requested on open, and added by each "load earlier". */
 export const DETAIL_PAGE = 50
@@ -26,9 +26,10 @@ function message(error: unknown): string {
  * Observable detail data of one chat plus its on-demand entry reads.
  *
  * Snapshot reference is stable between content changes (D21): a poll whose
- * `turns` payload equals the current snapshot keeps the existing object, so
- * the open detail tab does not re-render on the poll interval. Polling backs
- * off to {@link IDLE_POLL_INTERVAL_MS} after a run of unchanged polls and
+ * `turns` payload equals the current snapshot keeps the existing object, except
+ * while a running prompt is present: then the existing poll cadence publishes a
+ * new `fetchedAt` so its duration advances without a separate UI timer. Polling
+ * backs off to {@link IDLE_POLL_INTERVAL_MS} after a run of unchanged polls and
  * resets to fast on any change or on `loadMore`.
  */
 export class ChatDetailSource implements DetailSource {
@@ -81,7 +82,7 @@ export class ChatDetailSource implements DetailSource {
     const id = ++this.latest
     try {
       const value = await callPanel(this.rpc, 'turns', { chatId: this.chatId, limit: this.limit }) as
-        { chat?: PanelChat; entries?: (TurnItem | EventItem)[]; total?: number } | null
+        { chat?: PanelChat; entries?: (TurnItem | EventItem | RunningItem)[]; total?: number } | null
       if (value === null || typeof value !== 'object' || value.chat === undefined || !Array.isArray(value.entries)) {
         throw new Error('acpResume/turns returned no detail')
       }
@@ -135,9 +136,10 @@ export class ChatDetailSource implements DetailSource {
     return this.disposed || id !== this.latest
   }
 
-  /** Publish only when content changed; otherwise keep the reference and step the backoff. */
+  /** Publish only when content changed; a running prompt refreshes its duration at the existing poll cadence. */
   private publish(next: DetailSnapshot): void {
-    if (detailSnapshotEqual(this.snapshot, next)) {
+    const hasRunning = next.entries.some(entry => entry.kind === 'running')
+    if (!hasRunning && detailSnapshotEqual(this.snapshot, next)) {
       this.quietPolls += 1
       if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
         this.arm(this.idleIntervalMs)

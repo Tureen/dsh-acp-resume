@@ -26,6 +26,8 @@ export interface PanelChat {
   readonly lastActive: number
   /** The DSH session that opened this chat (D20); absent for chats started before attribution. */
   readonly ownerSessionId?: string
+  /** The prompt currently running, supplied from pool memory only. */
+  readonly inFlight?: { readonly chatId: string; readonly message: string; readonly startedAt: number }
 }
 
 /** The panel's published view of the pool. */
@@ -86,6 +88,12 @@ export interface EventItem {
   readonly error?: string
 }
 
+export interface RunningItem {
+  readonly kind: 'running'
+  readonly message: string
+  readonly startedAt: number
+}
+
 /** One turn-log entry in full, as `acpResume/turn` returns it (subset the page reads). */
 export type FullEntry =
   | { readonly seq: number; readonly kind: 'turn'; readonly message: string; readonly output: string; readonly diagnostic?: string }
@@ -96,8 +104,8 @@ export interface DetailSnapshot {
   /** `loading` until the first answer; `error` keeps the last good data; `gone` once the host reports the chat unknown. */
   readonly status: 'loading' | 'ready' | 'error' | 'gone'
   readonly chat?: PanelChat
-  /** The newest entries, oldest first. */
-  readonly entries: readonly (TurnItem | EventItem)[]
+  /** The newest retained entries, plus a running entry first when the host has one. */
+  readonly entries: readonly (TurnItem | EventItem | RunningItem)[]
   /** Entries the host retains for this chat. */
   readonly total: number
   readonly error?: string

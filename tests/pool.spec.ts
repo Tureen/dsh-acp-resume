@@ -138,6 +138,21 @@ describe('AcpSessionPool', () => {
     expect(spawns.children).toHaveLength(1)
   })
 
+  it('projects the in-flight message only while a prompt is running', async () => {
+    const dir = tempDir('acp-resume-inflight-')
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const { pool, registryPath } = makePool({ env: { MOCK_PROMPT_HOLD: hold } })
+    const chat = await pool.start(process.cwd())
+    const pending = pool.send(chat.chatId, '完整进行中消息')
+    await until(() => pool.listChats()[0]?.inFlight !== undefined, 'in-flight projection')
+    expect(pool.listChats()[0]?.inFlight).toMatchObject({ chatId: chat.chatId, message: '完整进行中消息', startedAt: expect.any(Number) })
+    expect(JSON.parse(readFileSync(registryPath, 'utf8')).sessions[0]).not.toHaveProperty('inFlight')
+    rmSync(hold)
+    await pending
+    expect(pool.listChats()[0]).not.toHaveProperty('inFlight')
+  })
+
   it('rejects an invalid idleTimeoutMs at construction', () => {
     for (const idleTimeoutMs of [0, -1, Number.POSITIVE_INFINITY, Number.NaN, 2 ** 31]) {
       expect(() => makePool({ idleTimeoutMs })).toThrow(/idleTimeoutMs/)

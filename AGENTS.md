@@ -22,7 +22,7 @@ src/
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
   panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn` 五个 Remote 方法(D15/D18)
-  client/        面板浏览器半(tsdown 打成 lib/client.js):ChatsPanel 列表、ChatDetail 详情页签(资源地址 `dsh-resource://acp-resume-chat/<chatId>`)、chats-source / detail-source 数据源
+- `src/client/` 详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；时长只跟随既有数据源轮询。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
   job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,拒绝对运行中 acp-chat 任务的 job_output wait:true(allowChatJobWait 可关)
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
@@ -55,7 +55,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 321 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 28 + `pool.spec.ts` 60 + `tools.spec.ts` 15 + `jobs.spec.ts` 12 + `panel.spec.ts` 16 + `client.spec.tsx` 70 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 324 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 28 + `pool.spec.ts` 61 + `tools.spec.ts` 15 + `jobs.spec.ts` 12 + `panel.spec.ts` 17 + `client.spec.tsx` 71 + `steer.spec.ts` 5 + `engine.spec.ts` 16 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

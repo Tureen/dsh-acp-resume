@@ -62,13 +62,20 @@ export interface EventSummary {
   readonly error?: string
 }
 
+export interface RunningSummary {
+  readonly kind: 'running'
+  /** Full user message, held only in memory; the client owns presentation truncation. */
+  readonly message: string
+  readonly startedAt: number
+}
+
 /** What `acpResume/turns` returns. */
 export interface ChatTurns {
   /** The chat's registry row (liveness, label, counts), so the page needs no second call. */
   readonly chat: PooledChatInfo
-  /** The newest `limit` entries, oldest first. */
-  readonly entries: readonly (TurnSummary | EventSummary)[]
-  /** Entries the log retains for this chat (≥ `entries.length`). */
+  /** Newest retained log entries, oldest first, with a volatile running entry first when present. */
+  readonly entries: readonly (RunningSummary | TurnSummary | EventSummary)[]
+  /** Retained log entries only; the synthetic running item is not counted. */
   readonly total: number
 }
 
@@ -144,9 +151,13 @@ export class AcpResumePanelService extends TypertRemoteService {
       throw new RemoteError('gateway/bad-request', `acp-resume: limit must be an integer from 1 to ${MAX_TURNS_LIMIT}`, {})
     }
     const all = this.pool.turnEntries(id)
+    const chat = this.pool.chatInfo(id) as PooledChatInfo
     return {
-      chat: this.pool.chatInfo(id) as PooledChatInfo,
-      entries: all.slice(-count).map(summarize),
+      chat,
+      entries: [
+        ...(chat.inFlight === undefined ? [] : [{ kind: 'running' as const, message: chat.inFlight.message, startedAt: chat.inFlight.startedAt }]),
+        ...all.slice(-count).map(summarize),
+      ],
       total: all.length,
     }
   }

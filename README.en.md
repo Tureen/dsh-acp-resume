@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.19 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.20 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -39,7 +39,7 @@ The official package and the existing kiro path are left completely untouched. T
 | `acp_chat_list` | List active and persisted sessions |
 | `acp_chat_close` | Release the session process (the record stays and can be reconnected; `purge` also deletes the record) |
 | `acp_chat_steer` | Add an instruction to a turn **in flight**: the queued message takes effect at the next tool/message boundary without interrupting the current step; to stop immediately use `job_kill` / `acp_chat_close`. Errors when there is no turn in flight (use send instead); when the agent does not implement the private extension `_session/steer`, it reports "the current agent does not support steering" (D19) |
-| **Persistent chats panel** (right sidebar, D15/D18) | A per-session view: status / turn count / summary, with release and delete; click a card to open that session's detail tab (metadata + each turn's question and answer, outcome, reconnect events). See [PANEL-DESIGN.md](PANEL-DESIGN.md) |
+| **Persistent chats panel** (right sidebar, D15/D18) | A per-session view of status / turn count / summary, the sent message and elapsed time of a running turn, with release and delete; click a card to open that session's detail tab (metadata + running turn + each settled turn's question and answer, outcome, reconnect events). See [PANEL-DESIGN.md](PANEL-DESIGN.md) |
 
 ## Configuration
 
@@ -148,7 +148,7 @@ The background mode of `acp_chat_send` needs the host to have both `@deepseek-ai
 
 ```sh
 pnpm install && pnpm build     # build lib/
-pnpm test                      # vitest; 321 green = official protocol surface 68 + connection 28 + pool 60 + tools 15 + jobs 12 + panel 16 + client 70 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
+pnpm test                      # vitest; 324 green = official protocol surface 68 + connection 28 + pool 61 + tools 15 + jobs 12 + panel 17 + client 71 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
 - Baseline: checked against npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` `src/run.ts` and official checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34`. Except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3`. DSH peers are pinned to `~0.2.2-rc.3`, and the Cordis peer remains `~4.1.0`;
