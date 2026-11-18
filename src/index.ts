@@ -262,7 +262,7 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
     name, { name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value) },
   ])
-  entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: `${DEFAULT_BACKEND} (${defaultBackend.command.split('/').at(-1) ?? defaultBackend.command})`, specBase: base(defaultBackend) }])
+  entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: defaultBackend.command.split('/').at(-1) ?? defaultBackend.command, specBase: base(defaultBackend) }])
   return new Map(entries)
 }
 

@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -747,7 +747,7 @@ describe('AcpSessionPool', () => {
     }))
     const warnings: string[] = []
     const second = makePool({ env, registryPath, onWarn: (m) => { warnings.push(m) } })
-    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), backend: 'default', backendCount: 1, active: false, lastActive: 1 }])
+    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), backend: basename(process.execPath), backendCount: 1, active: false, lastActive: 1 }])
     const after = await second.pool.send('chat-legacy', '  旧条目的第一轮  ')
     expect(after.stopReason).toBe('completed')
     expect(after.freshSession).toBe(false)
@@ -767,7 +767,7 @@ describe('AcpSessionPool', () => {
     })
     writeFileSync(registryPath, content)
     const { pool, spawns } = makePool({ registryPath })
-    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), backend: 'default', backendCount: 1, active: false, lastActive: 1 }])
+    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), backend: basename(process.execPath), backendCount: 1, active: false, lastActive: 1 }])
     await expect(pool.send('chat-other', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(readFileSync(registryPath, 'utf8')).toBe(content)
@@ -864,7 +864,7 @@ describe('AcpSessionPool', () => {
     await first.pool.disposeAll()
     writeFileSync(first.registryPath, JSON.stringify({ version: 1, sessions: [{ chatId: chat.chatId, remoteSessionId: chat.remoteSessionId, cwd: process.cwd(), command: process.execPath, args: [mockServer], lastActive: 1 }] }))
     const second = makePool({ env, registryPath: first.registryPath })
-    expect(second.pool.listChats()[0]).toMatchObject({ chatId: chat.chatId, backend: 'default', backendCount: 1 })
+    expect(second.pool.listChats()[0]).toMatchObject({ chatId: chat.chatId, backend: basename(process.execPath), backendCount: 1 })
   })
 
   it('fails sends to a removed backend without spawning', async () => {

@@ -13,7 +13,7 @@
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -117,6 +117,26 @@ describe('AcpResumePanelService', () => {
     const { panel } = await mountPanel(pool)
     const chat = await pool.start(process.cwd(), undefined, { backend: 'review' })
     expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'review', backendCount: 2 })])
+  })
+
+  it('list shows the command basename for the default backend, registry keeps default', async () => {
+    const { pool, registryPath } = makePool()
+    const { panel } = await mountPanel(pool)
+    const chat = await pool.start(process.cwd())
+    expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: basename(process.execPath) })])
+    expect(readFileSync(registryPath, 'utf8')).toContain('"default"')
+  })
+
+  it('list keeps the user-chosen name for a named backend', async () => {
+    const review: BackendSpec = {
+      name: 'review', description: 'review',
+      specBase: { command: process.execPath, args: [mockServer], permission: 'reject', env: {}, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+    }
+    const { pool } = makePool({}, new Map([['review', review]]))
+    const { panel } = await mountPanel(pool)
+    await pool.start(process.cwd(), undefined, { backend: 'review' })
+    await pool.start(process.cwd())
+    expect(panel.list().map(r => r.backend).sort()).toEqual([basename(process.execPath), 'review'].sort())
   })
 
   it('projects a running prompt in list and as the first synthetic turns entry', async () => {

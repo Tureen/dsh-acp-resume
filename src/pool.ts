@@ -39,7 +39,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult } from './connection.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
@@ -354,7 +354,7 @@ export class AcpSessionPool {
     if (!Number.isFinite(idle) || idle <= 0 || idle > MAX_TIMER_DELAY_MS) {
       throw new Error(`acp-resume: idleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`)
     }
-    this.backends = new Map([[DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: DEFAULT_BACKEND, specBase: opts.specBase }], ...(opts.backends ?? new Map()).entries()])
+    this.backends = new Map([[DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: basename(opts.specBase.command), specBase: opts.specBase }], ...(opts.backends ?? new Map()).entries()])
     this.registry = new ChatRegistry(opts.registryPath, opts.onWarn)
     this.turnLog = new TurnLog(join(dirname(opts.registryPath), 'turns'), opts.onWarn)
   }
@@ -369,7 +369,7 @@ export class AcpSessionPool {
       ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
       ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
       ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
-      backend: this.backendName(e),
+      backend: this.displayBackend(e),
       backendCount: this.backends.size,
       ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
       active: this.live.has(e.chatId),
@@ -677,6 +677,11 @@ export class AcpSessionPool {
   }
 
   /** A saved session is only reloaded by the agent that created it. */
+  /** Display name: the default backend shows its command basename (registry keeps 'default'). */
+  private displayBackend(entry: RegistryEntry): string {
+    const name = this.backendName(entry)
+    return name === DEFAULT_BACKEND ? basename(this.opts.specBase.command) : name
+  }
   private backendName(entry: RegistryEntry): string { return entry.backend ?? DEFAULT_BACKEND }
 
   private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
