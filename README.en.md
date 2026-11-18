@@ -55,6 +55,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         agentEngine: v3              # default v3; one of v1 / v2 / v3 / none. Appends --agent-engine <value> when spawning the child; if args already contains that flag, args wins and nothing is appended; none = never append, for agents that do not accept the flag (D19)
         model: glm-5                 # appends --model <id>; only agents accepting this CLI flag support it (kiro v2 engine); kiro v3 and agy reject it, use modelSelect: session
         effort: high                 # appends --effort <level>; only agents accepting this CLI flag support it (kiro v2 engine); do not set for kiro v3 or agy
+        modelSelect: flag            # default flag (model goes out as --model); session = no flag, switch to model via session/set_model after the session opens (falls back to set_config_option); use this for kiro v3 and agy
         providerName: acp-resume     # default acp-resume; does not conflict with the official acp
         permission: allow            # default bundle policy: automatically selects an allow option; reject or ask are also supported (see below)
         env: {}                      # variables layered on top of the sanitized parent environment (e.g. the child agent's own key)
@@ -115,7 +116,7 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
 | Backend | Private extension support | Special configuration |
 |---|---|---|
 | **kiro-cli** (default backend) | Mid-turn `_session/steer`; `--agent-engine v3`; cross-process `session/load`; on v3, model/effort go through session-level `session/set_config_option`, not CLI flags | `agentEngine: v3` is the default. **v3 (default)**: pick the model with `modelSelect: session` + `model` (switched via `session/set_config_option`, probe-verified); effort is also a session-level config option (`configId: "effortLevel"`), not a CLI flag. ⚠️ Do not set `model` / `effort` on a v3 backend without `modelSelect: session`: the `--model` / `--effort` flags v3 does not support get appended and startup fails; do not set the `effort` field on v3 at all. **v2 (legacy)**: supports the `--model` / `--effort` CLI flags, but downgrading to v2 is not recommended. Clean up remote sessions with `kiro-cli chat --list-sessions` / `--delete-session` |
-| **agy / Antigravity** | The normalization layer automatically converts flat updates to the nested shape; per-session `session/set_model`; cross-process `session/load` (verified after SIGKILL) | **Must** use `agentEngine: 'none'`. **Do not set** model/effort because agy rejects those CLI flags. Model selection uses `session/set_model`; effort is embedded in the model id, such as `gemini-4-carbon-high` for the Carbon model at high effort. `permission: ask` is recommended because permission requests can include questions for the user. The default model is `gemini-4-carbon-medium`; its 18 available models include the Gemini 4 Carbon/Argon/Hydrogen families, Claude Sonnet/Opus 4.6, and GPT-OSS 120B. |
+| **agy / Antigravity** | The normalization layer automatically converts flat updates to the nested shape; per-session `session/set_model`; cross-process `session/load` (verified after SIGKILL) | **Must** use `agentEngine: 'none'`. Pick the model with `modelSelect: session` + `model` (switched via `session/set_model`). ⚠ Do not set `model` without `modelSelect: session`: the `--model` flag agy rejects gets appended and startup fails. Never set `effort`; effort is embedded in the model id, such as `gemini-4-carbon-high` for the Carbon model at high effort. `permission: ask` is recommended because permission requests can include questions for the user. The default model is `gemini-4-carbon-medium`; its 18 available models include the Gemini 4 Carbon/Argon/Hydrogen families, Claude Sonnet/Opus 4.6, and GPT-OSS 120B. |
 | **Codex** (`protocol: codex`, named backends only) | Speaks `codex app-server`'s private JSON-RPC protocol, not ACP: native `turn/steer` (adds input without interrupting running commands); `thread/resume` across processes; per-item `item/*/requestApproval` approvals (`permission: ask` asks the user each time: allow / reject this step / cancel the whole turn) | **Must** set `model` (Codex's own default is unavailable on some accounts). Optional `sandbox` (`read-only` default / `workspace-write` / `danger-full-access`), `approvalPolicy` (`never` default / `untrusted` / `on-request` / `on-failure`), `effort` (reasoning level sent on every `turn/start`; full range `low` / `medium` / `high` / `xhigh` / `max` / `ultra`, where `ultra` is supported by only some models, see "Where to look up models" below). `args` defaults to `[app-server]`; no `--agent-engine` / `--model` / `--effort` is appended. `reject` answers decline (that step is refused, the turn continues); `ask` cancels the whole turn when no confirmation service is available or the answer is invalid. Verified against a mock only; a real-machine probe is pending, and the private protocol carries no stability promise, so retest after upgrading Codex. |
 
 #### Where to look up models
@@ -140,13 +141,16 @@ Codex 0.170.0 measured `model/list`: default `gpt-6.2-sol`; also `gpt-6.2-astra`
 ### Backend recipes
 
 ```yaml
-# Tier 1: first-class support — kiro (default backend, top-level config, no extra setup)
+# Tier 1: first-class support — kiro (default backend; no override needed unless you pin a model)
 # kiro v3 + pinned model (recommended)
-command: kiro-cli
-args: [acp]
-modelSelect: session
-model: claude-opus-5.5     # switched via set_config_option, not a CLI flag
-# Note: do not set model without modelSelect: session (v3 rejects the flag); do not set the effort field on v3
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: kiro-cli
+    args: [acp]
+    modelSelect: session
+    model: claude-opus-5.5     # switched via set_config_option, not a CLI flag
+    # Note: do not set model without modelSelect: session (v3 rejects the flag); do not set the effort field on v3
 ```
 
 ```yaml
@@ -158,9 +162,9 @@ model: claude-opus-5.5     # switched via set_config_option, not a CLI flag
     args: [acp]
     agentEngine: 'none'
     permission: ask
-    # Do not set model/effort: agy rejects these CLI flags
-    # Model changes use session/set_model inside the session (agent-managed)
-    description: 'Antigravity (Google)'
+    # Optional: pin a model; set it together with modelSelect: session (switched via session/set_model). model alone appends the --model flag agy rejects
+    # modelSelect: session
+    # model: gemini-4-carbon-high   # effort is embedded in the model id; do not set the effort field
 ```
 
 ```yaml

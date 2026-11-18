@@ -53,6 +53,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3 / none。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加;none = 完全不追加,供不认该旗标的 agent 使用(D19)
         model: glm-5                 # 追加 --model <id>;仅接受该 CLI 旗标的 agent 有效(kiro v2 引擎);kiro v3 与 agy 不接受,请改用 modelSelect: session
         effort: high                 # 追加 --effort <档>;仅接受该 CLI 旗标的 agent 有效(kiro v2 引擎);kiro v3 与 agy 不接受,不要设置
+        modelSelect: flag            # 默认 flag(model 走 --model 旗标);session = 不追加旗标，会话建立后经 session/set_model(失败降级 set_config_option)切到 model,kiro v3 与 agy 用这个
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
         permission: allow            # bundle 默认自动选择允许项;也可用 reject 或 ask(见下文)
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
@@ -113,7 +114,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 | 后端 | 私有扩展支持 | 特殊配置 |
 |---|---|---|
 | **kiro-cli**（默认后端） | `_session/steer` 中途插话；`--agent-engine v3` 旗标；`session/load` 跨进程重连；v3 的模型/effort 走会话级 `session/set_config_option`，不走 CLI 旗标 | `agentEngine: v3`（默认，不设即用）。**v3（默认）**：模型选择用 `modelSelect: session` + `model`（经 `session/set_config_option` 切换，探针已验证）；effort 同属会话级配置项（`configId: "effortLevel"`），不是 CLI 旗标。⚠️ 不要在 v3 后端上直接设 `model` / `effort` 而不设 `modelSelect: session`——会追加 v3 不支持的 `--model` / `--effort` 旗标，导致启动失败；v3 上也不要设 `effort` 字段。**v2（遗留）**：支持 `--model` / `--effort` CLI 旗标，但不推荐降级到 v2。远端清理用 `kiro-cli chat --list-sessions` / `--delete-session` |
-| **agy / Antigravity** | 协议归一化层自动把平铺 update 归一为嵌套形态；`session/set_model` 按会话切模型；`session/load` 跨进程重连（已实测 SIGKILL 后恢复） | **必须** `agentEngine: 'none'`；**不要设** model/effort（CLI 旗标会被拒绝）。模型选择走 `session/set_model`，effort 已内嵌在模型 ID，例如 `gemini-4-carbon-high` 表示 Carbon 模型的 high 档。建议 `permission: ask`，因为权限请求中可能混入“向用户提问”。默认模型为 `gemini-4-carbon-medium`；可用模型含 Gemini 4 全系（Carbon/Argon/Hydrogen）、Claude Sonnet/Opus 4.6、GPT-OSS 120B 等共 18 个。 |
+| **agy / Antigravity** | 协议归一化层自动把平铺 update 归一为嵌套形态；`session/set_model` 按会话切模型；`session/load` 跨进程重连（已实测 SIGKILL 后恢复） | **必须** `agentEngine: 'none'`。选模型用 `modelSelect: session` + `model`（经 `session/set_model` 切换）；⚠ 不设 `modelSelect: session` 时不要设 `model`（会追加 agy 拒绝的 `--model` 旗标，导致启动失败）；任何情况都不要设 `effort`，effort 已内嵌在模型 ID，例如 `gemini-4-carbon-high` 表示 Carbon 模型的 high 档。建议 `permission: ask`，因为权限请求中可能混入“向用户提问”。默认模型为 `gemini-4-carbon-medium`；可用模型含 Gemini 4 全系（Carbon/Argon/Hydrogen）、Claude Sonnet/Opus 4.6、GPT-OSS 120B 等共 18 个。 |
 | **Codex**（`protocol: codex`，仅命名后端） | 走 `codex app-server` 私有 JSON-RPC 协议，不说 ACP：原生 `turn/steer` 插话（不打断正在跑的命令）；`thread/resume` 跨进程恢复；`item/*/requestApproval` 分项审批（`permission: ask` 逐次问用户：允许 / 拒绝该步 / 取消整轮） | **必须**设 `model`（Codex 默认模型在部分账号不可用）；可设 `sandbox`（`read-only` 默认 / `workspace-write` / `danger-full-access`）、`approvalPolicy`（`never` 默认 / `untrusted` / `on-request` / `on-failure`）、`effort`（每轮 `turn/start` 的推理档位，完整档位 `low` / `medium` / `high` / `xhigh` / `max` / `ultra`，其中 `ultra` 仅部分模型支持，见下方「模型从哪查」）。`args` 缺省为 `[app-server]`，不追加 `--agent-engine` / `--model` / `--effort`。`reject` 回 decline（该步被拒、整轮继续），`ask` 无确认服务或回答无效时取消整轮。已用 mock 全绿，真机探针待做；私有协议无稳定性承诺，升级 Codex 后需复测。 |
 
 #### 模型从哪查
@@ -138,13 +139,16 @@ Codex 0.170.0 实测 `model/list`：默认 `gpt-6.2-sol`；另有 `gpt-6.2-astra
 ### 后端配方
 
 ```yaml
-# 等级 1：一等支持 — kiro（默认后端，顶层配置，无需额外设置）
+# 等级 1：一等支持 — kiro（默认后端；不钉模型时无需任何覆盖）
 # kiro v3 + 模型钉死(推荐)
-command: kiro-cli
-args: [acp]
-modelSelect: session
-model: claude-opus-5.5     # 经 set_config_option 切换,非 CLI 旗标
-# 注意:不要直接设 model 而不设 modelSelect: session(v3 会拒旗标);v3 上不要设 effort 字段
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: kiro-cli
+    args: [acp]
+    modelSelect: session
+    model: claude-opus-5.5     # 经 set_config_option 切换,非 CLI 旗标
+    # 注意:不要直接设 model 而不设 modelSelect: session(v3 会拒旗标);v3 上不要设 effort 字段
 ```
 
 ```yaml
@@ -156,9 +160,9 @@ model: claude-opus-5.5     # 经 set_config_option 切换,非 CLI 旗标
     args: [acp]
     agentEngine: 'none'
     permission: ask
-    # 不要设 model/effort：agy 不接受这些 CLI 旗标
-    # 模型切换：在会话中使用 session/set_model（由 agent 自行管理）
-    description: 'Antigravity (Google)'
+    # 可选：钉模型，必须与 modelSelect: session 同设(经 session/set_model 切换);单设 model 会追加 agy 拒绝的 --model
+    # modelSelect: session
+    # model: gemini-4-carbon-high   # effort 内嵌在模型 ID;不要设 effort 字段
 ```
 
 ```yaml

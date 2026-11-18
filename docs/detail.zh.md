@@ -31,7 +31,7 @@
 ### 后端支持等级
 
 - **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）选模型用 `modelSelect: session` + `model`（经 `session/set_config_option`），不要直接设 model/effort（会追加 v3 拒绝的 CLI 旗标，导致启动失败）；v2（遗留）才支持 `--model` / `--effort` 旗标。
-- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；必须设 `agentEngine: 'none'`，不要设 model/effort，建议 `permission: ask`。
+- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；必须设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
 - **一等支持：Codex。** 走 `codex app-server` 私有协议（`protocol: codex`，只能作命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。必须设 `model`，可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。模型清单来自 `codex app-server` 的 `model/list`；agy 的在 `initialize` 响应的 `models.availableModels`，effort 内嵌在模型 ID；kiro 模型动态（auto）。目前仅经 mock 验证，真机探针待做。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
 
