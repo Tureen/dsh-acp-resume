@@ -117,6 +117,19 @@ describe('normalizeInboundMessage', () => {
   })
   it('passes non-update messages through', () => { expect(normalizeInboundMessage({ method: 'other', params: {} })).toEqual([{ method: 'other', params: {} }]) })
   it('drops malformed updates', () => { expect(normalizeInboundMessage({ method: 'session/update', params: {} })).toBeUndefined() })
+  it('keeps tool_call and tool_call_update content arrays intact', () => {
+    const blocks = [{ type: 'content', content: { type: 'text', text: 'a' } }, { type: 'content', content: { type: 'text', text: 'b' } }]
+    for (const sessionUpdate of ['tool_call', 'tool_call_update']) {
+      const line = { method: 'session/update', params: { sessionId: 's', update: { sessionUpdate, toolCallId: 't1', content: blocks } } }
+      expect(normalizeInboundMessage(line)).toEqual([line])
+    }
+  })
+  it('splits thought chunks but not a flat tool_call, which keeps every field beside sessionId', () => {
+    expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'agent_thought_chunk', content: [{ type: 'text', text: 'x' }, { type: 'text', text: 'y' }] } } })).toHaveLength(2)
+    const content = [{ type: 'content', content: { type: 'text', text: 'a' } }]
+    expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } }))
+      .toEqual([{ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } } }])
+  })
 })
 
 describe('openAcpConnection / AcpConnection', () => {

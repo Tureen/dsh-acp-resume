@@ -142,19 +142,37 @@ export type OpenAcpMode =
   | { readonly mode: 'new' }
   | { readonly mode: 'load'; readonly sessionId: string }
 
-/** Normalize vendor `session/update` wire variants before the strict ACP SDK parser. */
+/** Update kinds whose ACP `content` is ONE block; vendors that send an array of blocks get one message per block. */
+const CHUNK_UPDATE = /^[a-z]+_(?:message|thought)_chunk$/
+
+/**
+ * Normalize vendor `session/update` wire variants before the strict ACP SDK parser.
+ * A flat update (fields beside `sessionId`, no `update` key) moves every
+ * non-`sessionId` field into `update`. Only `*_message_chunk` /
+ * `*_thought_chunk` content arrays are split; other kinds (`tool_call`,
+ * `tool_call_update`, …) carry an array by spec and pass through intact.
+ */
 export function normalizeInboundMessage(line: unknown): unknown[] | undefined {
   if (typeof line !== 'object' || line === null || Reflect.get(line, 'method') !== 'session/update') return [line]
   const params = Reflect.get(line, 'params')
   if (typeof params !== 'object' || params === null) return undefined
   const update = Reflect.get(params, 'update')
   const flat = update === undefined && Reflect.has(params, 'sessionUpdate')
-  const normalized = flat ? { sessionUpdate: Reflect.get(params, 'sessionUpdate'), content: Reflect.get(params, 'content') } : update
-  if (typeof normalized !== 'object' || normalized === null || typeof Reflect.get(normalized, 'sessionUpdate') !== 'string') return undefined
+  let normalized: unknown = update
+  let cleanParams: object = params
+  if (flat) {
+    const { sessionId, ...fields } = params as Record<string, unknown>
+    normalized = fields
+    cleanParams = { sessionId }
+  }
+  if (typeof normalized !== 'object' || normalized === null) return undefined
+  const kind = Reflect.get(normalized, 'sessionUpdate')
+  if (typeof kind !== 'string') return undefined
   const contents = Reflect.get(normalized, 'content')
-  const cleanParams = flat ? { sessionId: Reflect.get(params, 'sessionId') } : params
-  const messages = Array.isArray(contents) ? contents.map(content => ({ ...line as object, params: { ...cleanParams as object, update: { ...normalized as object, content } } })) : [{ ...line as object, params: { ...cleanParams as object, update: normalized } }]
-  return messages
+  if (CHUNK_UPDATE.test(kind) && Array.isArray(contents)) {
+    return contents.map(content => ({ ...line, params: { ...cleanParams, update: { ...normalized, content } } }))
+  }
+  return [{ ...line, params: { ...cleanParams, update: normalized } }]
 }
 
 function normalizeAcpInbound(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
