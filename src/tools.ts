@@ -4,7 +4,8 @@
  * a fresh session when the remote one is gone), list durable chats, and
  * release a chat's process while keeping its record, and steer a running
  * turn with a queued extra instruction (`steer`, over the private
- * `_session/steer` request; an agent without it yields a clear tool error). Tool copy speaks to the
+ * `_session/steer` request; an agent without it yields a clear tool error, and
+ * the model-facing copy names no protocol method or engine). Tool copy speaks to the
  * model, not to the UI. The send tool comes in two variants (D17): with a job
  * registry (`ctx.jobs`) it registers the turn as a background job and returns
  * the job id at once, streaming the answer into the job's output and settling
@@ -266,10 +267,10 @@ export function chatSendTool(
           cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: chat job killed')) },
         }),
       })
+      // The tool description carries the rest (ending the turn collects it, job_kill stops it); repeat only what this call decides.
       return {
         text: `message sent to chat ${chatId}; the answer runs as background job ${jobId}. `
-          + `You are woken in-session when it finishes; then read it with job_output without wait. Ending your turn now is correct and counts as collecting it. `
-          + `Stop it with job_kill. Do not send to this chat again until the job finishes.`,
+          + 'You are woken in-session when it finishes. Do not send to this chat again until then.',
         jobId,
       }
     },
@@ -428,8 +429,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       + 'The agent takes the queued message in at its next tool or message boundary; it does not interrupt the current step. '
       + `To stop the turn immediately use job_kill (when the send ran as a job) or ${toolPrefix}close instead. `
       + `Only works while a turn is in flight (after ${toolPrefix}send, before it finishes); otherwise use ${toolPrefix}send. `
-      + 'Needs an agent that supports the private _session/steer extension (kiro-cli does on engines v2/v3); '
-      + 'if the agent lacks it, the tool fails and says so.',
+      + 'Requires a backend that supports mid-turn steering; if this backend does not, the tool fails and says so.',
     parameters: {
       chatId: {
         type: 'string',
@@ -465,7 +465,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       } catch (error: unknown) {
         if (error instanceof AcpSteerUnsupportedError) {
           throw new Error(
-            'the current agent does not support steering (it rejected _session/steer as an unknown method); '
+            'this backend does not support mid-turn steering; '
             + `let the turn finish (you will be notified), or stop it with job_kill / ${toolPrefix}close and send again`,
             { cause: error },
           )

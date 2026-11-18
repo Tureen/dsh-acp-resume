@@ -232,13 +232,16 @@ describe('chat tools', () => {
     await sending
   })
 
-  it('list shows the start-passable backend name, not the display name', async () => {
+  it('list shows the start-passable backend name and steer copy names no protocol method or engine', async () => {
     const { registry, pool } = mountTools({})
     await pool.start(process.cwd())
     const list = registry.tools.get('acp_chat_list') as Definition
     const output = await list.execute({}, exec()) as { text: string }
     expect(output.text).toContain('| backend default |')
     expect(output.text).not.toContain(`backend ${pool.listChats()[0]?.backendDisplay as string} |`)
+    const steer = registry.tools.get('acp_chat_steer') as Definition
+    expect(steer.description).toContain('Requires a backend that supports mid-turn steering')
+    expect(steer.description).not.toMatch(/_session\/steer|kiro|engine/)
   })
 
   it('rejects an already-aborted call before touching the pool', async () => {

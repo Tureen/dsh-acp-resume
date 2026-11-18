@@ -117,7 +117,7 @@ describe('acp_chat_steer', () => {
     const { chatId } = await call('start', { cwd: process.cwd() })
     const sending = call('send', { chatId, message: 'long task' })
 
-    await expect(call('steer', { chatId, message: 'x' })).rejects.toThrow(/does not support steering/)
+    await expect(call('steer', { chatId, message: 'x' })).rejects.toThrow(/^this backend does not support mid-turn steering; /)
     await expect(pool.steer(chatId as string, 'x')).rejects.toBeInstanceOf(AcpSteerUnsupportedError)
 
     release()

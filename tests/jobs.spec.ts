@@ -138,18 +138,19 @@ describe('job-backed send', () => {
     const sent = await call('send', { chatId, message: 'hi' })
     const jobId = sent.jobId as JobId
     expect(jobId).toMatch(/^acp-chat-/)
-    expect(sent.text).toContain(`background job ${jobId}`)
-    expect(sent.text).toContain('job_output')
+    // The receipt keeps three facts only: the job id, the wake-up, and the single-flight rule.
+    expect(sent.text).toBe(`message sent to chat ${chatId as string}; the answer runs as background job ${jobId}. You are woken in-session when it finishes. Do not send to this chat again until then.`)
     // D22: no copy may push the model toward a blocked wait.
     expect(sent.text).not.toMatch(/wait for that job|wait: true/)
     const description = tools.get('acp_chat_send')!.description
     expect(description).not.toMatch(/wait for that job|wait: true/)
     expect(description).toContain('completion notice')
-    for (const copy of [sent.text as string, description]) {
-      expect(copy).toContain('woken')
-      expect(copy).toContain('counts as collecting')
-      expect(copy).toContain('without wait')
-    }
+    expect(sent.text).toContain('woken')
+    // The rules the receipt no longer repeats stay in the tool description.
+    expect(description).toContain('woken')
+    expect(description).toContain('counts as collecting')
+    expect(description).toContain('without wait')
+    expect(description).toContain('job_kill')
     // The tool returned while the agent is still holding its answer.
     expect(ctx.jobs.get(jobId).status).toBe('running')
     expect(ctx.jobs.get(jobId).label).toBe(`${chatId as string}: hi`)

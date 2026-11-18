@@ -185,6 +185,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
   - 连接层 `AcpConnection.steer(message)` 对活连接发 `_session/steer {sessionId, message}`;`-32601 Method not found` 抛 `AcpSteerUnsupportedError`(按类识别,不解析文案);其他错误原样上抛。应答里 `queued` 缺省按 true 处理(请求成功即被接受),`messageId` 有则透传。
   - 池层 `steer(chatId, message)` 要求会话有活连接且有在途轮(`busy`);否则报「没有在途轮,无可插话,改用 send」。未知 chatId 与 send/close 同格式。steer **不占轮、不改 busy**,同一会话可连续多条,先后顺序由 kiro 侧排队,因此不与 D6 的单飞冲突。
   - 工具层标并发安全。成功返回 `queued`(有 `messageId` 一并给出)。说明文案写明:排队的插话在下一个工具/消息边界生效,不打断当前步;要立即停止用 `job_kill` / `acp_chat_close`。agent 不支持时抛「当前 agent 不支持插话」类工具错误,并提示改为等待或停止后重发。
+  - 修订(2026-11-18,多后端后文案中性化):模型可见的工具说明与报错不提协议方法名和引擎版本。说明写 `Requires a backend that supports mid-turn steering`,不支持时报 `this backend does not support mid-turn steering; …`。连接层仍按 `_session/steer` 与 `-32601` 判定，机制不变。
   - 与后台 job 并存:steer 不创建 job、不改 job 状态,在途 job 照常结算;插话在输出流里留下的归因块算作 agent 的回答文本,原样进入 job 输出(形态由 kiro 决定,本包不解析)。
 - 不做:不为 steer 增加「自动探测并缓存支持情况」;每次调用直接试,失败即降级文案,避免缓存过期。
 
@@ -296,6 +297,8 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 - 单飞拒绝文本(pool)、`acp_chat_send` 描述、steer 降级文本一并去掉「wait for …」措辞,改为「结束本轮/等通知」,避免与门互相矛盾诱导死循环。
 - 取舍:放弃「在本轮内拿到结果」,换「不阻塞用户输入」。需要同步语义的宿主(无 jobs 服务)仍走 D17 的内联 send,不受此门影响。
 - 监听器内部不抛异常:`jobs.get` 包 try/catch,抛异常也会拦调用但文案不可控。
+
+修订(2026-11-18,send 回执精简):后台模式 `acp_chat_send` 的成功回执只保留三件事:jobId、完成时会在会话内唤醒、在此之前不要再发给这个 chat。「结束本轮即算收集」「通知后用不带 wait 的 job_output 读」「用 job_kill 停止」只留在工具说明里，不再每轮重复。D22 门的拒绝文案不变。
 
 开关:`allowChatJobWait`(默认 `false`,即默认禁止)。设 `true` 时不注册监听器,恢复 `wait` 硬等。无 jobs 服务时本就不注册(与 send 变体的条件化一致)。
 
