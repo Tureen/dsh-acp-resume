@@ -47,6 +47,9 @@
           # ACP 工具(本插件,核心)
           - id: subagent-acp-resume
             name: 'dsh-acp-resume'
+            config:
+              command: kiro-cli
+              args: [acp]
           # 任务管理(后台 job 收发)
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
