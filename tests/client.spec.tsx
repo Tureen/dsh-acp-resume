@@ -96,7 +96,7 @@ const ready = (chats: readonly PanelChat[]): ChatsSnapshot => ({ status: 'ready'
 describe('ChatsPanel', () => {
   it('shows the empty state with the start tool named', () => {
     render(<ChatsPanel {...props(ready([]))} />)
-    expect(screen.getByText('暂无持久会话')).toBeTruthy()
+    expect(screen.getByText('暂无 ACP 会话')).toBeTruthy()
     expect(screen.getByText('让模型调用 acp_chat_start 创建;之后的每一轮对话都在这里可见。')).toBeTruthy()
   })
 
@@ -194,7 +194,7 @@ describe('ChatsPanel', () => {
 
   it('with every chat released shows the group header, not the empty state', () => {
     render(<ChatsPanel {...props(ready([chat({ active: false }), chat({ chatId: `chat-${UUID_B}`, active: false })]))} />)
-    expect(screen.queryByText('暂无持久会话')).toBeNull()
+    expect(screen.queryByText('暂无 ACP 会话')).toBeNull()
     expect(screen.queryAllByRole('listitem')).toHaveLength(0)
     fireEvent.click(screen.getByRole('button', { name: '已释放 (2) · 展开' }))
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
@@ -276,7 +276,7 @@ describe('ChatsPanel attribution filter (D20)', () => {
     const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: 'session-fresh-9999' })} />)
     expect(ids(container)).toEqual([])
     expect(container.querySelector('[data-empty="session"]')?.textContent).toContain('本会话 0 条 / 共 3 条')
-    expect(container.querySelector('[data-empty="session"]')?.textContent).toContain('当前会话尚未创建持久会话。')
+    expect(container.querySelector('[data-empty="session"]')?.textContent).toContain('当前会话尚未创建 ACP 会话。')
   })
 
   it('shows no profile-global rows when the sidebar has no session identity', () => {
@@ -528,8 +528,8 @@ describe('apply (client wiring)', () => {
     expect(tab).toMatchObject({ id: 'dsh-acp-resume', kind: 'acp-resume.chats' })
     expect(tab.patterns).toBeUndefined()
     expect(tab.multiple).toBeUndefined()
-    expect(tab.title()).toBe('持久会话')
-    expect(tab.guide.map(entry => entry.title())).toEqual(['持久会话'])
+    expect(tab.title()).toBe('ACP 会话')
+    expect(tab.guide.map(entry => entry.title())).toEqual(['ACP 会话'])
     expect(services.dictionaries).toEqual(['acpResumePanel'])
     // The list body, the detail body, and the detail chip title.
     expect(services.bodies.map(b => [b.options.name, b.options.key])).toEqual([
@@ -549,7 +549,7 @@ describe('apply (client wiring)', () => {
     rows = []
     fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
-    expect(await screen.findByText('暂无持久会话')).toBeTruthy()
+    expect(await screen.findByText('暂无 ACP 会话')).toBeTruthy()
     expect(rpc.calls).toContainEqual(['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_A}` } }])
     cleanup()
 

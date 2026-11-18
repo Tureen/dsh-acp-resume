@@ -9,12 +9,12 @@ export const PANEL_LOCALE = 'acpResumePanel'
 
 /** Simplified Chinese panel copy. */
 export const zh = {
-  title: '持久会话',
-  guideDescription: '查看并释放模型建立的持久 ACP 会话',
+  title: 'ACP 会话',
+  guideDescription: '查看并释放模型建立的 ACP 会话',
   refresh: '刷新',
   loading: '正在读取…',
   loadFailed: '读取失败:{message}',
-  emptyTitle: '暂无持久会话',
+  emptyTitle: '暂无 ACP 会话',
   emptyHint: '让模型调用 {tool} 创建;之后的每一轮对话都在这里可见。',
   active: '活跃',
   released: '已释放(下次发送自动重连)',
@@ -27,7 +27,7 @@ export const zh = {
   hoursAgo: '{count} 小时前',
   daysAgo: '{count} 天前',
   countMine: '本会话 {count} 条 / 共 {total} 条',
-  emptySessionHint: '当前会话尚未创建持久会话。',
+  emptySessionHint: '当前会话尚未创建 ACP 会话。',
   owner: '归属 {id}',
   originUnknown: '来源未知',
   release: '释放',
@@ -93,12 +93,12 @@ export type PanelCopyKey = keyof typeof zh
 
 /** English panel copy. */
 export const en: Record<PanelCopyKey, string> = {
-  title: 'Persistent chats',
-  guideDescription: 'View and release persistent ACP chats the model opened',
+  title: 'ACP chats',
+  guideDescription: 'View and release ACP chats the model opened',
   refresh: 'Refresh',
   loading: 'Loading…',
   loadFailed: 'Could not load: {message}',
-  emptyTitle: 'No persistent chats',
+  emptyTitle: 'No ACP chats',
   emptyHint: 'Ask the model to call {tool}; every turn after that shows up here.',
   active: 'Active',
   released: 'Released (the next send reconnects)',
@@ -111,7 +111,7 @@ export const en: Record<PanelCopyKey, string> = {
   hoursAgo: '{count} h ago',
   daysAgo: '{count} d ago',
   countMine: 'This session {count} of {total}',
-  emptySessionHint: 'This session has not created a persistent chat yet.',
+  emptySessionHint: 'This session has not created an ACP chat yet.',
   owner: 'Owner {id}',
   originUnknown: 'origin unknown',
   release: 'Release',
