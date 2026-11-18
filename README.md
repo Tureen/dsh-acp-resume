@@ -98,7 +98,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
     permission: ask
 ```
 
-> **兼容性：** `model` 与 `effort` 通过追加 `--model` / `--effort` CLI 旗标实现，**仅对接受这些旗标的 agent 有效**（kiro-cli 已验证）。部分 agent（如 agy）不接受这些旗标，请勿为其后端设置这两个字段，设了会导致启动失败。agy 请设 `modelSelect: session`(默认 `flag`):此时不追加 `--model`,会话建立后(`session/new` / `session/load` 之后)改调 `session/set_model` 切到 `model`;agent 对 `session/set_model` 回 `-32601`(方法不存在)时降级调 `session/set_config_option {sessionId, configId: "model", value}`,kiro v3 经 set_config_option 适配(kiro v3 不认 `--model` / `--effort`,参数形态待真机验证)。两者都失败仅告警不阻断连接。
+> **兼容性：** `model` 与 `effort` 通过追加 `--model` / `--effort` CLI 旗标实现，**仅对接受这些旗标的 agent 有效**（kiro-cli 已验证）。部分 agent（如 agy）不接受这些旗标，请勿为其后端设置这两个字段，设了会导致启动失败。agy 请设 `modelSelect: session`(默认 `flag`):此时不追加 `--model`,会话建立后(`session/new` / `session/load` 之后)改调 `session/set_model` 切到 `model`;agent 对 `session/set_model` 回 `-32601`(方法不存在)或 `-32603`(kiro v3 的实际返回)时降级调 `session/set_config_option {sessionId, configId: "model", value}`,kiro v3 经 set_config_option 适配(kiro v3 不认 `--model` / `--effort`,参数形态已探针验证)。两者都失败仅告警不阻断连接。
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 

@@ -99,7 +99,7 @@ export interface Config {
    * How {@link model} is applied. `'flag'` (default) appends `--model <id>`;
    * `'session'` appends nothing and calls `session/set_model` right after
    * `session/new` / `session/load` (for agents such as agy that reject
-   * `--model`); on `-32601` it falls back to `session/set_config_option`
+   * `--model`); on `-32601` or `-32603` it falls back to `session/set_config_option`
    * (kiro v3). A failure of both is logged and does not block the chat.
    */
   modelSelect?: ModelSelect

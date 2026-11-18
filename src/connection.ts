@@ -37,7 +37,7 @@ import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestR
 export type { PermissionPolicy }
 
 /** Startup step that failed. */
-/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied after open by `session/set_model` (on -32601: `session/set_config_option`). */
+/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied after open by `session/set_model` (on -32601/-32603: `session/set_config_option`). */
 export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string }
 
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
@@ -90,6 +90,8 @@ export interface AcpSteerResult {
 
 /** JSON-RPC "Method not found". */
 const METHOD_NOT_FOUND = -32601
+/** JSON-RPC "Internal error"; kiro v3 answers `session/set_model` with it. */
+const INTERNAL_ERROR = -32603
 
 /** Terminal elements of one settled prompt turn. */
 export interface AcpTurnResult {
@@ -483,13 +485,13 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
           try {
             await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel })
           } catch (error: unknown) {
-            if (error instanceof RequestError && error.code === METHOD_NOT_FOUND) {
-              // kiro v3 has no set_model; fall back to the ACP config option.
-              // Param shape follows the ACP spec ({sessionId, configId, value}); pending real kiro v3 verification.
+            if (error instanceof RequestError && (error.code === METHOD_NOT_FOUND || error.code === INTERNAL_ERROR)) {
+              // kiro v3 answers set_model with -32603 (probe-verified); other agents with -32601. Fall back to the ACP config option.
+              // Param shape {sessionId, configId, value} verified by probe against kiro v3.
               try {
                 await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'model', value: spec.sessionModel })
               } catch (fallbackError: unknown) {
-                warn(`session/set_config_option(model=${spec.sessionModel}) failed after session/set_model was not found: ${toError(fallbackError).message}`)
+                warn(`session/set_config_option(model=${spec.sessionModel}) failed after session/set_model was rejected (-32601/-32603): ${toError(fallbackError).message}`)
               }
             } else {
               warn(`session/set_model(${spec.sessionModel}) failed: ${toError(error).message}`)

@@ -499,17 +499,16 @@ describe('sessionModel (session/set_model)', () => {
     expect(readFileSync(file, 'utf8').trim().split('\n')).toEqual([`set_model ${sid} gemini-4-carbon-high`, `set_model ${sid} gemini-4-carbon-high`])
   })
 
-  it('a failing set_model warns but does not block the connection', async () => {
+  it('a set_model rejected with -32603 (kiro v3) falls back to set_config_option without warning', async () => {
     const errors: Error[] = []
     const configFile = join(tempDir(), 'set-config.log')
     const { spec } = makeSpec({ MOCK_SET_MODEL_FAIL: '1', MOCK_SET_CONFIG_FILE: configFile }, undefined, { onError: (e) => { errors.push(e) } })
     const conn = await open({ ...spec, sessionModel: 'x' })
-    expect(conn.remoteSessionId).toBeTruthy()
-    expect(errors.map(e => e.message).join('\n')).toContain('session/set_model(x) failed')
-    expect(existsSync(configFile)).toBe(false)
+    expect(readFileSync(configFile, 'utf8').trim()).toBe(`set_config_option ${conn.remoteSessionId} model x`)
+    expect(errors).toEqual([])
   })
 
-  it('falls back to session/set_config_option when set_model is -32601 (kiro v3), after new and load', async () => {
+  it('falls back to session/set_config_option when set_model is -32601 or -32603 (kiro v3), after new and load', async () => {
     const errors: Error[] = []
     const file = join(tempDir(), 'set-config.log')
     const store = join(tempDir(), 'sessions.json')
@@ -524,13 +523,13 @@ describe('sessionModel (session/set_model)', () => {
     expect(errors).toEqual([])
   })
 
-  it('set_model -32601 and a failing set_config_option warn but do not block the connection', async () => {
+  it('set_model rejected and a failing set_config_option warn but do not block the connection', async () => {
     const errors: Error[] = []
     const { spec } = makeSpec({ MOCK_NO_SET_MODEL: '1', MOCK_SET_CONFIG_FAIL: '1' }, undefined, { onError: (e) => { errors.push(e) } })
     const conn = await open({ ...spec, sessionModel: 'x' })
     expect(conn.remoteSessionId).toBeTruthy()
     const text = errors.map(e => e.message).join('\n')
-    expect(text).toContain('session/set_config_option(model=x) failed after session/set_model was not found')
+    expect(text).toContain('session/set_config_option(model=x) failed after session/set_model was rejected (-32601/-32603)')
     expect(text).not.toContain('session/set_model(x) failed')
   })
 })
