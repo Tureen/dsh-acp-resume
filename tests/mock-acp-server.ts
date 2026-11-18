@@ -87,6 +87,9 @@
  *                        the behavior applies while the named file exists, so one pool's processes can
  *                        differ between start and reconnect. CRASH_ON_LOAD exits
  *                        (code 13) inside `session/load`.
+ * - `MOCK_LOAD_ERROR_FILE` — runtime switch: while the named file exists,
+ *                        `session/load` rejects with the file's text as the error
+ *                        message (a load refusal that does not name a missing session).
  * - `MOCK_FLUSH_ON_EOF` — if set, on stdin EOF the agent takes an async beat
  *                         (MOCK_FLUSH_DELAY_MS, default 150) simulating the real
  *                         acp-agent's EOF-driven quiesce+flush, then touches this
@@ -249,6 +252,7 @@ function makeAgent() {
         while (!existsSync(LOAD_GATE.go)) await new Promise(r => setTimeout(r, 10))
       }
       if (switchOn('MOCK_CRASH_ON_LOAD_FILE')) process.exit(13)
+      if (switchOn('MOCK_LOAD_ERROR_FILE')) throw new Error(readFileSync(process.env.MOCK_LOAD_ERROR_FILE as string, 'utf8'))
       const known = !LOAD_MISSING && !switchOn('MOCK_LOAD_MISSING_FILE') && sessions.has(params.sessionId)
       if (!known) throw new Error(`mock: session not found: ${params.sessionId}`)
       const entry = sessions.get(params.sessionId) as { cwd: string; prompts: string[] }

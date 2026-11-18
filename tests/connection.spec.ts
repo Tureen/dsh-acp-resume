@@ -17,7 +17,7 @@ import type { AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { Context } from '@deepseek-ai/cordis'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import { AcpConnectionError, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
+import { AcpConnectionError, isLoadSessionMissing, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
 import { userQuestionPermissionResolver } from '../src/permission-request.ts'
 import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -129,6 +129,25 @@ describe('normalizeInboundMessage', () => {
     const content = [{ type: 'content', content: { type: 'text', text: 'a' } }]
     expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } }))
       .toEqual([{ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } } }])
+  })
+})
+
+describe('isLoadSessionMissing', () => {
+  const loadRejection = (cause: unknown, stage: 'load-session' | 'new-session' = 'load-session'): AcpConnectionError =>
+    new AcpConnectionError('acp-resume: x', { stage, category: 'protocol', jsonRpcCode: -32603, cause })
+  it('accepts load rejections that name a missing session or the missing loadSession capability', () => {
+    expect(isLoadSessionMissing(loadRejection(Object.assign(new Error('Internal error'), { data: { details: 'Session not found: s1' } })))).toBe(true)
+    expect(isLoadSessionMissing(loadRejection(new Error('no rollout found for thread id t1')))).toBe(true)
+    expect(isLoadSessionMissing(loadRejection(new Error('No such session')))).toBe(true)
+    expect(isLoadSessionMissing(loadRejection(new Error('ACP agent does not advertise the loadSession capability')))).toBe(true)
+  })
+  it('rejects other load failures: internal error, auth, rate limit, other stages, non-protocol', () => {
+    expect(isLoadSessionMissing(loadRejection(new Error('Internal error')))).toBe(false)
+    expect(isLoadSessionMissing(loadRejection(new Error('authentication required')))).toBe(false)
+    expect(isLoadSessionMissing(loadRejection(new Error('rate limited')))).toBe(false)
+    expect(isLoadSessionMissing(loadRejection(new Error('session not found'), 'new-session'))).toBe(false)
+    expect(isLoadSessionMissing(new AcpConnectionError('x', { stage: 'load-session', category: 'transport', cause: new Error('session not found') }))).toBe(false)
+    expect(isLoadSessionMissing(new Error('session not found'))).toBe(false)
   })
 })
 

@@ -16,7 +16,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 - 外部 agent 的会话号持久化在 `$DSH_HOME/storages/acp-resume/registry.json`;每个会话的轮次记录(消息与回答文本,明文)另存于同目录 `turns/<chatId>.jsonl`,最近 200 条,供面板详情页查看,删除会话时一并删除;
 - 会话进程空闲保活(超时释放,会话记录保留);
-- 下次对话自动重连:重新 spawn → `initialize` → `session/load(原会话号 + 原 cwd)` → 继续;远端在协议层拒绝 load 时降级为新会话。若当前池实例同一 chat 连续 3 轮 `error`,下一次 send 也会跳过 load 新开会话,并以前置短语 `remote session failed repeatedly, started fresh` 明确告知;该计数只在内存中保存,应用重启后重新累计。其余失败本次报错、会话记录不动(D6)。
+- 下次对话自动重连:重新 spawn → `initialize` → `session/load(原会话号 + 原 cwd)` → 继续;远端在协议层拒绝 load 且能明确认出「会话不存在」(报错含 session not found / no rollout 等,或 agent 未声明 loadSession 能力)时降级为新会话;原因不明的 load 拒绝(内部错误、需认证、限流等)保留原绑定、本次报错。若当前池实例同一 chat 连续 3 轮 `error`,下一次 send 也会跳过 load 新开会话,并以前置短语 `remote session failed repeatedly, started fresh` 明确告知;该计数只在内存中保存,应用重启后重新累计。其余失败本次报错、会话记录不动(D6)。
 
 ## 架构(与官方完全隔离并存)
 

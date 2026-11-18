@@ -214,6 +214,25 @@ describe('AcpSessionPool', () => {
     expect(registryRemote(registryPath, chat.chatId)).toBe(after.remoteSessionId)
   })
 
+  it('keeps the binding and fails the send when session/load is rejected for a reason that does not name a missing session (D6)', async () => {
+    const { env, dir } = storeEnv('acp-resume-loaderr-')
+    const loadError = join(dir, 'load-error')
+    const { pool, registryPath } = makePool({ env: { ...env, MOCK_LOAD_ERROR_FILE: loadError } })
+    const chat = await pool.start(process.cwd())
+    await pool.send(chat.chatId, '记住暗号R')
+    await pool.close(chat.chatId)
+    writeFileSync(loadError, 'rate limited, retry later')
+    const error = await pool.send(chat.chatId, 'p').then(() => undefined, (e: unknown) => e)
+    expect(error).toBeInstanceOf(AcpConnectionError)
+    expect(error).toMatchObject({ stage: 'load-session', category: 'protocol' })
+    expect(registryRemote(registryPath, chat.chatId)).toBe(chat.remoteSessionId)
+    expect(logLines(registryPath, chat.chatId).map(l => l.event).filter(e => e !== undefined)).toEqual(['reconnect-failed'])
+    // Once the agent loads again, the SAME session continues with its context.
+    rmSync(loadError)
+    const after = await pool.send(chat.chatId, '暗号是什么')
+    expect(after).toMatchObject({ freshSession: false, output: 'remember:记住暗号R', remoteSessionId: chat.remoteSessionId })
+  })
+
   it('fails the send and keeps the saved session id when the child exits during session/load', async () => {
     const { env, dir } = storeEnv('acp-resume-loadcrash-')
     const crashOnLoad = join(dir, 'crash-on-load')

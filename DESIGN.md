@@ -22,7 +22,7 @@
 |---|---|---|
 | src/connection.ts | 新增 | AcpConnection:openNew / openLoad(load 参数 {sessionId, cwd, mcpServers:[]},kiro v2 实测可用)/ prompt(官方结算逻辑:流式攒文本、stopReason 映射、权限策略、单飞)/ close(官方销毁梯子) |
 | src/run.ts | ~~重构~~ 保持逐字副本(2026-11-09 修订,D11) | 原计划 startAcpRun = openNew + 一轮 prompt + 结算;已撤销,连接原语由池专用的 connection.ts 另行实现,run.ts 不动 |
-| src/pool.ts | 新增 | 池:acquire/send/close;空闲计时 idleTimeoutMs(到期关进程、留注册表);注册表 $DSH_HOME/storages/acp-resume/registry.json(原子写;chatId/remoteSessionId/cwd/命令指纹);进程死后 send 自动 openLoad;协议级 load 拒绝或当前池实例连续 3 条 `error` 后降级新会话并注明(后者计数仅内存) |
+| src/pool.ts | 新增 | 池:acquire/send/close;空闲计时 idleTimeoutMs(到期关进程、留注册表);注册表 $DSH_HOME/storages/acp-resume/registry.json(原子写;chatId/remoteSessionId/cwd/命令指纹);进程死后 send 自动 openLoad;协议级「会话不存在」类 load 拒绝或当前池实例连续 3 条 `error` 后降级新会话并注明(后者计数仅内存) |
 | src/tools.ts | 新增 | 四工具(defineTool);send 返回标注降级信息 |
 | src/index.ts | 修改 | name='acp-resume';Config + idleTimeoutMs(默认 600000)/registryPath/toolPrefix;apply 注册 provider+tools |
 | tests/mock-acp-server.ts | 扩展 | session/load 分支(内存会话表) |

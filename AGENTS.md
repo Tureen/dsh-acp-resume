@@ -73,7 +73,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 - 注释直接、具体:不重述代码、不写推理过程;命令、路径、报错保留原文。
 - 凭据走 Config `env` 显式叠加,父进程环境先经官方清洗逻辑;不在测试、夹具、文档写入真实 key。
 - send 的后台任务模式见 D17:单飞前置检查在 `jobs.start` 之前;job 的取消走 D6 取消条;无 jobs 服务时保持同步语义。
-- 池语义固定,改动需先修订 D6:每会话单飞(在途时拒绝新 send,不排队);协议级 `session/load` 拒绝，或当前池实例同一 chat 连续 3 条 `error` 后的下一次 send，才降级新会话，分别注记固定短语 `remote session lost, started fresh` 与 `remote session failed repeatedly, started fresh`;后者计数仅在内存中保存，重启重新累计，注册表不存此状态;其余重连失败报错且注册表不动;空闲释放只关进程、注册表保留;注册表写 = 临时文件 + 原子改名;取消 = 本地立即结算 `aborted` + 尽力 `session/cancel` + 作废连接(error 轮同样作废)。
+- 池语义固定,改动需先修订 D6:每会话单飞(在途时拒绝新 send,不排队);协议级 `session/load` 拒绝且能认出会话不存在(或未声明 loadSession)，或当前池实例同一 chat 连续 3 条 `error` 后的下一次 send，才降级新会话，分别注记固定短语 `remote session lost, started fresh` 与 `remote session failed repeatedly, started fresh`;后者计数仅在内存中保存，重启重新累计，注册表不存此状态;其余重连失败(含原因不明的 load 拒绝)报错且注册表不动;空闲释放只关进程、注册表保留;注册表写 = 临时文件 + 原子改名;取消 = 本地立即结算 `aborted` + 尽力 `session/cancel` + 作废连接(error 轮同样作废)。
 - 按轮日志(D18)是诊断镜像不是状态:写失败只经 `onWarn` 告警、绝不改变轮结果;写前复查注册表里会话还在(purge 后不得复活);`purge` 连日志文件一起删;steer 不记。注册表结构不因日志而改。
 - 面板详情页签是资源地址页签(`dsh-resource://acp-resume-chat/<chatId>`),不注册 resource provider;身份只能放地址里(官方不持久化导航参数)。
 - kiro 侧会话随 new/load 积累(D10):`acp_chat_close` 的工具说明需提示以 `kiro-cli chat --list-sessions` / `--delete-session` 清理。

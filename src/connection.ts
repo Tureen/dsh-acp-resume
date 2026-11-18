@@ -229,7 +229,13 @@ function connectionError(
   )
 }
 
-/** Whether an error's message, `data`, or `details` mentions "session not found" (case-insensitive). */
+/** Lower-cased phrases an agent uses when the remote session it was asked to load does not exist (kiro/agy, Codex `no rollout found`). */
+const MISSING_SESSION_PHRASES = ['session not found', 'no such session', 'unknown session', 'no rollout', 'thread not found'] as const
+
+/** Cause text of the `load` refused by the client's capability gate. */
+const LOAD_CAPABILITY_MISSING = 'ACP agent does not advertise the loadSession capability'
+
+/** Whether an error's message, `data`, or `details` names a missing remote session (case-insensitive). */
 function mentionsSessionNotFound(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const parts: string[] = [error.message]
@@ -242,7 +248,20 @@ function mentionsSessionNotFound(error: unknown): boolean {
     }
     try { parts.push(JSON.stringify(value)) } catch { /* unserializable detail carries no signal */ }
   }
-  return parts.some(part => part.toLowerCase().includes('session not found'))
+  return parts.some(part => MISSING_SESSION_PHRASES.some(phrase => part.toLowerCase().includes(phrase)))
+}
+
+/**
+ * Whether a reconnect failure proves the saved remote session cannot be
+ * loaded (D6): a `load-session` protocol rejection whose cause names a missing
+ * session, or the client gate's missing `loadSession` capability. Any other
+ * load rejection (internal error, auth, rate limit) is not proof.
+ */
+export function isLoadSessionMissing(error: unknown): error is AcpConnectionError {
+  if (!(error instanceof AcpConnectionError) || error.stage !== 'load-session' || error.category !== 'protocol') return false
+  const cause: unknown = error.cause
+  if (cause instanceof Error && cause.message === LOAD_CAPABILITY_MISSING) return true
+  return mentionsSessionNotFound(cause)
 }
 
 /** Permission decision fact (mirrors run.ts). */
@@ -482,7 +501,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
           if (init.agentCapabilities?.loadSession !== true) {
             throw connectionError(
               { stage: 'load-session', category: 'protocol' },
-              new Error('ACP agent does not advertise the loadSession capability'),
+              new Error(LOAD_CAPABILITY_MISSING),
             )
           }
           remoteSessionId = open.sessionId

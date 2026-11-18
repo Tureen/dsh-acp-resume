@@ -4,7 +4,8 @@
  * between turns), a durable registry entry (remote session id + cwd, so a
  * dead process reconnects through `session/load`), an idle timer that
  * releases the process while PRESERVING the registry, and single-flight
- * prompt semantics per chat. A protocol-level rejection of `session/load`, or
+ * prompt semantics per chat. A `session/load` rejection that proves the saved
+ * session missing (the error names it, or the agent lacks `loadSession`), or
  * three consecutive settled `error` turns in this pool instance, falls back
  * to a fresh remote session; any other reconnect failure fails the send and
  * leaves the saved remote session id untouched. The error count is volatile
@@ -41,7 +42,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
-import { AcpConnectionError, openAcpConnection } from './connection.js'
+import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -449,7 +450,7 @@ export class AcpSessionPool {
 
   /**
    * Send one message to a durable chat, reconnecting through `session/load`
-   * when no live process exists. A protocol-level `session/load` rejection,
+   * when no live process exists. A `session/load` rejection proving the saved session missing,
    * or a prior run of three settled `error` turns in this pool instance,
    * answers from a FRESH remote session (`freshSession: true`); any other
    * reconnect failure rejects and keeps the saved remote session id.
@@ -758,10 +759,8 @@ export class AcpSessionPool {
       const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
       return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
-      const sessionGone = error instanceof AcpConnectionError
-        && error.stage === 'load-session'
-        && error.category === 'protocol'
-      if (!sessionGone) throw error
+      // Only a proven missing session is replaced; any other rejection keeps the binding (D6).
+      if (!isLoadSessionMissing(error)) throw error
       this.assertLive()
       const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
       return { conn, freshSessionReason: 'load-rejected', lost: error }

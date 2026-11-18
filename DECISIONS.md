@@ -33,13 +33,13 @@
 修订(2026-11-04,D19):工具增至五个,新增 `acp_chat_steer`(给在途轮插话,标并发安全)。
 修订(2026-11-04,D17):宿主装有 jobs 服务(`ctx.jobs`)时,`acp_chat_send` 不再等整轮回答,改为把这一轮注册成后台任务(job),立即返回 jobId;回答流式写进该 job 的输出,完成通知由宿主的 tool-jobs 在会话内送达,模型用 `job_output` 读、`job_kill` 停。无 jobs 服务时 send 保持原同步语义。其余三个工具不变。
 
-## D6 池语义(2026-11-04;同日按六维评审修订,见 D16;2026-11-09 重复失败恢复修订)
+## D6 池语义(2026-11-04;同日按六维评审修订,见 D16;2026-11-09 重复失败恢复修订;2026-11-18 load 拒绝收窄)
 
 **本次修订背景(2026-11-09):** 今天网络切换后，4 个 kiro 远端会话都能成功 `session/load`，但每次 prompt 约 8 秒后传输断开并以 `stopReason=error` 结算。原规则只会在协议级 load 拒绝时新开会话，这类「能加载、一用就崩」的会话会无限重试同一个远端会话，只能人工 purge；上述 4 个会话已人工清理。
 
 - 单飞:每会话同时仅一个 prompt 在途,在途时新 send 拒绝并提示(与官方"一次一个"一致,不做排队);
 - 工具并发标注:`acp_chat_start` / `send` / `list` 标并发安全,不同会话的 send 可并行;`acp_chat_close` 标独占(不与其他工具并行);同一会话的并行 send 仍由单飞拒绝;
-- 降级(一):`session/load` 被远端在协议层拒绝(`AcpConnectionError` 的 `stage: load-session` 且 `category: protocol`,含能力门控判定的 loadSession 未声明)时降级为新会话;工具回答首行前置注记,内含固定短语 `remote session lost, started fresh`,由模型决定重述上下文。
+- 降级(一,2026-11-18 收窄):**仅协议级会话不存在才降级**。`session/load` 被远端在协议层拒绝(`AcpConnectionError` 的 `stage: load-session` 且 `category: protocol`),且能明确认出会话不存在——原始错误的 message / data / details 含 `session not found`、`no such session`、`unknown session`、`no rollout`(Codex `thread/resume`)或 `thread not found`(不分大小写),或是能力门控判定的 loadSession 未声明——时降级为新会话(判定见 `isLoadSessionMissing`);**原因不明的 load 拒绝**(如 -32603 内部错误、需认证、限流)保留原绑定、本次 send 报错,记 `reconnect-failed`,由调用方决定重试。收窄背景:三引擎交叉审查指出原规则把任何协议错误都当「会话丢了」,一次暂时性拒绝即作废原有上下文。工具回答首行前置注记,内含固定短语 `remote session lost, started fresh`,由模型决定重述上下文。
 - 降级(二,2026-11-09):每个 chat 在**当前池实例内存**中累计连续 `stopReason=error` 的已结算轮数；任一非 `error` 结算轮都会折断连续性，成功轮必然清零。累计到 3 后，该 chat 的**下一次** send 在已释放状态下跳过 `session/load`、直接 `session/new`，替换注册表中的远端会话号，回复首行前置含固定短语 `remote session failed repeatedly, started fresh` 的注记。此计数不写注册表、不改变其结构或版本，应用重启后的新池从 0 重新累计；这是有意接受的非持久诊断状态。该路径与协议级 load 拒绝并列，不能把它伪记为远端 load 拒绝。
 - 进程启动失败、传输断开、进程退出等其余**重连**失败直接让本次 send 失败,注册表不动,原远端会话号保留待下次重试；prompt 已结算为 `error` 的轮仍按上一条累计。
 - 空闲:`idleTimeoutMs`(默认 600 000)到期关进程,**注册表保留**,下次 send 重连;
