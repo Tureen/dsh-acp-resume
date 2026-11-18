@@ -339,3 +339,55 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 ### 后果与实施门槛
 
 D24 已作为一项原子增量实现。验收覆盖：0.1.20 单后端 `acp_chat_start` 夹具逐字节一致；双后端 argv 路由、非默认后端 `session/load` 重连、两后端在途轮互不干扰；全量基线 343 绿。Antigravity 的多轮和杀进程 `session/load` 探针结果仅记录协议兼容事实，不构成产品支持承诺。
+
+## D25 Codex app-server 私有协议适配器(2026-11-18,立项;连接层已实施,其余分轮)
+
+### 动机
+
+Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 JSON-RPC，thread/turn/item 三层模型)。官方 `@deepseek-ai/dsh-subagent-codex` 只做 one-shot，没有 steer 和 resume。本决策把 Codex 接为持久池的第三个一等后端，走私有协议适配，换来 ACP 没有的原生能力：steer(插话不打断)、thread resume、分项审批。
+
+### 协议事实(kiro 调研 + agy 调研 + kiro 核验,双引擎交叉验证)
+
+- **通信**:stdio JSON-RPC 2.0，spawn `codex app-server`。握手为 `initialize {clientInfo:{name:'dsh-acp-resume'}}` 加 `initialized` 通知。
+- **会话**:`thread/start {cwd, model, approvalPolicy, sandbox, ephemeral:false}` 返回 `thread.id`，落盘为远端会话号。重连用 `thread/resume {threadId, model, approvalPolicy, sandbox}`；SIGKILL 后实测可恢复。
+- **ephemeral**:必须显式传 `false`。默认 `true` 不落盘，无法 resume。
+- **轮**:`turn/start {threadId, input:[{type:'text',text,text_elements:[]}], effort?}` 立即返回 `turn.id`(inProgress)，结果靠通知流；终点是 `turn/completed {status: completed|interrupted|failed}`。
+- **steer**:`turn/steer {threadId, input, expectedTurnId}` 向同一轮追加 userMessage，不打断正在跑的命令；必须传当前在途轮的 `expectedTurnId`。
+- **取消**:`turn/interrupt {threadId, turnId}`，毫秒级。
+- **流式**:`item/agentMessage/delta`，params 为 `{threadId, turnId, itemId, delta}`。最终输出取 `item/completed` 中 `agentMessage.phase === 'final_answer'` 的 `text`。
+- **审批**:三套 `item/*/requestApproval`(命令/文件/权限)。`availableDecisions` 含 `accept` / `acceptWithExecpolicyAmendment` / `cancel`，不含 `decline`，但服务端接受 `decline` 回复：该条被拒、整轮继续；`cancel` 则整轮 interrupted。
+- **模型**:`model/list` 返回 10 个(含 2 个隐藏)，由 `thread/start` 或 `turn/start` 的 `model` 参数指定。默认模型 `gpt-6.1-terra` 本机不可用，必须显式指定。
+- **stopReason 映射**:completed→end_turn、interrupted→cancelled、failed→error、`codexErrorInfo === 'contextWindowExceeded'`→max-tokens。
+
+### 架构裁定
+
+- 新模块 `src/connection-codex.ts`，导出 `openCodexConnection(spec, open, signal?)`，返回与 `AcpConnection` 同形状的对象(prompt / steer / notifyCancel / dispose / remoteSessionId / processSettled / observeOutcome)；启动失败沿用 `AcpConnectionError` 的阶段与类别，池的降级规则(协议级 load 拒绝 → 新会话)原样适用。
+- `pool.ts` 的 `BackendSpec` 增加 `protocol: 'acp' | 'codex'`，池按协议选 `openAcpConnection` 或 `openCodexConnection`。
+- 不使用 `@agentclientprotocol/sdk`，自己实现按行 JSON-RPC 传输(参照官方 dsh-subagent-codex)。
+- 审批映射独立成 `codex-approval.ts`(约 150 行，后续轮)；`permission: ask` 的宿主确认桥也在该轮接入。
+- one-shot provider(`run.ts`)不改，Codex 只做持久池后端。D6 / D11 / D18 语义均不动。
+- 每个 chat 一个进程，与 kiro / agy 池一致。`thread/loaded/list` 显示一个进程可承载多线程，本决策有意不用。
+
+### Config
+
+`BackendConfig` 增加 `protocol?: 'acp' | 'codex'`(默认 `'acp'`)。Codex 后端额外字段：`model`(必填，因默认模型不可用)、`sandbox`(`read-only` | `workspace-write` | `danger-full-access`，默认 `read-only`)、`approvalPolicy`(`never` | `untrusted` | `on-request` | `on-failure`，默认 `never`)。Config schema 随池集成轮扩展。
+
+### 连接层实施细节(第一轮)
+
+- **审批自动决策**:`allow`→`accept`，`reject`→`decline`，其余(含 `ask`，桥未接前)与轮外到达的审批一律 `cancel`(fail closed)。未识别的服务端请求回 `-32601`，避免服务端空等。
+- **轮隔离**:通知带 `turnId`，只处理当前轮的；`turn/start` 回复前到达的通知先缓存，拿到 `turnId` 后重放同轮部分。
+- **输出**:流式观察者收到当前轮全部 `agentMessage` delta(含非最终的过程性消息)；结算输出取 `final_answer` 文本，没有则取 delta 拼接。因此两者在有过程性消息时不严格相等，与 ACP 连接的「拼接等于结算输出」约定有差异。
+- **取消**:与 D6 一致，本地立即结算 `aborted`，并向远端发 `turn/interrupt`；`turn/start` 回复前取消，则在拿到 `turnId` 后补发。
+- **steer**:无在途轮时抛普通错误；服务端 `-32601` 抛 `AcpSteerUnsupportedError`，复用既有降级。`messageId` 取返回的 `turnId`。
+- **未经实测的形状**:`turn/completed` 的 `turn.status` / `turn.error.codexErrorInfo` 嵌套位置、`thread/start` 回复的 `thread.id` 位置，以及权限类审批的回复形状(本轮统一回 `{decision}`)，来自调研而非本机直连；解析已做容错，由 mock 与真机探针轮核验。
+
+### 已知风险
+
+- `decline` 不在 `availableDecisions` 里却被接受，依赖未文档化行为，Codex 升级可能失效；失效时 reject 策略退回 `cancel`(整轮 interrupted)。
+- 默认模型不可用属环境问题(Codex 版本或账号)，适配器通过必填 `model` 规避。
+- 官方包针对 0.147.0，本机为 0.160.0，协议可能有小变化。
+- 私有协议无稳定性承诺，升级 Codex 后须重跑真机探针。
+
+### 后续轮次
+
+审批层与 `ask` 桥(`codex-approval.ts`)、池集成与 Config 扩展、mock app-server、测试(并更新 AGENTS.md 的测试基线)。
