@@ -156,6 +156,15 @@ describe('ChatsPanel', () => {
     expect(container.querySelector('[data-tag]')).toBeNull()
   })
 
+  it('labels the backend badge with backendDisplay, falling back to backend for an older host', () => {
+    const { rerender, container } = render(<ChatsPanel {...props(ready([chat({ backend: 'default', backendDisplay: 'kiro-cli', backendCount: 2 })]))} />)
+    const row = (): HTMLElement => container.querySelector('[data-chat-id]') as HTMLElement
+    expect(within(row()).getByText('后端 kiro-cli')).toBeTruthy()
+    expect(within(row()).queryByText('后端 default')).toBeNull()
+    rerender(<ChatsPanel {...props(ready([chat({ backend: 'review', backendCount: 2 })]))} />)
+    expect(within(row()).getByText('后端 review')).toBeTruthy()
+  })
+
   it('puts active chats first and released ones under a collapsed group, both newest first', () => {
     // Snapshot order is newest first across both kinds (ChatsSource sorts).
     const rows = [
@@ -1198,6 +1207,7 @@ describe('snapshot-equal (D21)', () => {
     const base = chat({ backend: 'default', backendCount: 2 })
     expect(chatEqual(base, { ...base, backend: 'review' })).toBe(false)
     expect(chatEqual(base, { ...base, backendCount: 1 })).toBe(false)
+    expect(chatEqual(base, { ...base, backendDisplay: 'kiro-cli' })).toBe(false)
   })
 
   it('chatsEqual is order- and length-sensitive', () => {

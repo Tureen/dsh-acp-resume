@@ -21,7 +21,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpSteerUnsupportedError } from './connection.js'
-import { freshSessionNotice, type AcpSessionPool, type PoolSendResult } from './pool.js'
+import { freshSessionNotice, type AcpSessionPool, type PoolSendResult, type PooledChatInfo } from './pool.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
@@ -54,7 +54,7 @@ export interface ToolsRegistryFace {
 const LABEL_EXCERPT_MAX = 60
 
 /** `12s` / `12m` / `3h` / `2d` since `then`; clock skew reads as `0s`. */
-function formatIdle(then: number, now: number): string {
+function formatElapsed(then: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - then) / 1000))
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.floor(seconds / 60)
@@ -67,10 +67,19 @@ function formatIdle(then: number, now: number): string {
 /** Longest label accepted by the start tool. */
 const LABEL_MAX = 80
 
-function describeChat(chat: { chatId: string; remoteSessionId: string; cwd: string; label?: string; ownerSessionId?: string; active: boolean; lastActive: number }, now: number): string {
+type ListedChat = Pick<PooledChatInfo, 'chatId' | 'remoteSessionId' | 'cwd' | 'label' | 'backend' | 'active' | 'lastActive' | 'inFlight'>
+
+/** `running (<since prompt start>)` while a turn is in flight, `idle (<since last turn>)` with a live process, else `released`. */
+function chatState(chat: ListedChat, now: number): string {
+  if (chat.inFlight !== undefined) return `running (${formatElapsed(chat.inFlight.startedAt, now)})`
+  if (chat.active) return `idle (${formatElapsed(chat.lastActive, now)})`
+  return `released (last active ${formatElapsed(chat.lastActive, now)} ago; reconnects on next send)`
+}
+
+/** One list row. The owner is omitted: the list is already filtered to the calling session (D20). */
+function describeChat(chat: ListedChat, now: number): string {
   const label = chat.label === undefined ? '' : ` | label ${JSON.stringify(chat.label)}`
-  const owner = chat.ownerSessionId === undefined ? '' : ` | owner ${chat.ownerSessionId.slice(0, 8)}`
-  return `${chat.chatId}${label}${owner} | remote ${chat.remoteSessionId} | ${chat.active ? 'live process' : 'released (reconnects on next send)'} | idle ${formatIdle(chat.lastActive, now)} (${new Date(chat.lastActive).toISOString()}) | cwd ${chat.cwd}`
+  return `${chat.chatId}${label} | backend ${chat.backend} | ${chatState(chat, now)} | remote ${chat.remoteSessionId} | last active ${new Date(chat.lastActive).toISOString()} | cwd ${chat.cwd}`
 }
 
 /** First line of the diagnostic, capped; empty when there is none. */
@@ -318,8 +327,8 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
         backend: { type: 'string', description: `Optional backend name; omit for default. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
       },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true } } },
-        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId}; send messages with ${toolPrefix}send` }],
+        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true }, backend: { type: 'string', required: true }, cwd: { type: 'string', required: true } } },
+        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId} (backend: ${value.backend}, cwd: ${value.cwd}); send messages with ${toolPrefix}send` }],
       },
       isConcurrencySafe: () => true,
       async execute(args, exec) {
@@ -335,14 +344,15 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
           ...(args.backend === undefined ? {} : { backend: args.backend }),
           ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
         })
-        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId }
+        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId, backend: chat.backend, cwd: chat.cwd }
       },
     })
 
   const list = defineTool({
     name: `${toolPrefix}list`,
-    description: 'List persistent ACP chats created by the current DSH session: chatId, label (if any), owner, remote session id, liveness, '
-      + `idle time, and working directory. Released chats reconnect on their next ${toolPrefix}send.`,
+    description: 'List persistent ACP chats created by the current DSH session: chatId, label (if any), backend, state '
+      + '(running with elapsed time, idle with a live process, or released), remote session id, last activity, '
+      + `and working directory. Released chats reconnect on their next ${toolPrefix}send.`,
     parameters: {},
     output: {
       schema: {

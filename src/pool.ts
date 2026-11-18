@@ -66,8 +66,10 @@ export interface PooledChatInfo {
   readonly lastActive: number
   /** Session id of the DSH chat that opened this chat (D20); absent for chats started before attribution, or without a calling session. */
   readonly ownerSessionId?: string
-  /** Backend that owns this chat; old records read as `default`. */
+  /** Backend that owns this chat, as a name `start` accepts back; old records read as `default`. */
   readonly backend: string
+  /** Display name for UI: the default backend shows its command basename (e.g. `kiro-cli`), named backends their name. Never pass it back to `start`. */
+  readonly backendDisplay: string
   /** Number of configured backends, for optional panel badges. */
   readonly backendCount: number
   /** Current prompt state, kept only in pool memory and omitted after settlement (D15). */
@@ -381,7 +383,8 @@ export class AcpSessionPool {
       ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
       ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
       ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
-      backend: this.displayBackend(e),
+      backend: this.backendName(e),
+      backendDisplay: this.displayBackend(this.backendName(e)),
       backendCount: this.backends.size,
       ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
       active: this.live.has(e.chatId),
@@ -452,7 +455,7 @@ export class AcpSessionPool {
       this.starting.delete(chatId)
     }
     this.assertLive()
-    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendCount: this.backends.size, active: true, lastActive: now }
+    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendDisplay: this.displayBackend(backend), backendCount: this.backends.size, active: true, lastActive: now }
   }
 
   /**
@@ -702,8 +705,7 @@ export class AcpSessionPool {
 
   /** A saved session is only reloaded by the agent that created it. */
   /** Display name: the default backend shows its command basename (registry keeps 'default'). */
-  private displayBackend(entry: RegistryEntry): string {
-    const name = this.backendName(entry)
+  private displayBackend(name: string): string {
     return name === DEFAULT_BACKEND ? basename(this.opts.specBase.command) : name
   }
   private backendName(entry: RegistryEntry): string { return entry.backend ?? DEFAULT_BACKEND }

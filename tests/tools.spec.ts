@@ -10,7 +10,7 @@
  * @module dsh-acp-resume/tests/tools.spec
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -114,9 +114,9 @@ describe('chat tools', () => {
     expect(await call('send', { chatId, message: 'hi' })).toEqual({ text: 'tool answer' })
     const listed = (await call('list', {})).text as string
     expect(listed).toContain(chatId)
-    expect(listed).toContain('live process')
+    expect(listed).toMatch(new RegExp(`^${chatId} \\| backend default \\| idle \\(\\d+s\\) \\| remote `))
     expect((await call('close', { chatId })).text).toContain('record is kept')
-    expect((await call('list', {})).text).toContain('released (reconnects on next send)')
+    expect((await call('list', {})).text).toMatch(/\| backend default \| released \(last active \d+s ago; reconnects on next send\) \|/)
     expect((await call('close', { chatId, purge: true })).text).toContain('record deleted')
     expect(pool.knows(chatId)).toBe(false)
     expect((await call('list', {})).text).toBe('no persistent chats')
@@ -188,7 +188,7 @@ describe('chat tools', () => {
     expect(output.text).toContain(mine.chatId)
     expect(output.text).not.toContain(other.chatId)
     expect(output.text).not.toContain(legacy.chatId)
-    expect(output.text).toContain('owner session-')
+    expect(output.text).not.toContain('owner')
   })
 
   it('has no scope parameter and describes current-session discovery', () => {
@@ -215,12 +215,30 @@ describe('chat tools', () => {
     expect(output).toContain(legacy.chatId)
   })
 
-  it('prints the owner id prefix in a listed chat', async () => {
-    const { registry, pool } = mountTools({})
+  it('shows a running chat as running with its elapsed time, and drops the owner column', async () => {
+    const dir = tempDir('acp-resume-list-running-')
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const { registry, pool, call } = mountTools({ MOCK_TEXT: 'later', MOCK_PROMPT_HOLD: hold })
     const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner-123456789' })
+    const sending = call('send', { chatId: chat.chatId, message: 'long' })
+    const deadline = Date.now() + 5000
+    while (pool.chatInfo(chat.chatId)?.inFlight === undefined && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
     const list = registry.tools.get('acp_chat_list') as Definition
     const output = await list.execute({}, exec()) as { text: string }
-    expect(output.text).toContain(`${chat.chatId} | owner owner-12 |`)
+    expect(output.text).toMatch(new RegExp(`^${chat.chatId} \\| backend default \\| running \\(\\d+s\\) \\| remote `))
+    expect(output.text).not.toContain('owner')
+    rmSync(hold)
+    await sending
+  })
+
+  it('list shows the start-passable backend name, not the display name', async () => {
+    const { registry, pool } = mountTools({})
+    await pool.start(process.cwd())
+    const list = registry.tools.get('acp_chat_list') as Definition
+    const output = await list.execute({}, exec()) as { text: string }
+    expect(output.text).toContain('| backend default |')
+    expect(output.text).not.toContain(`backend ${pool.listChats()[0]?.backendDisplay as string} |`)
   })
 
   it('rejects an already-aborted call before touching the pool', async () => {
@@ -421,6 +439,17 @@ describe('Codex backend wiring (D25)', () => {
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
     expect(JSON.stringify(start.parameters)).toContain('"backend"')
     expect(start.description).toContain('codex:')
+  })
+
+  it('multi-backend start receipt names the backend and cwd; the single-backend receipt is unchanged', async () => {
+    const { ctx } = await mount({ backends: codexBackends() })
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    for (const [args, backend] of [[{ cwd: process.cwd(), backend: 'codex' }, 'codex'], [{ cwd: process.cwd() }, 'default']] as const) {
+      const value = await start.execute(args, exec()) as { chatId: string }
+      expect(start.output.render(args, value)).toEqual([{ type: 'text', text: `chat started: ${value.chatId} (backend: ${backend}, cwd: ${process.cwd()}); send messages with acp_chat_send` }])
+    }
+    const single = chatStaticTools({} as AcpSessionPool, 'acp_chat_').find(tool => tool.name === 'acp_chat_start') as Definition
+    expect(single.output.render({}, { chatId: 'chat-x', remoteSessionId: 'r' })).toEqual([{ type: 'text', text: 'chat started: chat-x; send messages with acp_chat_send' }])
   })
 
   it('runs a chat on the selected Codex backend through the registered tools', async () => {

@@ -340,6 +340,8 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 D24 已作为一项原子增量实现。验收覆盖：0.1.20 单后端 `acp_chat_start` 夹具逐字节一致；双后端 argv 路由、非默认后端 `session/load` 重连、两后端在途轮互不干扰；全量基线 343 绿。Antigravity 的多轮和杀进程 `session/load` 探针结果仅记录协议兼容事实，不构成产品支持承诺。
 
+修订(2026-11-18,默认后端统一用可回传名):`PooledChatInfo.backend` 一律是 `start` 能接受的名字(默认后端为 `default`),展示用的友好名放独立字段 `backendDisplay`(默认后端取 command 基名，如 `kiro-cli`;命名后端即其名)。此前 `backend` 对默认后端给的是 command 基名，模型把 `kiro-cli` 传回多后端版 `acp_chat_start` 会报 unknown backend。面板徽标用 `backendDisplay`,旧宿主缺该字段时回落 `backend`。`acp_chat_list` 每行改为 `backend <名字> | <状态>`,状态为 `running (<本轮已跑时长>)`、`idle (<距上轮>)`(进程在、无在途轮)或 `released (…)`,不再统一写 idle;去掉 `owner <前8位>` 列(D20 已按本会话过滤，该列全是同一值)。多后端版 `acp_chat_start` 回执改为 `chat started: <chatId> (backend: <名字>, cwd: <cwd>); send messages with …`,输出结构加 `backend`、`cwd`;单后端版工具定义与回执逐字节不变。
+
 ## D25 Codex app-server 私有协议适配器(2026-11-18,实施完成,mock 全绿,真机探针待做)
 
 ### 动机

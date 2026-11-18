@@ -119,11 +119,11 @@ describe('AcpResumePanelService', () => {
     expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'review', backendCount: 2 })])
   })
 
-  it('list shows the command basename for the default backend, registry keeps default', async () => {
+  it('list keeps the passable name default and shows the command basename as backendDisplay', async () => {
     const { pool, registryPath } = makePool()
     const { panel } = await mountPanel(pool)
     const chat = await pool.start(process.cwd())
-    expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: basename(process.execPath) })])
+    expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'default', backendDisplay: basename(process.execPath) })])
     expect(readFileSync(registryPath, 'utf8')).toContain('"default"')
   })
 
@@ -136,7 +136,8 @@ describe('AcpResumePanelService', () => {
     const { panel } = await mountPanel(pool)
     await pool.start(process.cwd(), undefined, { backend: 'review' })
     await pool.start(process.cwd())
-    expect(panel.list().map(r => r.backend).sort()).toEqual([basename(process.execPath), 'review'].sort())
+    expect(panel.list().map(r => r.backend).sort()).toEqual(['default', 'review'])
+    expect(panel.list().map(r => r.backendDisplay).sort()).toEqual([basename(process.execPath), 'review'].sort())
   })
 
   it('projects a running prompt in list and as the first synthetic turns entry', async () => {
