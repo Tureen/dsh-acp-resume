@@ -22,9 +22,9 @@
  */
 
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
-import { Button, Modal, StateDot, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Modal, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { parseChatAddress } from './chat-address.ts'
-import { relativeTime, shortChatId, elapsedTime } from './ChatsPanel.tsx'
+import { ChatStateDot, chatDotState, relativeTime, shortChatId, elapsedTime } from './ChatsPanel.tsx'
 import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, RunningItem, TabInfoHook, TurnItem } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
 
@@ -321,7 +321,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
     <section style={styles.root} aria-label={t('viewDetail', { chatId: short })} data-chat-id={chatId}>
       <div style={styles.header}>
         <div style={styles.identity}>
-          {chat === undefined ? null : <StateDot state={chat.active ? 'done' : 'idle'} />}
+          {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
           <h2 style={styles.heading} title={chatId}>{chat?.label ?? short}</h2>
           {chat?.label === undefined ? null : <span style={styles.headingId}>{short}</span>}
         </div>

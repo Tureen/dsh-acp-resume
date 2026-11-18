@@ -29,6 +29,7 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.inFlight?.startedAt === b.inFlight?.startedAt
     && a.backend === b.backend
     && a.backendDisplay === b.backendDisplay
+    && a.attention === b.attention
     && a.backendCount === b.backendCount
 }
 

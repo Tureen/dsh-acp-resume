@@ -908,6 +908,28 @@ describe('AcpSessionPool', () => {
     expect((await pool.send(reviewChat.chatId, 'p')).output).toBe('["--backend=review"]')
   })
 
+  it('derives attention from the newest log entry: error turn → error, fresh-session turn → warning, normal turn → none', async () => {
+    const { env, dir } = storeEnv('acp-resume-attention-')
+    const crash = join(dir, 'crash-on-prompt')
+    const loadMissing = join(dir, 'load-missing')
+    const { pool } = makePool({ env: { ...env, MOCK_CRASH_ON_PROMPT_FILE: crash, MOCK_LOAD_MISSING_FILE: loadMissing } })
+    const chat = await pool.start(process.cwd())
+    expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('attention')
+    await pool.send(chat.chatId, 'ok')
+    expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('attention')
+    writeFileSync(crash, 'on')
+    expect((await pool.send(chat.chatId, 'boom')).stopReason).toBe('error')
+    // The error turn released the process; the attention still says error.
+    expect(pool.chatInfo(chat.chatId)).toMatchObject({ active: false, attention: 'error' })
+    rmSync(crash)
+    writeFileSync(loadMissing, 'on')
+    expect((await pool.send(chat.chatId, 'again')).freshSession).toBe(true)
+    expect(pool.chatInfo(chat.chatId)).toMatchObject({ attention: 'warning' })
+    rmSync(loadMissing)
+    await pool.send(chat.chatId, 'fine')
+    expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('attention')
+  })
+
   it('writes default for a start without backend', async () => {
     const { pool, registryPath } = makePool()
     const chat = await pool.start(process.cwd())

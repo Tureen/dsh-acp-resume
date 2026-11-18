@@ -30,6 +30,8 @@ export interface PanelChat {
   readonly inFlight?: { readonly chatId: string; readonly message: string; readonly startedAt: number }
   /** Chat backend identity (`default` or a configured name); absent with an older host. */
   readonly backend?: string
+  /** What the newest log entry asks the user to notice (`error` / `warning`); absent when nothing does or with an older host. */
+  readonly attention?: 'error' | 'warning'
   /** Backend label for display (default backend shows its command basename); absent with an older host. */
   readonly backendDisplay?: string
   /** Configured backend count; controls whether a badge is useful. */

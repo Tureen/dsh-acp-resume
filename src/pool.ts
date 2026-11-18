@@ -74,6 +74,22 @@ export interface PooledChatInfo {
   readonly backendCount: number
   /** Current prompt state, kept only in pool memory and omitted after settlement (D15). */
   readonly inFlight?: InFlightTurn
+  /** What the newest turn-log entry asks the user to notice; absent when it settled normally or the log is empty. */
+  readonly attention?: ChatAttention
+}
+
+/**
+ * Panel attention derived from the chat's newest turn-log entry: `error` for a
+ * turn that settled `error` or a send that failed to reconnect, `warning` for a
+ * turn answered by a fresh session (or a fresh-session event awaiting its turn).
+ */
+export type ChatAttention = 'error' | 'warning'
+
+/** Attention of the newest log entry, if any (see {@link ChatAttention}). */
+export function attentionOf(entry: LogEntry | undefined): ChatAttention | undefined {
+  if (entry === undefined) return undefined
+  if (entry.kind === 'turn') return entry.stopReason === 'error' ? 'error' : entry.freshSession ? 'warning' : undefined
+  return entry.event === 'reconnect-failed' ? 'error' : 'warning'
 }
 
 /** Reason the current send replaced its saved remote session. */
@@ -375,7 +391,7 @@ export class AcpSessionPool {
 
   /** Registry rows (durable chats, live or released). */
   listChats(): readonly PooledChatInfo[] {
-    return this.registry.all().map(e => ({
+    return this.registry.all().map(e => this.withAttention(e.chatId, {
       chatId: e.chatId,
       remoteSessionId: e.remoteSessionId,
       cwd: e.cwd,
@@ -390,6 +406,12 @@ export class AcpSessionPool {
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
+  }
+
+  /** Add the newest log entry's attention; the turn log caches by file stamp, so a poll costs one stat per chat. */
+  private withAttention(chatId: string, info: PooledChatInfo): PooledChatInfo {
+    const attention = attentionOf(this.turnLog.read(chatId).at(-1))
+    return attention === undefined ? info : { ...info, attention }
   }
 
   /** One chat's registry projection, or undefined when the chatId is unknown. */

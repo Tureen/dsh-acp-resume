@@ -89,6 +89,9 @@ export const zh = {
   closeTab: '关闭页签',
   chatTitle: '首轮:{title}',
   currentMessage: '当前:{message}',
+  statsLine: '{running} 进行中 · {idle} 空闲 · {released} 已释放',
+  expandAll: '展开全部({count})',
+  collapseActive: '收起',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -176,6 +179,9 @@ export const en: Record<PanelCopyKey, string> = {
   closeTab: 'Close tab',
   chatTitle: 'First turn: {title}',
   currentMessage: 'Now: {message}',
+  statsLine: '{running} running · {idle} idle · {released} released',
+  expandAll: 'Show all ({count})',
+  collapseActive: 'Show fewer',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */
