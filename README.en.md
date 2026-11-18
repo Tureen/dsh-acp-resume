@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.26. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher preset; `pnpm test` passes all 411 tests.
+Status: 0.2.0. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 411 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -223,12 +223,44 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ## ACP Dispatcher mode
 
-The package ships an **optional** agent preset, "ACP Dispatcher" (see D26). It is a dispatch-only mode: the main agent splits the task, hands pieces to ACP backends with `acp_chat_start` / `acp_chat_send`, checks progress with `acp_chat_list`, and summarizes the results. It has no bash, file or web tools of its own.
+### What it is
 
-- **How to use**: enable the bundle, restart DSH, then pick **ACP Dispatcher** in the session mode menu. If you don't pick it, nothing changes: in the standard mode the `acp_chat_*` tools stay available and can be mixed with your own bash.
-- **Good for**: work that splits into several parts, where backends such as kiro or agy do the work and the main model only coordinates.
-- **Not for**: small tasks where the main model should edit files or run commands directly. Use the standard mode.
-- **Note**: the plugin inside the preset has no config and uses plugin defaults. To customize the command or backends, see the known risks in D26.
+An **optional** session mode (an agent preset, see D26). When you pick it, the main agent only dispatches: it splits the task, assigns pieces to ACP sessions, collects the results, and writes the final answer. The ACP sessions (workers) do the actual work. It is not required: when you don't pick it, the `acp_chat_*` tools stay available in the standard and creative modes.
+
+### When it helps
+
+- **Parallel tasks**: split one request into 3-5 independent sub-tasks and give each to its own ACP worker, running at the same time.
+- **Cross-checking**: send the same question to different backends (for example kiro and agy) and compare the answers.
+- **Long-running work**: hand all time-consuming analysis, coding, and research to ACP; the main agent only tracks progress and summarizes.
+- **A lean main context**: the main agent runs nothing and reads no files, so its tokens go to dispatch decisions.
+
+### When not to use it
+
+- A single simple question: answering directly is faster than dispatching.
+- Work that needs exact control over file edits: use the standard mode and edit yourself.
+- No ACP backend available: without kiro-cli / agy / codex installed, there is nobody to dispatch to.
+
+### Tool surface compared
+
+| Tool | Dispatcher | Standard |
+|---|---|---|
+| `acp_chat_*` | ✅ | ✅ |
+| web_search / fetch | ✅ | ✅ |
+| session_search / goal | ✅ (global) | ✅ |
+| present | ✅ | ✅ |
+| Task management (jobs / todo / ask_user) | ✅ | ✅ |
+| bash / fs / fs-search | ❌ | ✅ |
+| subagent | ❌ | ✅ |
+
+### How to switch
+
+Pick **ACP Dispatcher** in the mode menu of a new session. After enabling the bundle, restart DSH for it to appear; if you don't pick it, nothing changes.
+
+### Design principle
+
+Capability is decoupled from mode: the plugin provides the capability (`acp_chat_*` works in every mode), and the preset provides a choice of combination (the Dispatcher is an optional "dispatch only" constraint).
+
+**Note**: the plugin inside the preset has no config and uses plugin defaults. To customize the command or backends, see the known risks in D26.
 
 ## Host prerequisites for background job mode
 

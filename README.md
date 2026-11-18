@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:0.1.26。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher preset;`pnpm test` 411 例全绿。
+状态:0.2.0。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 411 例全绿。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -221,12 +221,44 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ## ACP Dispatcher 模式
 
-本包自带一个**可选**的 agent preset「ACP Dispatcher」(见 D26)。它是纯派工模式:主 Agent 只拆任务、用 `acp_chat_start` / `acp_chat_send` 派给 ACP 后端、用 `acp_chat_list` 看进度、最后汇总结果,自己没有 bash、文件和网络工具。
+### 是什么
 
-- **怎么用**:启用 bundle 后重启 DSH,在会话的模式菜单里选 **ACP Dispatcher**。不选就和以前完全一样,标准模式下 `acp_chat_*` 工具照常可用,可以和自己的 bash 混用。
-- **适合**:任务能拆成多块、想让 kiro / agy 等后端各干各的、主模型只负责统筹的场景。
-- **不适合**:需要主模型直接改文件、跑命令的小任务,用标准模式更省事。
-- **注意**:preset 内的插件不带 config,用插件默认值;需要自定义命令或后端时,见 D26 已知风险。
+一个**可选**的会话模式(agent preset,见 D26)。选它之后,主 Agent 只做调度:拆任务、分配给 ACP 会话、收结果、合成最终答复;实际干活的是各个 ACP 会话(Worker)。它不是必须的:不选时,标准模式与创造模式下 `acp_chat_*` 工具照常可用。
+
+### 什么时候好用
+
+- **多任务并行**:同一需求拆成 3-5 个独立子任务,各派一个 ACP Worker 同时跑。
+- **交叉验证**:同一问题派给不同后端(如 kiro + agy),对比结果。
+- **长任务托管**:耗时的分析、编码、调研全部交给 ACP,主 Agent 只管进度和汇总。
+- **主 Agent 上下文保持精简**:它不执行、不读文件,省下的 token 留给调度决策。
+
+### 什么时候不用
+
+- 单一简单问题:直接回答比派活快。
+- 需要精确控制文件修改:用标准模式自己改。
+- ACP 后端不可用:没装 kiro-cli / agy / codex 时,派不出活。
+
+### 工具面对比
+
+| 工具 | Dispatcher | 标准 |
+|---|---|---|
+| `acp_chat_*` | ✅ | ✅ |
+| web_search / fetch | ✅ | ✅ |
+| session_search / goal | ✅(全局) | ✅ |
+| present | ✅ | ✅ |
+| 任务管理(jobs / todo / ask_user) | ✅ | ✅ |
+| bash / fs / fs-search | ❌ | ✅ |
+| subagent | ❌ | ✅ |
+
+### 怎么切换
+
+新会话的模式菜单里选 **ACP Dispatcher**。启用 bundle 后需重启 DSH 才会出现;不选则一切照旧。
+
+### 设计原则
+
+能力与模式解耦:插件提供能力(`acp_chat_*` 在所有模式可用),preset 提供组合选择(Dispatcher 是"只能派工"的可选约束)。
+
+**注意**:preset 内的插件不带 config,用插件默认值;需要自定义命令或后端时,见 D26 已知风险。
 
 ## 后台任务模式的宿主前提
 

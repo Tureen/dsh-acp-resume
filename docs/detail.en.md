@@ -86,7 +86,12 @@ See the [README](../README.en.md#configuration) for all configuration fields, de
 
 ## ACP Dispatcher mode
 
-An optional preset, "ACP Dispatcher": the main agent only dispatches (splits tasks, delegates to ACP backends, collects results) and has no bash, file or web tools. Pick it in the session mode menu; if you don't, nothing changes.
+An optional session mode, "ACP Dispatcher": the main agent only dispatches (splits tasks, assigns them to ACP sessions, collects results, writes the final answer) and has no bash or file tools; the ACP sessions do the actual work.
+
+- **Good for**: parallel sub-tasks; cross-checking one question across backends; long-running work; keeping the main agent's context lean.
+- **Switching**: pick **ACP Dispatcher** in the mode menu of a new session. If you don't, nothing changes, and `acp_chat_*` stays available in the standard mode.
+
+See the [README](../README.en.md#acp-dispatcher-mode) for the full comparison and when not to use it.
 
 ## Known limitations
 

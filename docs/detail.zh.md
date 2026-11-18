@@ -86,7 +86,12 @@
 
 ## ACP Dispatcher 模式
 
-自带可选 preset「ACP Dispatcher」:主 Agent 只派工(拆任务、派给 ACP 后端、收结果),没有 bash / 文件 / 网络工具。在会话模式菜单里选择;不选则一切照旧。
+自带可选会话模式「ACP Dispatcher」:主 Agent 只做调度(拆任务、派给 ACP 会话、收结果、合成答复),没有 bash / 文件工具,实际干活的是 ACP 会话。
+
+- **好用场景**:多任务并行;同一问题派给不同后端交叉验证;长任务托管;让主 Agent 上下文保持精简。
+- **切换**:新会话的模式菜单里选 **ACP Dispatcher**;不选则一切照旧,标准模式下 `acp_chat_*` 照常可用。
+
+详细对比与不适用场景见 [README](../README.md#acp-dispatcher-模式)。
 
 ## 已知限制
 
