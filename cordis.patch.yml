@@ -56,4 +56,9 @@
           # 用户交互(需要澄清时)
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
-          # 没有 bash、fs、web tools、subagent:模型只能通过 ACP 工具执行任务
+          # 轻量联网查询保留(不绕道 ACP,与 ~/.dsh/AGENTS.md 的例外一致)
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+          # 没有 bash、fs、subagent:模型通过 ACP 工具执行任务,轻量查询直接用 web 工具
