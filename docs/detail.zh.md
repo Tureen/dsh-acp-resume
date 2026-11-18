@@ -7,6 +7,11 @@
 - **npm：**运行 `dsh plugin --profile <name> add dsh-acp-resume`。若刚发布的版本被 `minimumReleaseAge` 过滤，请钉住版本：`dsh plugin --profile <name> add dsh-acp-resume@<版本>`。
 - **Discover：**在 **插件** 页的 **实验性插件** 中启用 **自定义插件索引**。打开 **发现**，选择 **添加索引源**，填入 `https://tureen.github.io/dsh-acp-resume/index.json`，再从 `dsh-acp-resume` 卡片确认安装。
 
+> ⚠️ **不要从 GitHub 地址安装。** 本仓库不含构建产物(`lib/` 已 gitignore),也没有 `prepare` 脚本,从 GitHub 地址(如 `github:Tureen/dsh-acp-resume`)安装会因缺少 `lib/index.js` 而加载失败。
+>
+> - 正确方式:用 npm 包名 `dsh plugin --profile <name> add dsh-acp-resume`,或从 Discover 市场安装。
+> - 确需离线安装时，可用 `npm pack dsh-acp-resume` 下载 tgz 后 `dsh plugin --profile <name> add <tgz 路径>` 本地安装;不推荐，这样装的插件没有更新按钮。
+
 安装后重启 DSH。详细的 npm、本地 tgz 与升级说明见 [README](../README.md)。
 
 ## 会话工具与面板

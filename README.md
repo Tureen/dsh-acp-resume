@@ -217,7 +217,12 @@ dsh plugin --profile <name> add dsh-acp-resume
 - tgz 放稳定位置,如 `~/.dsh/local-plugins/`,不要放 `/tmp`。profile 的 `package.json` 以 `file:` 路径引用 tgz,系统清掉 `/tmp` 后,profile 内任何插件增删(都会触发 pnpm install)都会因找不到该文件而失败。
 - 升级必须改版本号。同版本号重新 pack 不生效:pnpm 按锁文件里的哈希认包,版本与路径不变时沿用旧缓存。
 
-**不支持 Git 安装。** 本包不带 `prepare` 脚本,`lib/` 也不入库,`github:` 方式装到的只有源码、加载会失败。要支持得写自包含的 `prepare`,用户还得在 profile 的 `pnpm-workspace.yaml` 里为本包开 `allowBuilds`(等于允许安装时执行包内代码),代价见官方 `docs/user/develop/basic/publish.md` 的 "Installing from GitHub" 一节。请用 npm 或 tgz。
+> ⚠️ **不要从 GitHub 地址安装。** 本仓库不含构建产物(`lib/` 已 gitignore),也没有 `prepare` 脚本,从 GitHub 地址(如 `github:Tureen/dsh-acp-resume`)安装会因缺少 `lib/index.js` 而加载失败。
+>
+> - 正确方式:用 npm 包名 `dsh plugin --profile <name> add dsh-acp-resume`,或从 Discover 市场安装。
+> - 确需离线安装时，可用 `npm pack dsh-acp-resume` 下载 tgz 后 `dsh plugin --profile <name> add <tgz 路径>` 本地安装;不推荐，这样装的插件没有更新按钮。
+
+要支持 Git 安装得写自包含的 `prepare`,用户还得在 profile 的 `pnpm-workspace.yaml` 里为本包开 `allowBuilds`(等于允许安装时执行包内代码),代价见官方 `docs/user/develop/basic/publish.md` 的 "Installing from GitHub" 一节。请用 npm 或 tgz。
 
 - **bundle 与 profile insert 二选一,勿双挂**。profile 的 `dsh.profile.bundles` 列了 `dsh-acp-resume`(插件页开关打开)时,本包自带的 `cordis.patch.yml` 已经 insert 了插件;profile 再 insert 一次会注册两个同名 provider,报 `DUPLICATE_PROVIDER`。启用 bundle 时改配置用顶层同 id 覆盖:
 

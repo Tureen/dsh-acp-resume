@@ -7,6 +7,11 @@
 - **npm:** Run `dsh plugin --profile <name> add dsh-acp-resume`. If a newly published version is filtered by `minimumReleaseAge`, pin it: `dsh plugin --profile <name> add dsh-acp-resume@<version>`.
 - **Discover:** On the **Plugins** page, enable **Custom plugin indexes** under **Experimental plugins**. Open **Discover**, choose **Add index source**, enter `https://tureen.github.io/dsh-acp-resume/index.json`, then confirm installation from the `dsh-acp-resume` card.
 
+> ⚠️ **Do not install from the GitHub URL.** This repository contains no build output (`lib/` is gitignored) and has no `prepare` script, so installing from a GitHub URL (such as `github:Tureen/dsh-acp-resume`) fails to load because `lib/index.js` is missing.
+>
+> - Install by npm package name with `dsh plugin --profile <name> add dsh-acp-resume`, or from the Discover market.
+> - If you must install offline, download the tgz with `npm pack dsh-acp-resume`, then install it locally with `dsh plugin --profile <name> add <tgz path>`. This is not recommended: a plugin installed that way has no update button.
+
 Restart DSH after installation. See the [README](../README.en.md) for npm, local tgz, and upgrade instructions.
 
 ## Chat tools and panel

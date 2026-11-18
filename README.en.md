@@ -219,7 +219,12 @@ dsh plugin --profile <name> add dsh-acp-resume
 - Keep the tgz in a stable location, such as `~/.dsh/local-plugins/`, not `/tmp`. The profile's `package.json` references the tgz by a `file:` path, and once the system clears `/tmp`, any plugin addition or removal in the profile (each triggers a pnpm install) fails because the file cannot be found.
 - Upgrading requires changing the version number. Re-packing with the same version does not take effect: pnpm identifies a package by the hash in the lockfile and reuses the old cache when the version and path are unchanged.
 
-**Git install is not supported.** This package has no `prepare` script and `lib/` is not checked in, so installing with `github:` gets only the sources and loading fails. Supporting it would need a self-contained `prepare`, and users would also have to enable `allowBuilds` for this package in the profile's `pnpm-workspace.yaml` (which means allowing package code to run at install time); the cost is described in the "Installing from GitHub" section of the official `docs/user/develop/basic/publish.md`. Please use npm or a tgz.
+> ⚠️ **Do not install from the GitHub URL.** This repository contains no build output (`lib/` is gitignored) and has no `prepare` script, so installing from a GitHub URL (such as `github:Tureen/dsh-acp-resume`) fails to load because `lib/index.js` is missing.
+>
+> - Install by npm package name with `dsh plugin --profile <name> add dsh-acp-resume`, or from the Discover market.
+> - If you must install offline, download the tgz with `npm pack dsh-acp-resume`, then install it locally with `dsh plugin --profile <name> add <tgz path>`. This is not recommended: a plugin installed that way has no update button.
+
+Supporting Git install would need a self-contained `prepare`, and users would also have to enable `allowBuilds` for this package in the profile's `pnpm-workspace.yaml` (which means allowing package code to run at install time); the cost is described in the "Installing from GitHub" section of the official `docs/user/develop/basic/publish.md`. Please use npm or a tgz.
 
 - **Choose either the bundle or a profile insert, do not mount both.** When the profile's `dsh.profile.bundles` lists `dsh-acp-resume` (the switch on the Plugins page is on), this package's bundled `cordis.patch.yml` has already inserted the plugin; inserting it again from the profile registers two providers with the same name and fails with `DUPLICATE_PROVIDER`. When the bundle is enabled, change the configuration with a top-level override with the same id:
 
