@@ -30,6 +30,7 @@ import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
+const codexMock = fileURLToPath(new URL('./mock-codex-server.ts', import.meta.url))
 
 const dirs: string[] = []
 const pools: AcpSessionPool[] = []
@@ -390,5 +391,78 @@ describe('apply (plugin wiring)', () => {
     // The captured tool body now hits a disposed pool.
     await expect(send.execute({ chatId, message: 'again' }, exec())).rejects.toThrow(/disposed/)
     expect(existsSync(join(dir, 'registry.json'))).toBe(true)
+  })
+})
+
+describe('Codex backend wiring (D25)', () => {
+  const codexBackends = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    codex: { command: process.execPath, args: [codexMock], protocol: 'codex', model: 'mock-model', env: { MOCK_TEXT: 'codex via tool' }, ...extra },
+  })
+
+  async function mount(config: Record<string, unknown>): Promise<{ ctx: Context; registryPath: string }> {
+    const ctx = await host()
+    const registryPath = join(tempDir('acp-resume-codex-apply-'), 'registry.json')
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, ...config })
+    cleanups.push(() => fiber.dispose())
+    await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration')
+    return { ctx, registryPath }
+  }
+
+  it('lists both the default ACP backend and the Codex backend in acp_chat_start', async () => {
+    const { ctx } = await mount({ backends: codexBackends({ description: 'Codex 评审' }) })
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    const serialized = JSON.stringify(start.parameters)
+    expect(serialized).toContain('"backend"')
+    expect(start.description).toContain('codex: Codex 评审')
+  })
+
+  it('keeps the backend parameter for a Codex-only named backend because the default ACP backend still counts', async () => {
+    const { ctx } = await mount({ backends: codexBackends() })
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    expect(JSON.stringify(start.parameters)).toContain('"backend"')
+    expect(start.description).toContain('codex:')
+  })
+
+  it('runs a chat on the selected Codex backend through the registered tools', async () => {
+    const { ctx } = await mount({ backends: codexBackends() })
+    const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
+    const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
+    const { chatId } = await start.execute({ cwd: process.cwd(), backend: 'codex' }, exec()) as { chatId: string }
+    await expect(send.execute({ chatId, message: 'p' }, exec())).resolves.toEqual({ text: 'codex via tool' })
+  })
+
+  it('fails a send to a chat whose Codex backend was removed from the config', async () => {
+    const registryPath = join(tempDir('acp-resume-codex-gone-'), 'registry.json')
+    const first = await host()
+    const fiberA = await first.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, backends: codexBackends() })
+    cleanups.push(() => fiberA.dispose())
+    await until(() => stubTools(first).registered.has('acp_chat_start'), 'tool registration')
+    const { chatId } = await (stubTools(first).registered.get('acp_chat_start') as Definition).execute({ cwd: process.cwd(), backend: 'codex' }, exec()) as { chatId: string }
+    await fiberA.dispose()
+    const second = await host()
+    const fiberB = await second.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
+    cleanups.push(() => fiberB.dispose())
+    await until(() => stubTools(second).registered.has('acp_chat_send'), 'tool registration')
+    await expect((stubTools(second).registered.get('acp_chat_send') as Definition).execute({ chatId, message: 'p' }, exec())).rejects.toThrow(/unavailable backend codex/)
+  })
+
+  it('rejects a Codex backend without an explicit model at load', async () => {
+    const ctx = await host()
+    const loading = ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(tempDir('acp-resume-codex-nomodel-'), 'registry.json'), backends: codexBackends({ model: undefined }) })
+    await expect(Promise.resolve(loading)).rejects.toThrow(/backend codex uses protocol codex and requires an explicit model/)
+  })
+
+  it('rejects an unknown protocol, sandbox or approvalPolicy value at config validation', () => {
+    const base = { command: 'codex', model: 'm' }
+    expect(() => acp.Config({ command: 'x', backends: { codex: { ...base, protocol: 'codx' } } })).toThrow()
+    expect(() => acp.Config({ command: 'x', backends: { codex: { ...base, protocol: 'codex', sandbox: 'wide-open' } } })).toThrow()
+    expect(() => acp.Config({ command: 'x', backends: { codex: { ...base, protocol: 'codex', approvalPolicy: 'sometimes' } } })).toThrow()
+    const ok = acp.Config({ command: 'x', backends: { codex: { ...base, protocol: 'codex', sandbox: 'workspace-write', approvalPolicy: 'on-request' } } }) as { backends: Record<string, { protocol: string; args: string[] }> }
+    expect(ok.backends['codex']).toMatchObject({ protocol: 'codex', sandbox: 'workspace-write', approvalPolicy: 'on-request' })
+  })
+
+  it('defaults a named backend to the acp protocol', () => {
+    const cfg = acp.Config({ command: 'x', backends: { review: { command: 'agent' } } }) as { backends: Record<string, { protocol: string }> }
+    expect(cfg.backends['review']?.protocol).toBe('acp')
   })
 })

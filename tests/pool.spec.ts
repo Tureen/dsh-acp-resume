@@ -22,6 +22,7 @@ import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSession
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
+const codexMock = fileURLToPath(new URL('./mock-codex-server.ts', import.meta.url))
 
 const dirs: string[] = []
 const pools: AcpSessionPool[] = []
@@ -1181,5 +1182,154 @@ describe('AcpSessionPool turn log (D18)', () => {
     mkdirSync(join(dirname(registryPath), 'turns'), { recursive: true })
     writeFileSync(logFile(registryPath, 'chat-stray'), `${JSON.stringify({ v: 1, seq: 1, kind: 'event', event: 'session-lost', at: 1 })}\n`)
     expect(pool.turnEntries('chat-stray')).toEqual([])
+  })
+})
+
+/** A Codex (D25) named backend over the mock app-server; `spawned` records its children. */
+function codexBackend(env: Record<string, string> = {}, spawned: SubprocessHandle[] = [], args: string[] = [codexMock]): BackendSpec {
+  return {
+    name: 'codex',
+    description: 'codex',
+    protocol: 'codex',
+    codex: { model: 'mock-model' },
+    specBase: {
+      command: process.execPath, args, permission: 'reject', env, disposeEofGraceMs: 500, disposeGraceMs: 500,
+      spawn: (spec: SubprocessSpawnSpec) => { const child = nodeSpawn(spec); spawned.push(child); return child },
+    },
+  }
+}
+
+describe('AcpSessionPool with a Codex backend (D25)', () => {
+  const codexStart = { backend: 'codex' }
+
+  it('starts a Codex chat and answers a send with the final answer', async () => {
+    const { pool, registryPath } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_TEXT: 'codex says hi' })]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    expect(chat.remoteSessionId).toMatch(/^thr-/)
+    const turn = await pool.send(chat.chatId, 'p')
+    expect(turn).toMatchObject({ output: 'codex says hi', stopReason: 'completed', freshSession: false })
+    expect(registryRow(registryPath, chat.chatId)?.backend).toBe('codex')
+  })
+
+  it('streams deltas through onText', async () => {
+    const { pool } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_TEXT: 'streamed answer' })]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    const chunks: string[] = []
+    await pool.send(chat.chatId, 'p', undefined, { onText: text => chunks.push(text) })
+    expect(chunks.join('')).toBe('streamed answer')
+  })
+
+  it('reconnects with thread/resume after idle release', async () => {
+    const dir = tempDir('acp-resume-codex-idle-')
+    const spawned: SubprocessHandle[] = []
+    const env = { MOCK_REMEMBER: '1', MOCK_SESSION_STORE: join(dir, 's.json') }
+    const { pool } = makePool({ idleTimeoutMs: 100, backends: new Map([['codex', codexBackend(env, spawned)]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    await pool.send(chat.chatId, '暗号Q')
+    await until(() => spawned.length === 1 && pool.chatInfo(chat.chatId)?.active === false, 'idle release')
+    const second = await pool.send(chat.chatId, '暗号是什么')
+    expect(second.output).toBe('remember:暗号Q')
+    expect(second.freshSession).toBe(false)
+    expect(spawned).toHaveLength(2)
+    expect(second.remoteSessionId).toBe(chat.remoteSessionId)
+  })
+
+  it('degrades to a fresh thread when thread/resume is rejected (D6)', async () => {
+    const dir = tempDir('acp-resume-codex-lost-')
+    const env = { MOCK_SESSION_STORE: join(dir, 's.json'), MOCK_LOAD_MISSING: '1' }
+    const { pool, registryPath } = makePool({ backends: new Map([['codex', codexBackend(env)]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    await pool.send(chat.chatId, 'one')
+    await pool.close(chat.chatId)
+    const recovered = await pool.send(chat.chatId, 'two')
+    expect(recovered).toMatchObject({ stopReason: 'completed', freshSession: true, freshSessionReason: 'load-rejected' })
+    expect(recovered.remoteSessionId).not.toBe(chat.remoteSessionId)
+    expect(registryRemote(registryPath, chat.chatId)).toBe(recovered.remoteSessionId)
+  })
+
+  it('starts a fresh thread after three consecutive error turns (D6)', async () => {
+    const dir = tempDir('acp-resume-codex-errors-')
+    const env = { MOCK_SESSION_STORE: join(dir, 's.json'), MOCK_CODEX_TURN_STATUS: 'failed' }
+    const { pool } = makePool({ backends: new Map([['codex', codexBackend(env)]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    for (let count = 0; count < CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD; count += 1) {
+      await expect(pool.send(chat.chatId, `fail-${count}`)).resolves.toMatchObject({ stopReason: 'error', freshSession: false })
+    }
+    const next = await pool.send(chat.chatId, 'after')
+    expect(next).toMatchObject({ freshSession: true, freshSessionReason: 'repeated-errors' })
+    expect(next.remoteSessionId).not.toBe(chat.remoteSessionId)
+  })
+
+  it('routes an ACP chat and a Codex chat to their own protocol side by side', async () => {
+    const { pool } = makePool({ env: { MOCK_TEXT: 'acp says' }, backends: new Map([['codex', codexBackend({ MOCK_TEXT: 'codex says' })]]) })
+    const acpChat = await pool.start(process.cwd())
+    const codexChat = await pool.start(process.cwd(), undefined, codexStart)
+    expect((await pool.send(acpChat.chatId, 'p')).output).toBe('acp says')
+    expect((await pool.send(codexChat.chatId, 'p')).output).toBe('codex says')
+    expect(pool.listChats().map(c => c.backend).sort()).toEqual([basename(process.execPath), 'codex'].sort())
+  })
+
+  it('refuses a Codex backend that has no codex parameters', async () => {
+    const broken: BackendSpec = { ...codexBackend(), codex: undefined as never }
+    const { pool, spawns } = makePool({ backends: new Map([['codex', broken]]) })
+    await expect(pool.start(process.cwd(), undefined, codexStart)).rejects.toThrow(/protocol codex but has no codex model/)
+    expect(spawns.children).toHaveLength(0)
+  })
+
+  it('includes the Codex backend command and args in the reconnect fingerprint', async () => {
+    const dir = tempDir('acp-resume-codex-fingerprint-')
+    const env = { MOCK_SESSION_STORE: join(dir, 's.json') }
+    const first = makePool({ backends: new Map([['codex', codexBackend(env)]]) })
+    const chat = await first.pool.start(process.cwd(), undefined, codexStart)
+    await first.pool.disposeAll()
+    const spawned: SubprocessHandle[] = []
+    const second = makePool({ registryPath: first.registryPath, backends: new Map([['codex', codexBackend(env, spawned, [codexMock, '--other'])]]) })
+    await expect(second.pool.send(chat.chatId, 'p')).rejects.toThrow(/was recorded for agent .* but the plugin is now configured for/)
+    expect(spawned).toHaveLength(0)
+  })
+
+  it('rejects a second send while a Codex turn is in flight', async () => {
+    const dir = tempDir('acp-resume-codex-flight-')
+    const ready = join(dir, 'ready')
+    const { pool } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_HANG: '1', MOCK_READY_FILE: ready })]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    const first = pool.send(chat.chatId, 'hang')
+    await until(() => existsSync(ready), 'turn in flight')
+    await expect(pool.send(chat.chatId, 'again')).rejects.toThrow(/already has a prompt in flight/)
+    await pool.close(chat.chatId)
+    expect((await first).stopReason).toBe('aborted')
+  })
+
+  it('steers an in-flight Codex turn natively', async () => {
+    const dir = tempDir('acp-resume-codex-steer-')
+    const ready = join(dir, 'ready')
+    const steerLog = join(dir, 'steer.log')
+    const { pool } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_HANG: '1', MOCK_READY_FILE: ready, MOCK_STEER_FILE: steerLog })]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    const first = pool.send(chat.chatId, 'hang')
+    await until(() => existsSync(ready), 'turn in flight')
+    expect((await pool.steer(chat.chatId, '改成 B 方案')).queued).toBe(true)
+    expect(readFileSync(steerLog, 'utf8')).toContain('改成 B 方案')
+    await pool.close(chat.chatId)
+    await first
+  })
+
+  it('keeps the registry row after closing a Codex chat and releases its process', async () => {
+    const spawned: SubprocessHandle[] = []
+    const { pool, registryPath } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_SESSION_STORE: join(tempDir('acp-resume-codex-close-'), 's.json') }, spawned)]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    await pool.send(chat.chatId, 'p')
+    await pool.close(chat.chatId)
+    await expect(Promise.allSettled(spawned.map(c => c.done))).resolves.toBeDefined()
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ backend: 'codex', remoteSessionId: chat.remoteSessionId })
+    expect(pool.listChats().find(c => c.chatId === chat.chatId)?.active).toBe(false)
+  })
+
+  it('fails a send to a removed Codex backend without spawning', async () => {
+    const registryPath = join(tempDir('acp-resume-codex-removed-'), 'registry.json')
+    writeFileSync(registryPath, JSON.stringify({ version: 1, sessions: [{ chatId: 'chat-codex', remoteSessionId: 'thr-x', cwd: process.cwd(), backend: 'codex', command: process.execPath, args: [codexMock], lastActive: 1 }] }))
+    const { pool, spawns } = makePool({ registryPath })
+    await expect(pool.send('chat-codex', 'p')).rejects.toThrow('chat chat-codex uses unavailable backend codex')
+    expect(spawns.children).toHaveLength(0)
   })
 })
