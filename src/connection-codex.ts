@@ -479,6 +479,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
         turnCancelSettled()
         requestCancel()
       }
+      let onTurnStreamClose: (() => void) | undefined
       promptSignal.addEventListener('abort', onTurnAbort, { once: true })
       if (promptSignal.aborted) onTurnAbort()
       const settleTurn = (): void => {
@@ -514,8 +515,9 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
           turnCancel.then((): never => { throw new Error('subagent cancelled while the Codex turn was running') }),
           processRejected,
           new Promise<never>((_resolve, reject) => {
-            stdout.once('close', () => { reject(new Error('Codex app-server stream closed during the turn')) })
-            if (streamClosed) reject(new Error('Codex app-server stream closed during the turn'))
+            onTurnStreamClose = () => { reject(new Error('Codex app-server stream closed during the turn')) }
+            stdout.once('close', onTurnStreamClose)
+            if (streamClosed) onTurnStreamClose()
           }),
         ])
         settleTurn()
@@ -536,6 +538,8 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
         return { output: turnOutput(), stopReason: 'error', diagnostic }
       } finally {
         promptSignal.removeEventListener('abort', onTurnAbort)
+        // Per-turn listener: left attached, each turn adds one (MaxListenersExceededWarning at turn 11).
+        if (onTurnStreamClose !== undefined) stdout.removeListener('close', onTurnStreamClose)
       }
     },
   }

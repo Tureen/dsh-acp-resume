@@ -175,6 +175,22 @@ describe('codex prompt turns', () => {
     expect(text((await conn.prompt(ask('two'), live())).output)).toBe('remember:one')
   })
 
+  it('removes its per-turn stdout close listener: twelve turns, no listener growth', async () => {
+    const conn = await open(makeSpec())
+    const stdout = children[0]?.stdout as unknown as NodeJS.EventEmitter
+    const baseline = stdout.listenerCount('close')
+    const warnings: Error[] = []
+    const onWarning = (warning: Error): void => { warnings.push(warning) }
+    process.on('warning', onWarning)
+    try {
+      for (let i = 0; i < 12; i++) expect((await conn.prompt(ask(`p${i}`), live())).stopReason).toBe('completed')
+    } finally {
+      process.off('warning', onWarning)
+    }
+    expect(stdout.listenerCount('close')).toBe(baseline)
+    expect(warnings.filter(w => w.name === 'MaxListenersExceededWarning')).toEqual([])
+  })
+
   it('contains a throwing text observer', async () => {
     const conn = await open(makeSpec({ MOCK_TEXT: 'ok' }))
     const turn = await conn.prompt(ask('p'), live(), () => { throw new Error('observer boom') })
