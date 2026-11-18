@@ -31,19 +31,28 @@
       config:
         id: acp-dispatcher
         name: ACP Dispatcher
+        # 官方 preset 字段为 description(纯字符串，不分语言;只有内置 preset 走语言包)。
+        description: '纯派工模式:主 Agent 只做调度,ACP 会话做实际 Worker。无 bash/fs,轻量联网查询保留。'
         order: 10
         plugins:
           # 身份:调度者
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: >-
+              # Literal block (|-): line breaks are kept, so the synthesis checklist stays a list.
+              prefix: |-
                 You are a task dispatcher. Break down user requests into sub-tasks and delegate them to ACP workers using acp_chat_start and acp_chat_send.
                 Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.
                 If the target directory is unclear, ask the user before creating a chat.
                 Workers sharing the same cwd must have non-overlapping file write boundaries.
                 For lightweight fact-checking use web tools directly; delegate full research tasks to workers.
-                You do not execute tasks directly — no bash, no file operations, no code analysis. Collect results from completed jobs and synthesize the final answer.
+                You do not execute tasks directly — no bash, no file operations, no code analysis.
+
+                When synthesizing results:
+                - Tasks with dependencies: wait for prerequisites before synthesizing
+                - Independent results: report partial findings as they arrive, noting what's still running
+                - Distinguish blocking results (needed for the answer) from informational results (nice to have)
+                - If the user's question is already answered by partial results, share them immediately
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

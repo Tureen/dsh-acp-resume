@@ -445,3 +445,4 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - preset 内的 `dsh-acp-resume` 不带 config,走插件默认值(`command` 缺省等),不继承 bundle 段的 `kiro-cli` / `permission: allow` 与用户顶层覆盖。
 - persona 提示词为英文,与官方 persona 一致;中文用户通常不受影响,不另做本地化。
 - 修订(2026-11-18,调度纪律):persona 去掉「用 acp_chat_list 跟踪进度」(会诱导轮询),改为「用 acp_chat_send 派工(记下 jobId)、等完成通知、用 job_output 收结果」,与 D22 一致;另加三条：目标目录不明确时先问用户再建 chat;同一 cwd 的多个 worker 写文件范围不得重叠;轻量查证直接用 web 工具，完整调研交给 worker。
+- 修订(2026-11-18,结果汇总框架与模式描述):persona 末句「Collect results from completed jobs and synthesize the final answer」换成汇总判断框架(有依赖的等前置完成;独立结果到一条报一条并说明还在跑的;区分阻塞性与参考性结果;部分结果已能回答就立即给出)。prefix 改为 YAML 字面块(`|-`)保留换行，让清单仍是清单;没有放进 persona 的 `suffix`,因为官方 suffix 排在第一方指引之后、与调度身份分离。preset 加 `description`(官方 `dsh-agent-preset` Config 字段，纯字符串、不分语言),修复选模式时描述为空。
