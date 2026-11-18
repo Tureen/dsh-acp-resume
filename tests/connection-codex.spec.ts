@@ -12,11 +12,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk'
+import { Context } from '@deepseek-ai/cordis'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { AcpConnectionError, AcpSteerUnsupportedError, type AcpConnection, type OpenAcpMode } from '../src/connection.ts'
 import { openCodexConnection, type CodexSessionSpec } from '../src/connection-codex.ts'
 import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import type { PermissionPolicy } from '../src/run.ts'
+import { toCodexPermissionRequest } from '../src/codex-approval.ts'
+import { userQuestionPermissionResolver, type PermissionRequestResolver } from '../src/permission-request.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-codex-server.ts', import.meta.url))
@@ -300,5 +305,107 @@ describe('codex process failure', () => {
     const conn = await open(makeSpec())
     await Promise.all([conn.dispose(), conn.dispose()])
     await until(() => conn.processSettled, 'process exit')
+  })
+})
+
+describe('codex approvals under ask (host-user bridge)', () => {
+  const select = (optionId: string): PermissionRequestResolver => async () => ({ outcome: { outcome: 'selected', optionId } })
+
+  async function askRun(approval: string, resolver: PermissionRequestResolver | undefined): Promise<{ stopReason: string; decisions: string[]; output: string }> {
+    const log = join(tempDir(), 'approval.log')
+    const conn = await open(makeSpec({ MOCK_CODEX_APPROVAL: approval, MOCK_CODEX_APPROVAL_FILE: log, MOCK_TEXT: 'ran' }, { permission: 'ask' }))
+    const turn = await conn.prompt(ask('run it'), live(), undefined, resolver)
+    return { stopReason: turn.stopReason, decisions: lines(log), output: text(turn.output) }
+  }
+
+  it('user allows: accept, the command runs, the turn completes', async () => {
+    expect(await askRun('command', select('accept'))).toEqual({ stopReason: 'completed', decisions: ['decision accept'], output: 'ran' })
+  })
+
+  it('user rejects: decline, only that step is refused and the turn continues', async () => {
+    expect(await askRun('command', select('decline'))).toEqual({ stopReason: 'completed', decisions: ['decision decline'], output: 'ran' })
+  })
+
+  it('user cancels: cancel interrupts the whole turn', async () => {
+    expect(await askRun('command', select('cancel'))).toEqual({ stopReason: 'aborted', decisions: ['decision cancel'], output: '' })
+  })
+
+  it('fails closed to cancel without a bridge', async () => {
+    expect((await askRun('command', undefined)).decisions).toEqual(['decision cancel'])
+  })
+
+  it('fails closed to cancel when the bridge throws, answers cancelled, or selects an unoffered option', async () => {
+    const throwing: PermissionRequestResolver = async () => { throw new Error('ui crashed') }
+    const cancelled: PermissionRequestResolver = async () => ({ outcome: { outcome: 'cancelled' } })
+    for (const resolver of [throwing, cancelled, select('accept-forever')]) {
+      expect((await askRun('command', resolver)).decisions).toEqual(['decision cancel'])
+    }
+  })
+
+  it('asks for file-change approvals', async () => {
+    expect(await askRun('file', select('accept'))).toMatchObject({ stopReason: 'completed', decisions: ['decision accept'] })
+    expect(await askRun('file', select('decline'))).toMatchObject({ stopReason: 'completed', decisions: ['decision decline'] })
+  })
+
+  it('asks for permissions approvals', async () => {
+    expect(await askRun('permissions', select('accept'))).toMatchObject({ stopReason: 'completed', decisions: ['decision accept'] })
+    expect(await askRun('permissions', select('cancel'))).toMatchObject({ stopReason: 'aborted', decisions: ['decision cancel'] })
+  })
+
+  it('shows the command and the three options to the resolver', async () => {
+    const seen: RequestPermissionRequest[] = []
+    await askRun('command', async (request): Promise<RequestPermissionResponse> => { seen.push(request); return { outcome: { outcome: 'selected', optionId: 'accept' } } })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.toolCall).toMatchObject({ title: 'Codex requests to run a command', kind: 'execute' })
+    expect(JSON.stringify(seen[0]?.toolCall.content)).toContain('echo mock')
+    expect(seen[0]?.options.map(option => option.optionId)).toEqual(['accept', 'decline', 'cancel'])
+  })
+
+  it('cancels at once when the turn is aborted while the question is pending', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'approval.log')
+    const conn = await open(makeSpec({ MOCK_CODEX_APPROVAL: 'command', MOCK_CODEX_APPROVAL_FILE: log }, { permission: 'ask' }))
+    const abort = new AbortController()
+    let asked = false
+    const pending = conn.prompt(ask('p'), abort.signal, undefined, (_request, signal) => new Promise<RequestPermissionResponse>((resolve) => {
+      asked = true
+      signal.addEventListener('abort', () => { resolve({ outcome: { outcome: 'cancelled' } }) }, { once: true })
+    }))
+    await until(() => asked, 'approval question')
+    abort.abort()
+    expect((await pending).stopReason).toBe('aborted')
+  })
+
+  it('works through the real user-questions bridge', async () => {
+    const ctx = new Context()
+    await ctx.plugin(UserQuestionService)
+    const questions: string[] = []
+    ctx.on('user-questions/request', (request) => {
+      questions.push(JSON.stringify(request))
+      return { answers: request.questions.map(question => ({ id: question.id, selected: ['Allow (allow_once, option 1)'] })) }
+    })
+    try {
+      const resolver = userQuestionPermissionResolver(ctx.get('userQuestions') as never, undefined)
+      expect(await askRun('command', resolver)).toMatchObject({ stopReason: 'completed', decisions: ['decision accept'] })
+      expect(questions).toHaveLength(1)
+      expect(questions[0]).toContain('Codex requests to run a command')
+      expect(questions[0]).toContain('echo mock')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+})
+
+describe('toCodexPermissionRequest', () => {
+  it('omits Allow when accept is not among the available decisions, always offering decline and cancel', () => {
+    const request = toCodexPermissionRequest('item/commandExecution/requestApproval', { itemId: 'i1', availableDecisions: ['cancel'] })
+    expect(request.options.map(option => option.optionId)).toEqual(['decline', 'cancel'])
+  })
+
+  it('caps long text and labels each kind', () => {
+    const file = toCodexPermissionRequest('item/fileChange/requestApproval', { itemId: 'i2', grantRoot: '/work', reason: 'x'.repeat(5000) })
+    expect(file.toolCall).toMatchObject({ kind: 'edit', title: 'Codex requests to change files' })
+    expect(JSON.stringify(file.toolCall.content).length).toBeLessThan(2000)
+    expect(toCodexPermissionRequest('item/permissions/requestApproval', {}).toolCall.kind).toBe('other')
   })
 })

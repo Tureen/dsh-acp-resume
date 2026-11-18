@@ -11,8 +11,9 @@
  * Native extras ACP lacks: `turn/steer` (appends to the running turn without
  * interrupting it, needs the in-flight `expectedTurnId`) and `turn/interrupt`.
  * `item/<kind>/requestApproval` server requests are answered by the spec's
- * policy (`allow` → `accept`, `reject` → `decline`, anything else, including
- * the not-yet-bridged `ask` and approvals arriving outside a turn → `cancel`).
+ * policy (`allow` → `accept`, `reject` → `decline`, `ask` → the host user via the
+ * turn's permission resolver, see codex-approval.ts; no bridge and approvals
+ * arriving outside a turn → `cancel`).
  * The streamed text observer sees every `agentMessage` delta of the in-flight
  * turn; the settled output is the `final_answer` item text when present, else
  * the concatenated deltas. Startup failures reject with the shared
@@ -42,6 +43,7 @@ import {
 } from './connection.js'
 import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
 import { acpStopReason, disposeAcpChild, type AcpRunSpec } from './run.js'
+import { isCodexApprovalMethod, resolveCodexApproval } from './codex-approval.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 
 /** {@link AcpRunSpec} plus the Codex-only thread parameters. `command`/`args` default to nothing here; the caller supplies `codex app-server`. */
@@ -238,13 +240,9 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
   let turn: TurnState | undefined
   const flags = { cancelled: false }
 
-  const decisionFor = (): 'accept' | 'decline' | 'cancel' => {
-    // Approvals only mean something while a turn owns this connection.
-    if (turn === undefined) return 'cancel'
-    if (spec.permission === 'allow') return 'accept'
-    if (spec.permission === 'reject') return 'decline'
-    return 'cancel'
-  }
+  // Approvals are meaningful only while a prompt owns this connection.
+  let approvalResolver: PermissionRequestResolver | undefined
+  let approvalSignal: AbortSignal | undefined
 
   const applyTurnEvent = (state: TurnState, method: string, params: Record<string, unknown>): void => {
     if (method === 'item/agentMessage/delta') {
@@ -282,9 +280,11 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
     applyTurnEvent(state, method, params)
   }
 
-  const handleServerRequest = (requestId: unknown, method: string): void => {
-    if (/^item\/.+\/requestApproval$/.test(method)) {
-      writeLine({ jsonrpc: '2.0', id: requestId, result: { decision: decisionFor() } })
+  const handleServerRequest = (requestId: unknown, method: string, params: Record<string, unknown>): void => {
+    if (isCodexApprovalMethod(method)) {
+      void resolveCodexApproval(spec.permission, method, params, turn === undefined ? undefined : approvalSignal, approvalResolver)
+        .then(decision => { writeLine({ jsonrpc: '2.0', id: requestId, result: { decision } }) })
+        .catch(() => { /* child gone: nothing left to answer */ })
     } else {
       // Unknown server request: answer so the server never waits on us.
       writeLine({ jsonrpc: '2.0', id: requestId, error: { code: METHOD_NOT_FOUND, message: 'Method not found' } })
@@ -299,7 +299,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
     const messageId = message['id']
     if (method !== undefined) {
       if (messageId !== undefined && messageId !== null) {
-        try { handleServerRequest(messageId, method) } catch { /* child gone */ }
+        try { handleServerRequest(messageId, method, asRecord(message['params']) ?? {}) } catch { /* child gone */ }
       } else {
         handleNotification(method, asRecord(message['params']) ?? {})
       }
@@ -457,9 +457,10 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
       const messageId = str(asRecord(reply)?.['turnId'])
       return { queued: true, ...(messageId === undefined ? {} : { messageId }) }
     },
-    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void, _permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
-      // `ask` is not bridged yet (a later D25 round): the resolver is accepted for shape parity only.
+    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
       flags.cancelled = false
+      approvalResolver = permissionResolver
+      approvalSignal = promptSignal
       let turnCancelled = false
       let turnCancelSettled!: () => void
       const turnCancel = new Promise<void>((resolve) => { turnCancelSettled = resolve })
@@ -482,7 +483,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
       if (promptSignal.aborted) onTurnAbort()
       const settleTurn = (): void => {
         state.observer = undefined
-        if (turn === state) turn = undefined
+        if (turn === state) { turn = undefined; approvalResolver = undefined; approvalSignal = undefined }
       }
       const turnOutput = (): readonly ContentBlock[] => {
         const text = state.finalAnswer ?? state.deltas

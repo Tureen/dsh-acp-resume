@@ -2,7 +2,7 @@
 
 # dsh-acp-resume
 
-A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods, with first-class private-protocol adaptations for kiro-cli and agy / Antigravity; other ACP agents use the generic compatibility path. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
+A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods, with first-class private-protocol adaptations for kiro-cli and agy / Antigravity, plus Codex as a third first-class backend over its private app-server protocol; other ACP agents use the generic compatibility path. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
 
 Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3` and Node >= 24).
 
@@ -10,7 +10,7 @@ Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION
 
 Status: 0.1.23 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
-**Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+**Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
 ## Motivation
 
@@ -116,6 +116,7 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
 |---|---|---|
 | **kiro-cli** (default backend) | Mid-turn `_session/steer`; `--agent-engine v3`; cross-process `session/load`; model/effort via CLI flags | `agentEngine: v3` is the default; model/effort may be set and append flags; clean up remote sessions with `kiro-cli chat --list-sessions` / `--delete-session` |
 | **agy / Antigravity** | The normalization layer automatically converts flat updates to the nested shape; per-session `session/set_model`; cross-process `session/load` (verified after SIGKILL) | **Must** use `agentEngine: 'none'`. **Do not set** model/effort because agy rejects those CLI flags. Model selection uses `session/set_model`; effort is embedded in the model id, such as `gemini-4-carbon-high` for the Carbon model at high effort. `permission: ask` is recommended because permission requests can include questions for the user. The default model is `gemini-4-carbon-medium`; its 18 available models include the Gemini 4 Carbon/Argon/Hydrogen families, Claude Sonnet/Opus 4.6, and GPT-OSS 120B. |
+| **Codex** (`protocol: codex`, named backends only) | Speaks `codex app-server`'s private JSON-RPC protocol, not ACP: native `turn/steer` (adds input without interrupting running commands); `thread/resume` across processes; per-item `item/*/requestApproval` approvals (`permission: ask` asks the user each time: allow / reject this step / cancel the whole turn) | **Must** set `model` (Codex's own default is unavailable on some accounts). Optional `sandbox` (`read-only` default / `workspace-write` / `danger-full-access`), `approvalPolicy` (`never` default / `untrusted` / `on-request` / `on-failure`), `effort` (reasoning level sent on every `turn/start`). `args` defaults to `[app-server]`; no `--agent-engine` / `--model` / `--effort` is appended. `reject` answers decline (that step is refused, the turn continues); `ask` cancels the whole turn when no confirmation service is available or the answer is invalid. Verified against a mock only; a real-machine probe is pending, and the private protocol carries no stability promise, so retest after upgrading Codex. |
 
 #### Generic ACP backends (Other)
 
@@ -145,6 +146,24 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
     # Do not set model/effort: agy rejects these CLI flags
     # Model changes use session/set_model inside the session (agent-managed)
     description: 'Antigravity (Google)'
+```
+
+```yaml
+# Tier 1: first-class support — Codex (private protocol, named backend only)
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    backends:
+      codex:
+        protocol: codex
+        command: codex
+        args: [app-server]          # optional; app-server is the default
+        model: <model-id>           # required: a model id your account lists in `model/list`
+        sandbox: workspace-write    # read-only (default) | workspace-write | danger-full-access
+        approvalPolicy: on-request  # never (default) | untrusted | on-request | on-failure
+        effort: medium              # optional: reasoning level per turn
+        permission: ask             # ask the user per approval; reject refuses the step; allow approves all
+        description: 'Codex'
 ```
 
 ```yaml

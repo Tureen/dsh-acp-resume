@@ -340,7 +340,7 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 D24 已作为一项原子增量实现。验收覆盖：0.1.20 单后端 `acp_chat_start` 夹具逐字节一致；双后端 argv 路由、非默认后端 `session/load` 重连、两后端在途轮互不干扰；全量基线 343 绿。Antigravity 的多轮和杀进程 `session/load` 探针结果仅记录协议兼容事实，不构成产品支持承诺。
 
-## D25 Codex app-server 私有协议适配器(2026-11-18,立项;连接层已实施,其余分轮)
+## D25 Codex app-server 私有协议适配器(2026-11-18,实施完成,mock 全绿,真机探针待做)
 
 ### 动机
 
@@ -364,7 +364,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - 新模块 `src/connection-codex.ts`，导出 `openCodexConnection(spec, open, signal?)`，返回与 `AcpConnection` 同形状的对象(prompt / steer / notifyCancel / dispose / remoteSessionId / processSettled / observeOutcome)；启动失败沿用 `AcpConnectionError` 的阶段与类别，池的降级规则(协议级 load 拒绝 → 新会话)原样适用。
 - `pool.ts` 的 `BackendSpec` 增加 `protocol: 'acp' | 'codex'`，池按协议选 `openAcpConnection` 或 `openCodexConnection`。
 - 不使用 `@agentclientprotocol/sdk`，自己实现按行 JSON-RPC 传输(参照官方 dsh-subagent-codex)。
-- 审批映射独立成 `codex-approval.ts`(约 150 行，后续轮)；`permission: ask` 的宿主确认桥也在该轮接入。
+- 审批映射独立成 `src/codex-approval.ts`；`permission: ask` 的宿主确认桥复用 `userQuestionPermissionResolver`(见下「审批层与 ask 桥」)。
 - one-shot provider(`run.ts`)不改，Codex 只做持久池后端。D6 / D11 / D18 语义均不动。
 - 每个 chat 一个进程，与 kiro / agy 池一致。`thread/loaded/list` 显示一个进程可承载多线程，本决策有意不用。
 
@@ -374,7 +374,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 
 ### 连接层实施细节(第一轮)
 
-- **审批自动决策**:`allow`→`accept`，`reject`→`decline`，其余(含 `ask`，桥未接前)与轮外到达的审批一律 `cancel`(fail closed)。未识别的服务端请求回 `-32601`，避免服务端空等。
+- **审批自动决策**:`allow`→`accept`，`reject`→`decline`；`ask` 见下节。无桥、轮外到达、轮已取消的审批一律 `cancel`(fail closed)。未识别的服务端请求回 `-32601`，避免服务端空等。
 - **轮隔离**:通知带 `turnId`，只处理当前轮的；`turn/start` 回复前到达的通知先缓存，拿到 `turnId` 后重放同轮部分。
 - **输出**:流式观察者收到当前轮全部 `agentMessage` delta(含非最终的过程性消息)；结算输出取 `final_answer` 文本，没有则取 delta 拼接。因此两者在有过程性消息时不严格相等，与 ACP 连接的「拼接等于结算输出」约定有差异。
 - **取消**:与 D6 一致，本地立即结算 `aborted`，并向远端发 `turn/interrupt`；`turn/start` 回复前取消，则在拿到 `turnId` 后补发。
@@ -396,9 +396,16 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - 只有命名后端(`backends`)可选 Codex；顶层默认后端恒为 ACP。
 - mock:`tests/mock-codex-server.ts`(协议、环境开关见其头注)。
 
-### 后续轮次
+### 审批层与 ask 桥(第四轮,已实施)
 
-审批层与 `ask` 桥(`codex-approval.ts`)、连接层与池的测试(并更新 AGENTS.md 的测试基线)。
+- **复用而非重做**:Codex 的三套审批(`item/commandExecution|fileChange|permissions/requestApproval`)被翻成 ACP 形状的权限请求(选项 `accept` 允许、`decline` 拒绝该步并继续、`cancel` 取消整轮；标题与正文含命令、cwd、grantRoot、reason，文本截断)，交给既有 `userQuestionPermissionResolver`；所选 `optionId` 再映回 Codex 的 `decision`。D23 的问题映射、取消传播、等待语义原样适用，池每轮传入的 `permissionResolver` 同时服务两种协议。
+- **选项受 `availableDecisions` 约束**:列表里没有 `accept` 就不提供「允许」；`decline` 与 `cancel` 恒提供(`decline` 依赖已记录的未文档化行为)。`acceptWithExecpolicyAmendment` 不提供：它会改写 Codex 的持久规则，超出一次性确认的范围。
+- **fail-closed**:无桥服务、轮外审批、信号已取消、桥抛错、回答 cancelled 或回答了未提供的选项，一律回 `cancel`(整轮 interrupted)。挂起的问题随轮信号取消。
+- **未经实测**:三套请求的字段名(`command`、`cwd`、`grantRoot`、`reason`、`availableDecisions`)与 permissions 类的回复形状来自调研，解析全部容错，缺字段只会让问题正文变短。
+
+### 完成状态
+
+连接层、池集成、Config、mock、审批层与 ask 桥、文档均已完成；测试基线见 AGENTS.md。**真机探针待做**：对本机 Codex 0.160.0 验证上述未实测的字段形状、`decline` 行为与 `thread/resume` 在 SIGKILL 后的恢复，结果回填本节。
 
 ## D26 ACP Dispatcher preset:可选的纯派工模式(2026-11-18)
 

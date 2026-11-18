@@ -1325,6 +1325,17 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
     expect(pool.listChats().find(c => c.chatId === chat.chatId)?.active).toBe(false)
   })
 
+  it('forwards the per-turn permission bridge to a Codex ask backend', async () => {
+    const dir = tempDir('acp-resume-codex-ask-')
+    const log = join(dir, 'approval.log')
+    const backend = codexBackend({ MOCK_CODEX_APPROVAL: 'command', MOCK_CODEX_APPROVAL_FILE: log, MOCK_TEXT: 'approved' })
+    const { pool } = makePool({ backends: new Map([['codex', { ...backend, specBase: { ...backend.specBase, permission: 'ask' as const } }]]) })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    const turn = await pool.send(chat.chatId, 'p', undefined, { permissionResolver: async () => ({ outcome: { outcome: 'selected', optionId: 'accept' } }) })
+    expect(turn).toMatchObject({ output: 'approved', stopReason: 'completed' })
+    expect(readFileSync(log, 'utf8')).toBe('decision accept\n')
+  })
+
   it('fails a send to a removed Codex backend without spawning', async () => {
     const registryPath = join(tempDir('acp-resume-codex-removed-'), 'registry.json')
     writeFileSync(registryPath, JSON.stringify({ version: 1, sessions: [{ chatId: 'chat-codex', remoteSessionId: 'thr-x', cwd: process.cwd(), backend: 'codex', command: process.execPath, args: [codexMock], lastActive: 1 }] }))

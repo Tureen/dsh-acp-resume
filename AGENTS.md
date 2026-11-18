@@ -19,6 +19,7 @@ src/
   permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
   connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose
+  codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
   connection-codex.ts Codex app-server 私有协议连接层(D25;与 AcpConnection 同形状,自带 JSON-RPC 行传输,不用 ACP SDK)
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
@@ -35,7 +36,7 @@ icon.svg        插件图标,由 package.json 顶层 icon 字段声明;locale �
 tests/
   subagent-acp.spec.ts   官方协议面回归(含 42 例协议面门槛)
   connection.spec.ts     连接原语
-  connection-codex.spec.ts Codex 连接层(D25):开/恢复、流式、停止原因、steer/取消、审批、进程失败
+  connection-codex.spec.ts Codex 连接层(D25):开/恢复、流式、停止原因、steer/取消、审批(含 ask 桥)、进程失败
   pool.spec.ts           池生命周期
   jobs.spec.ts           后台任务模式 send(真 jobs-local 注册表)与 send 变体随 ctx.jobs 切换
   steer.spec.ts          acp_chat_steer:插话快乐路 / 不支持降级 / 无在途轮拒绝
@@ -59,7 +60,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 398 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 36 + `connection-codex.spec.ts` 25 + `pool.spec.ts` 79 + `tools.spec.ts` 31 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 74 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 411 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 36 + `connection-codex.spec.ts` 37 + `pool.spec.ts` 80 + `tools.spec.ts` 31 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 74 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

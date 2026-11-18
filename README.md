@@ -4,11 +4,11 @@
 
 A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods with first-class private-protocol adaptations for kiro-cli and agy / Antigravity; other ACP agents use the generic compatibility path. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
 
-DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
+DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
 状态:待发布 0.1.23。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
 
-**已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
+**已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
 ## 动机
 
@@ -114,6 +114,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 |---|---|---|
 | **kiro-cli**（默认后端） | `_session/steer` 中途插话；`--agent-engine v3` 旗标；`session/load` 跨进程重连；model/effort 走 CLI 旗标 | `agentEngine: v3`（默认，不设即用）；可设 model/effort（追加旗标）；远端清理用 `kiro-cli chat --list-sessions` / `--delete-session` |
 | **agy / Antigravity** | 协议归一化层自动把平铺 update 归一为嵌套形态；`session/set_model` 按会话切模型；`session/load` 跨进程重连（已实测 SIGKILL 后恢复） | **必须** `agentEngine: 'none'`；**不要设** model/effort（CLI 旗标会被拒绝）。模型选择走 `session/set_model`，effort 已内嵌在模型 ID，例如 `gemini-4-carbon-high` 表示 Carbon 模型的 high 档。建议 `permission: ask`，因为权限请求中可能混入“向用户提问”。默认模型为 `gemini-4-carbon-medium`；可用模型含 Gemini 4 全系（Carbon/Argon/Hydrogen）、Claude Sonnet/Opus 4.6、GPT-OSS 120B 等共 18 个。 |
+| **Codex**（`protocol: codex`，仅命名后端） | 走 `codex app-server` 私有 JSON-RPC 协议，不说 ACP：原生 `turn/steer` 插话（不打断正在跑的命令）；`thread/resume` 跨进程恢复；`item/*/requestApproval` 分项审批（`permission: ask` 逐次问用户：允许 / 拒绝该步 / 取消整轮） | **必须**设 `model`（Codex 默认模型在部分账号不可用）；可设 `sandbox`（`read-only` 默认 / `workspace-write` / `danger-full-access`）、`approvalPolicy`（`never` 默认 / `untrusted` / `on-request` / `on-failure`）、`effort`（每轮 `turn/start` 的推理档位）。`args` 缺省为 `[app-server]`，不追加 `--agent-engine` / `--model` / `--effort`。`reject` 回 decline（该步被拒、整轮继续），`ask` 无确认服务或回答无效时取消整轮。已用 mock 全绿，真机探针待做；私有协议无稳定性承诺，升级 Codex 后需复测。 |
 
 #### 通用 ACP 后端（Other）
 
@@ -143,6 +144,24 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
     # 不要设 model/effort：agy 不接受这些 CLI 旗标
     # 模型切换：在会话中使用 session/set_model（由 agent 自行管理）
     description: 'Antigravity (Google)'
+```
+
+```yaml
+# 等级 1：一等支持 — Codex（私有协议，只能作命名后端）
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    backends:
+      codex:
+        protocol: codex
+        command: codex
+        args: [app-server]          # 可省略,缺省即 app-server
+        model: <model-id>           # 必填:填 `model/list` 里你账号可用的模型 id
+        sandbox: workspace-write    # read-only(默认) | workspace-write | danger-full-access
+        approvalPolicy: on-request  # never(默认) | untrusted | on-request | on-failure
+        effort: medium              # 可选:每轮推理档位
+        permission: ask             # 审批逐次问用户;reject 拒绝该步;allow 全部放行
+        description: 'Codex'
 ```
 
 ```yaml
