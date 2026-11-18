@@ -328,12 +328,13 @@ class ChatRegistry {
     this.write({ version: 1, sessions: next })
   }
 
+  /** Disk first, then memory: a failed write throws and leaves both at the previous state. */
   private write(next: RegistryFile): void {
-    this.file = next
     mkdirSync(dirname(this.path), { recursive: true })
     const tmp = `${this.path}.tmp`
     writeFileSync(tmp, JSON.stringify(next, undefined, 2))
     renameSync(tmp, this.path)
+    this.file = next
   }
 }
 
@@ -420,17 +421,23 @@ export class AcpSessionPool {
       const conn = await this.connect(backendSpec, cwd, { mode: 'new' }, windowSignal(controller, signal))
       if (this.disposed) await this.discard(conn, 'acp-resume: pool already disposed')
       if (controller.signal.aborted) await this.discard(conn, `acp-resume: chat ${chatId} was released before it started`)
-      this.registry.upsert({
-        chatId,
-        remoteSessionId: conn.remoteSessionId,
-        cwd,
-        ...(label === '' ? {} : { label }),
-        ...(ownerSessionId === '' ? {} : { ownerSessionId }),
-        backend,
-        command: backendSpec.specBase.command,
-        args: backendSpec.specBase.args,
-        lastActive: now,
-      })
+      try {
+        this.registry.upsert({
+          chatId,
+          remoteSessionId: conn.remoteSessionId,
+          cwd,
+          ...(label === '' ? {} : { label }),
+          ...(ownerSessionId === '' ? {} : { ownerSessionId }),
+          backend,
+          command: backendSpec.specBase.command,
+          args: backendSpec.specBase.args,
+          lastActive: now,
+        })
+      } catch (error: unknown) {
+        // Not tracked yet: without this dispose the child would be an orphan no close or teardown reaches.
+        await this.disposeQuietly(conn)
+        throw error
+      }
       this.track(chatId, conn)
       return conn
     })()
@@ -500,7 +507,13 @@ export class AcpSessionPool {
         const current = this.registry.get(chatId)
         if (current === undefined) await this.discard(opened.conn, `acp-resume: chat ${chatId} was removed while reconnecting`)
         else if (opened.freshSessionReason !== undefined) {
-          this.registry.upsert({ ...current, remoteSessionId: opened.conn.remoteSessionId, lastActive: Date.now() })
+          try {
+            this.registry.upsert({ ...current, remoteSessionId: opened.conn.remoteSessionId, lastActive: Date.now() })
+          } catch (error: unknown) {
+            // Same orphan guard as start(); the registry keeps the old remote session id.
+            await this.disposeQuietly(opened.conn)
+            throw error
+          }
           this.logEntry(chatId, {
             kind: 'event',
             event: opened.freshSessionReason === 'load-rejected' ? 'session-lost' : 'session-reset-after-errors',
@@ -776,9 +789,14 @@ export class AcpSessionPool {
     }
   }
 
+  /** Dispose an untracked connection; a teardown failure is reported, never thrown. */
+  private async disposeQuietly(conn: AcpConnection): Promise<void> {
+    await conn.dispose().catch((error: unknown) => { this.report(error) })
+  }
+
   /** Dispose a connection that must not join the pool, then reject with `reason`. */
   private async discard(conn: AcpConnection, reason: string): Promise<never> {
-    await conn.dispose().catch((error: unknown) => { this.report(error) })
+    await this.disposeQuietly(conn)
     throw new Error(reason)
   }
 

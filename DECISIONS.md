@@ -43,7 +43,7 @@
 - 降级(二,2026-11-09):每个 chat 在**当前池实例内存**中累计连续 `stopReason=error` 的已结算轮数；任一非 `error` 结算轮都会折断连续性，成功轮必然清零。累计到 3 后，该 chat 的**下一次** send 在已释放状态下跳过 `session/load`、直接 `session/new`，替换注册表中的远端会话号，回复首行前置含固定短语 `remote session failed repeatedly, started fresh` 的注记。此计数不写注册表、不改变其结构或版本，应用重启后的新池从 0 重新累计；这是有意接受的非持久诊断状态。该路径与协议级 load 拒绝并列，不能把它伪记为远端 load 拒绝。
 - 进程启动失败、传输断开、进程退出等其余**重连**失败直接让本次 send 失败,注册表不动,原远端会话号保留待下次重试；prompt 已结算为 `error` 的轮仍按上一条累计。
 - 空闲:`idleTimeoutMs`(默认 600 000)到期关进程,**注册表保留**,下次 send 重连;
-- 注册表:进程内串行写,临时文件+原子改名;记录 chatId/remoteSessionId/cwd/命令指纹;文件损坏(读不了、非 JSON、结构不符)时改名为 `<路径>.corrupt-<时间戳>` 留证,经 `onWarn` 告警后以空表继续;`registryPath` 须为绝对路径(空串取默认路径);
+- 注册表:进程内串行写,临时文件+原子改名,**先落盘成功再更新内存**(2026-11-18);新建连接(start、降级新会话)写注册表失败时先关闭该连接再报错,不留未纳管的孤儿进程,降级分支的注册表仍是旧会话号;记录 chatId/remoteSessionId/cwd/命令指纹;文件损坏(读不了、非 JSON、结构不符)时改名为 `<路径>.corrupt-<时间戳>` 留证,经 `onWarn` 告警后以空表继续;`registryPath` 须为绝对路径(空串取默认路径);
 - 取消:send 的工具取消信号让本轮在本地立即结算为 `aborted`,同时尽力发送 `session/cancel`(不等远端回应);随后作废该连接(关进程,注册表保留),下次 send 经 `session/load` 重建;
 - 失败轮:结算为 `error` 的轮同样作废连接,理由同取消(子进程多半已死或状态不明);
 - close:在途轮先协作取消(`session/cancel`),最多等 `disposeGraceMs` 让它结算,再释放进程;`purge` 额外删注册表条目,释放失败时保留条目并报错;拆卸/关闭对重连窗口有界:close 与 `disposeAll` 中止进行中的启动/重连窗口(池持有的 AbortController,启动竞速据此自行释放子进程),最多等一整轮销毁梯子,即 `disposeEofGraceMs + 2 × disposeGraceMs`(EOF 宽限 + 2 × SIGTERM 宽限,超过 Node 定时器上限时取上限),超时即按已释放处理,窗口晚到的连接一律丢弃并关进程(2026-11-04 补;同日资源审计 P2-2 修订:原上限只有 `disposeGraceMs`,而被中止的窗口要先走完自己的销毁梯子才结算,默认配置下 close/dispose 会比窗口子进程退出早约 3 s 返回);

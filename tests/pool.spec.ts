@@ -10,7 +10,7 @@
  * @module dsh-acp-resume/tests/pool.spec
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -231,6 +231,43 @@ describe('AcpSessionPool', () => {
     rmSync(loadError)
     const after = await pool.send(chat.chatId, '暗号是什么')
     expect(after).toMatchObject({ freshSession: false, output: 'remember:记住暗号R', remoteSessionId: chat.remoteSessionId })
+  })
+
+  it('disposes the new process and records nothing when the registry write fails in start', async () => {
+    const dir = tempDir('acp-resume-rofs-')
+    const { pool, registryPath, spawns } = makePool({ registryPath: join(dir, 'registry.json') })
+    chmodSync(dir, 0o500)
+    try {
+      await expect(pool.start(process.cwd())).rejects.toThrow()
+      expect(spawns.children).toHaveLength(1)
+      expect(exitedNow(spawns.children[0] as SubprocessHandle)).toBe(true)
+      // Disk first, then memory: the failed write leaves no phantom chat behind.
+      expect(pool.listChats()).toEqual([])
+      expect(existsSync(registryPath)).toBe(false)
+    } finally {
+      chmodSync(dir, 0o700)
+    }
+  })
+
+  it('disposes the fresh-session process and keeps the old id when the fallback registry write fails', async () => {
+    const { env, dir } = storeEnv('acp-resume-rofs2-')
+    const loadMissing = join(dir, 'load-missing')
+    const regDir = join(dir, 'reg')
+    const { pool, registryPath, spawns } = makePool({ env: { ...env, MOCK_LOAD_MISSING_FILE: loadMissing }, registryPath: join(regDir, 'registry.json') })
+    const chat = await pool.start(process.cwd())
+    await pool.close(chat.chatId)
+    writeFileSync(loadMissing, 'on')
+    chmodSync(regDir, 0o500)
+    try {
+      await expect(pool.send(chat.chatId, 'p')).rejects.toThrow()
+      // start's child, the rejected-load child, and the fresh-session child: all gone.
+      expect(spawns.children).toHaveLength(3)
+      expect(spawns.children.map(c => exitedNow(c))).toEqual([true, true, true])
+      expect(pool.chatInfo(chat.chatId)).toMatchObject({ remoteSessionId: chat.remoteSessionId, active: false })
+      expect(registryRemote(registryPath, chat.chatId)).toBe(chat.remoteSessionId)
+    } finally {
+      chmodSync(regDir, 0o700)
+    }
   })
 
   it('fails the send and keeps the saved session id when the child exits during session/load', async () => {
