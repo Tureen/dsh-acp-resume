@@ -223,14 +223,35 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ### 是什么
 
-一个**可选**的会话模式(agent preset,见 D26)。选它之后,主 Agent 只做调度:拆任务、分配给 ACP 会话、收结果、合成最终答复;实际干活的是各个 ACP 会话(Worker)。它不是必须的:不选时,标准模式与创造模式下 `acp_chat_*` 工具照常可用。
+一个会话就是一个**多工人工作台**：用户只用一个对话窗口描述大事，主 Agent 像工头一样拆任务、分配职责、追踪进度、收结果并合成答复；ACP 会话是各司其职、可并行工作的工人。kiro、agy、codex 三种引擎可同时在同一工作台上，工头按任务特征路由，全程零切换、零上下文丢失。
+
+```text
++---------------------------------------------+
+|  You (one conversation)                     |
+|  "Complete this big project"                |
+|                                             |
+|  Dispatcher (foreman)                       |
+|  |-- Worker 1 (kiro):   implement module    |
+|  |-- Worker 2 (agy):    research API design |
+|  |-- Worker 3 (codex):  write unit tests    |
+|  |                                          |
+|  |   ...workers run in parallel...          |
+|  |                                          |
+|  +-- collect all results                    |
+|  +-- synthesize final answer                |
+|                                             |
+|  You (same window, zero switching)          |
++---------------------------------------------+
+```
+
+这是一个**可选**的会话模式(agent preset,见 D26)。不选时,标准模式与创造模式下 `acp_chat_*` 工具照常可用。
 
 ### 什么时候好用
 
-- **多任务并行**:同一需求拆成 3-5 个独立子任务,各派一个 ACP Worker 同时跑。
-- **交叉验证**:同一问题派给不同后端(如 kiro + agy),对比结果。
-- **长任务托管**:耗时的分析、编码、调研全部交给 ACP,主 Agent 只管进度和汇总。
-- **主 Agent 上下文保持精简**:它不执行、不读文件,省下的 token 留给调度决策。
+- **多任务并行**:同一需求拆成 3-5 个独立子任务,各派一个 ACP Worker 同时跑。在工作台上这意味着你只描述一次，工头同时派 3 个工人开工，你不用管谁在干什么。
+- **交叉验证**:同一问题派给不同后端(如 kiro + agy),对比结果。在工作台上这意味着工头把同一职责分配给不同专长的工人，再汇总差异。
+- **长任务托管**:耗时的分析、编码、调研全部交给 ACP,主 Agent 只管进度和汇总。在工作台上这意味着工人持续推进，用户仍留在同一窗口等待合成结果。
+- **主 Agent 上下文保持精简**:它不执行、不读文件,省下的 token 留给调度决策。在工作台上这意味着任务细节留在各自工人的会话里，工头保留全局进度。
 
 ### 什么时候不用
 

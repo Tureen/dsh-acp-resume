@@ -225,14 +225,35 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ### What it is
 
-An **optional** session mode (an agent preset, see D26). When you pick it, the main agent only dispatches: it splits the task, assigns pieces to ACP sessions, collects the results, and writes the final answer. The ACP sessions (workers) do the actual work. It is not required: when you don't pick it, the `acp_chat_*` tools stay available in the standard and creative modes.
+One session is a **multi-worker workbench**: the user describes a larger job in one conversation window, while the main agent acts as a foreman that splits work, assigns responsibilities, tracks progress, collects results, and synthesizes the answer. ACP sessions are the workers, each doing its own job in parallel. kiro, agy, and codex can work on the same workbench at once; the foreman routes by task characteristics, with zero switching and no lost context.
+
+```text
++---------------------------------------------+
+|  You (one conversation)                     |
+|  "Complete this big project"                |
+|                                             |
+|  Dispatcher (foreman)                       |
+|  |-- Worker 1 (kiro):   implement module    |
+|  |-- Worker 2 (agy):    research API design |
+|  |-- Worker 3 (codex):  write unit tests    |
+|  |                                          |
+|  |   ...workers run in parallel...          |
+|  |                                          |
+|  +-- collect all results                    |
+|  +-- synthesize final answer                |
+|                                             |
+|  You (same window, zero switching)          |
++---------------------------------------------+
+```
+
+This is an **optional** session mode (an agent preset, see D26). When you do not pick it, the `acp_chat_*` tools stay available in the standard and creative modes.
 
 ### When it helps
 
-- **Parallel tasks**: split one request into 3-5 independent sub-tasks and give each to its own ACP worker, running at the same time.
-- **Cross-checking**: send the same question to different backends (for example kiro and agy) and compare the answers.
-- **Long-running work**: hand all time-consuming analysis, coding, and research to ACP; the main agent only tracks progress and summarizes.
-- **A lean main context**: the main agent runs nothing and reads no files, so its tokens go to dispatch decisions.
+- **Parallel tasks**: split one request into 3-5 independent sub-tasks and give each to its own ACP worker, running at the same time. On the workbench, you describe the request once and the foreman starts three workers at once; you do not need to track who is doing what.
+- **Cross-checking**: send the same question to different backends (for example kiro and agy) and compare the answers. On the workbench, the foreman assigns the same responsibility to workers with different specialties and summarizes the differences.
+- **Long-running work**: hand all time-consuming analysis, coding, and research to ACP; the main agent only tracks progress and summarizes. On the workbench, workers keep moving while the user stays in the same window for the synthesized result.
+- **A lean main context**: the main agent runs nothing and reads no files, so its tokens go to dispatch decisions. On the workbench, task detail remains in each worker session while the foreman keeps the global progress.
 
 ### When not to use it
 
