@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.23 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.26. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher preset; `pnpm test` passes all 411 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -116,7 +116,17 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
 |---|---|---|
 | **kiro-cli** (default backend) | Mid-turn `_session/steer`; `--agent-engine v3`; cross-process `session/load`; model/effort via CLI flags | `agentEngine: v3` is the default; model/effort may be set and append flags; clean up remote sessions with `kiro-cli chat --list-sessions` / `--delete-session` |
 | **agy / Antigravity** | The normalization layer automatically converts flat updates to the nested shape; per-session `session/set_model`; cross-process `session/load` (verified after SIGKILL) | **Must** use `agentEngine: 'none'`. **Do not set** model/effort because agy rejects those CLI flags. Model selection uses `session/set_model`; effort is embedded in the model id, such as `gemini-4-carbon-high` for the Carbon model at high effort. `permission: ask` is recommended because permission requests can include questions for the user. The default model is `gemini-4-carbon-medium`; its 18 available models include the Gemini 4 Carbon/Argon/Hydrogen families, Claude Sonnet/Opus 4.6, and GPT-OSS 120B. |
-| **Codex** (`protocol: codex`, named backends only) | Speaks `codex app-server`'s private JSON-RPC protocol, not ACP: native `turn/steer` (adds input without interrupting running commands); `thread/resume` across processes; per-item `item/*/requestApproval` approvals (`permission: ask` asks the user each time: allow / reject this step / cancel the whole turn) | **Must** set `model` (Codex's own default is unavailable on some accounts). Optional `sandbox` (`read-only` default / `workspace-write` / `danger-full-access`), `approvalPolicy` (`never` default / `untrusted` / `on-request` / `on-failure`), `effort` (reasoning level sent on every `turn/start`). `args` defaults to `[app-server]`; no `--agent-engine` / `--model` / `--effort` is appended. `reject` answers decline (that step is refused, the turn continues); `ask` cancels the whole turn when no confirmation service is available or the answer is invalid. Verified against a mock only; a real-machine probe is pending, and the private protocol carries no stability promise, so retest after upgrading Codex. |
+| **Codex** (`protocol: codex`, named backends only) | Speaks `codex app-server`'s private JSON-RPC protocol, not ACP: native `turn/steer` (adds input without interrupting running commands); `thread/resume` across processes; per-item `item/*/requestApproval` approvals (`permission: ask` asks the user each time: allow / reject this step / cancel the whole turn) | **Must** set `model` (Codex's own default is unavailable on some accounts). Optional `sandbox` (`read-only` default / `workspace-write` / `danger-full-access`), `approvalPolicy` (`never` default / `untrusted` / `on-request` / `on-failure`), `effort` (reasoning level sent on every `turn/start`; full range `low` / `medium` / `high` / `xhigh` / `max` / `ultra`, where `ultra` is supported by only some models, see "Where to look up models" below). `args` defaults to `[app-server]`; no `--agent-engine` / `--model` / `--effort` is appended. `reject` answers decline (that step is refused, the turn continues); `ask` cancels the whole turn when no confirmation service is available or the answer is invalid. Verified against a mock only; a real-machine probe is pending, and the private protocol carries no stability promise, so retest after upgrading Codex. |
+
+#### Where to look up models
+
+| Backend | Where to look | Effort |
+|---|---|---|
+| kiro | Models are dynamic (`auto`): when `model` / `effort` are unset, the server picks per task | Left to the server when unset |
+| agy | `models.availableModels` in the `initialize` response | Embedded in the model id (e.g. `gemini-4-carbon-high`) |
+| Codex | `model/list` from `codex app-server` (the 0.170.0 measured list is below) | Sent on every `turn/start` |
+
+Codex 0.170.0 measured `model/list`: default `gpt-6.2-sol`; also `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-reserve`, `codex-auto-review`. Every model supports `low` / `medium` / `high` / `xhigh` / `max`; `ultra` is supported only by `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-5.6-sol`, and `gpt-5.6-terra`. The available list varies with account and Codex version; your own `model/list` is authoritative.
 
 #### Generic ACP backends (Other)
 
@@ -158,10 +168,10 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
         protocol: codex
         command: codex
         args: [app-server]          # optional; app-server is the default
-        model: <model-id>           # required: a model id your account lists in `model/list`
+        model: gpt-6.2-astra        # required: a model id your account lists in `model/list`
         sandbox: workspace-write    # read-only (default) | workspace-write | danger-full-access
         approvalPolicy: on-request  # never (default) | untrusted | on-request | on-failure
-        effort: medium              # optional: reasoning level per turn
+        effort: xhigh               # optional: low | medium | high | xhigh | max | ultra (ultra on some models only)
         permission: ask             # ask the user per approval; reject refuses the step; allow approves all
         description: 'Codex'
 ```

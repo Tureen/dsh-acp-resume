@@ -32,7 +32,7 @@ The Persistent chats panel in the right sidebar shows each chat's state, turn co
 
 - **First-class: kiro-cli.** The default backend supports `_session/steer`, `--agent-engine v3`, cross-process `session/load`, and model/effort CLI flags.
 - **First-class: agy / Antigravity.** Supports update normalization, `session/set_model`, and cross-process `session/load`; it must use `agentEngine: 'none'`, must not set model/effort, and is best configured with `permission: ask`.
-- **First-class: Codex.** Drives `codex app-server`'s private protocol (`protocol: codex`, named backends only): native steer, cross-process `thread/resume`, and per-item approvals (`permission: ask` asks the user each time). It must set `model` and may set `sandbox`, `approvalPolicy`, and `effort`. Verified against a mock only; a real-machine probe is pending.
+- **First-class: Codex.** Drives `codex app-server`'s private protocol (`protocol: codex`, named backends only): native steer, cross-process `thread/resume`, and per-item approvals (`permission: ask` asks the user each time). It must set `model` and may set `sandbox`, `approvalPolicy`, and `effort` (`low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `ultra` on some models only). Codex models come from `model/list` of `codex app-server`; agy's come from `models.availableModels` in the `initialize` response, with effort embedded in the model id; kiro's are dynamic (auto). Verified against a mock only; a real-machine probe is pending.
 - **Generic ACP (Other).** For standard ACP CLIs such as opencode and gemini-cli; it must use `agentEngine: 'none'`. steer, loadSession, and model/effort availability depend on that agent's capabilities and CLI flag support.
 
 See the [README backend support levels](../README.en.md#backend-support-levels) for the full tiering, agy recipe, and model list.
@@ -75,7 +75,8 @@ These are top-level overrides in the profile's `cordis.patch.yml` while the bund
       codex:
         protocol: codex
         command: codex
-        model: <model-id>
+        model: gpt-6.2-astra
+        effort: xhigh               # effort optional: low | medium | high | xhigh | max | ultra (ultra on some models only); see the README for the full model list
         sandbox: workspace-write
         approvalPolicy: on-request
         permission: ask

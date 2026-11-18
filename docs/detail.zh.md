@@ -32,7 +32,7 @@
 
 - **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load` 与 model/effort CLI 旗标。
 - **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；必须设 `agentEngine: 'none'`，不要设 model/effort，建议 `permission: ask`。
-- **一等支持：Codex。** 走 `codex app-server` 私有协议（`protocol: codex`，只能作命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。必须设 `model`，可设 `sandbox`、`approvalPolicy`、`effort`。目前仅经 mock 验证，真机探针待做。
+- **一等支持：Codex。** 走 `codex app-server` 私有协议（`protocol: codex`，只能作命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。必须设 `model`，可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。模型清单来自 `codex app-server` 的 `model/list`；agy 的在 `initialize` 响应的 `models.availableModels`，effort 内嵌在模型 ID；kiro 模型动态（auto）。目前仅经 mock 验证，真机探针待做。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
 
 完整的支持等级、agy 配方和模型列表见 [README 的后端支持等级](../README.md#后端支持等级)。
@@ -75,7 +75,8 @@
       codex:
         protocol: codex
         command: codex
-        model: <model-id>
+        model: gpt-6.2-astra
+        effort: xhigh               # effort 可选:low | medium | high | xhigh | max | ultra(ultra 仅部分模型);完整模型清单见 README
         sandbox: workspace-write
         approvalPolicy: on-request
         permission: ask
