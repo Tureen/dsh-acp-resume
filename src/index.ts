@@ -49,7 +49,7 @@ export interface BackendConfig {
   args: string[]
   agentEngine: AgentEngineSetting
   model?: string
-  /** `'session'`: switch model via `session/set_model` (agy); no `--model` flag. Default `'flag'`. */
+  /** `'session'`: switch model via `session/set_model` (agy), falling back to `session/set_config_option` (kiro v3); no `--model` flag. Default `'flag'`. */
   modelSelect?: ModelSelect
   /** ACP: `--effort` flag. Codex: `effort` of every `turn/start`. */
   effort?: string
@@ -99,7 +99,8 @@ export interface Config {
    * How {@link model} is applied. `'flag'` (default) appends `--model <id>`;
    * `'session'` appends nothing and calls `session/set_model` right after
    * `session/new` / `session/load` (for agents such as agy that reject
-   * `--model`). A failed `set_model` is logged and does not block the chat.
+   * `--model`); on `-32601` it falls back to `session/set_config_option`
+   * (kiro v3). A failure of both is logged and does not block the chat.
    */
   modelSelect?: ModelSelect
   /**

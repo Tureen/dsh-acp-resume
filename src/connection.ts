@@ -37,7 +37,7 @@ import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestR
 export type { PermissionPolicy }
 
 /** Startup step that failed. */
-/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied by `session/set_model` after open. */
+/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied after open by `session/set_model` (on -32601: `session/set_config_option`). */
 export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string }
 
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
@@ -477,10 +477,23 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
         }
         if (spec.sessionModel !== undefined && remoteSessionId !== undefined) {
           // agy takes no `--model`; switch per session. A failure leaves the agent's default model.
+          const warn = (message: string): void => {
+            try { spec.onError?.(new Error(message), 'error') } catch { /* sink cannot replace the failure */ }
+          }
           try {
             await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel })
           } catch (error: unknown) {
-            try { spec.onError?.(new Error(`session/set_model(${spec.sessionModel}) failed: ${toError(error).message}`), 'error') } catch { /* sink cannot replace the failure */ }
+            if (error instanceof RequestError && error.code === METHOD_NOT_FOUND) {
+              // kiro v3 has no set_model; fall back to the ACP config option.
+              // Param shape follows the ACP spec ({sessionId, configId, value}); pending real kiro v3 verification.
+              try {
+                await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'model', value: spec.sessionModel })
+              } catch (fallbackError: unknown) {
+                warn(`session/set_config_option(model=${spec.sessionModel}) failed after session/set_model was not found: ${toError(fallbackError).message}`)
+              }
+            } else {
+              warn(`session/set_model(${spec.sessionModel}) failed: ${toError(error).message}`)
+            }
           }
         }
         if (flags.cancelled) throw new Error('subagent cancelled before the ACP session started')

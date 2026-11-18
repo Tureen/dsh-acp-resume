@@ -44,7 +44,7 @@ function hasFlag(args: readonly string[], flag: string): boolean {
   return args.some(arg => matchesFlag(arg, flag))
 }
 
-/** How `model` reaches the agent: `--model` CLI flag, or `session/set_model` after the session opens. */
+/** How `model` reaches the agent: `--model` CLI flag, or `session/set_model` (fallback `session/set_config_option`) after the session opens. */
 export type ModelSelect = 'flag' | 'session'
 
 /**
