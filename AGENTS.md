@@ -41,6 +41,7 @@ tests/
   job-wait-gate.spec.ts  D22 门:decideJobWait 纯函数、allowChatJobWait 开关、真实 ToolRuntime 派发
   turn-log.spec.ts       按轮日志单元(追加/读/截断/容错/裁剪/删除/写失败)
   panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom)
+  mock-codex-server.ts   Codex app-server mock(D25;无 SDK,会话表落文件支持 thread/resume)
   mock-acp-server.ts     扩展了 session/load 的 mock;会话表落文件以支持跨进程重连(D9/D12)
   fixtures/  helpers/    loader 夹具与测试辅助
 lib/            tsc 产物(gitignored)

@@ -40,8 +40,9 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import type { AcpConnection, AcpSessionSpec, AcpSteerResult } from './connection.js'
+import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
+import { openCodexConnection } from './connection-codex.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { stripVolatileFlags } from './engine.js'
@@ -116,6 +117,15 @@ export interface BackendSpec {
   readonly name: string
   readonly description: string
   readonly specBase: Omit<AcpSessionSpec, 'cwd'>
+  /** Wire protocol of the child (D25). Absent means `acp`. */
+  readonly protocol?: 'acp' | 'codex'
+  /** Codex thread parameters; required when `protocol` is `codex`. */
+  readonly codex?: {
+    readonly model: string
+    readonly sandbox?: string
+    readonly approvalPolicy?: string
+    readonly effort?: string
+  }
 }
 
 export interface PoolOptions {
@@ -406,7 +416,7 @@ export class AcpSessionPool {
     const now = Date.now()
     const controller = new AbortController()
     const opening = (async (): Promise<AcpConnection> => {
-      const conn = await openAcpConnection({ ...backendSpec.specBase, cwd }, { mode: 'new' }, windowSignal(controller, signal))
+      const conn = await this.connect(backendSpec, cwd, { mode: 'new' }, windowSignal(controller, signal))
       if (this.disposed) await this.discard(conn, 'acp-resume: pool already disposed')
       if (controller.signal.aborted) await this.discard(conn, `acp-resume: chat ${chatId} was released before it started`)
       this.registry.upsert({
@@ -684,10 +694,29 @@ export class AcpSessionPool {
   }
   private backendName(entry: RegistryEntry): string { return entry.backend ?? DEFAULT_BACKEND }
 
-  private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
+  private backendFor(entry: RegistryEntry): BackendSpec {
     const backend = this.backends.get(this.backendName(entry))
     if (backend === undefined) throw new Error(`acp-resume: chat ${entry.chatId} uses unavailable backend ${this.backendName(entry)}`)
-    return backend.specBase
+    return backend
+  }
+
+  private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
+    return this.backendFor(entry).specBase
+  }
+
+  /** Open a connection with the backend's wire protocol (D25); ACP is the default. */
+  private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined): Promise<AcpConnection> {
+    if (backend.protocol !== 'codex') return openAcpConnection({ ...backend.specBase, cwd }, open, signal)
+    const codex = backend.codex
+    if (codex === undefined) throw new Error(`acp-resume: backend ${backend.name} uses protocol codex but has no codex model configured`)
+    return openCodexConnection({
+      ...backend.specBase,
+      cwd,
+      codexModel: codex.model,
+      ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
+      ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
+      ...(codex.effort === undefined ? {} : { codexEffort: codex.effort }),
+    }, open, signal)
   }
 
   private assertSameAgent(entry: RegistryEntry): void {
@@ -720,13 +749,13 @@ export class AcpSessionPool {
 
   /** Reconnect a saved remote session, or skip load after repeated failed turns (D6). */
   private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
-    const spec = { ...this.specFor(entry), cwd: entry.cwd }
+    const backend = this.backendFor(entry)
     if (forceFresh) {
-      const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
       return { conn, freshSessionReason: 'repeated-errors' }
     }
     try {
-      const conn = await openAcpConnection(spec, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
       return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
       const sessionGone = error instanceof AcpConnectionError
@@ -734,7 +763,7 @@ export class AcpSessionPool {
         && error.category === 'protocol'
       if (!sessionGone) throw error
       this.assertLive()
-      const conn = await openAcpConnection(spec, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
       return { conn, freshSessionReason: 'load-rejected', lost: error }
     }
   }

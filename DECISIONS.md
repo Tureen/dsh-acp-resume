@@ -388,6 +388,14 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - 官方包针对 0.147.0，本机为 0.160.0，协议可能有小变化。
 - 私有协议无稳定性承诺，升级 Codex 后须重跑真机探针。
 
+### 池集成与 Config(第二轮,已实施)
+
+- `BackendSpec` 增加可选 `protocol`(缺省即 acp)与 `codex {model, sandbox?, approvalPolicy?, effort?}`；`specBase` 不变，故指纹校验(command + args)与所有 ACP 路径原样。池内 `connect()` 按协议选 `openAcpConnection` 或 `openCodexConnection`，`start` / `reopen` 的三处打开点都走它。
+- `BackendConfig` 增加 `protocol`(`acp` | `codex`，默认 `acp`)、`sandbox`、`approvalPolicy`，`effort` 对 Codex 即 `turn/start` 的 effort。三个新字段都是枚举校验，不是自由字符串。
+- Codex 后端的 args 原样取用户值，为空则 `['app-server']`；不追加 `--agent-engine` / `--model` / `--effort`(Codex 没有这些旗标)。Codex 后端缺 `model` 时启动即报错。
+- 只有命名后端(`backends`)可选 Codex；顶层默认后端恒为 ACP。
+- mock:`tests/mock-codex-server.ts`(协议、环境开关见其头注)。
+
 ### 后续轮次
 
-审批层与 `ask` 桥(`codex-approval.ts`)、池集成与 Config 扩展、mock app-server、测试(并更新 AGENTS.md 的测试基线)。
+审批层与 `ask` 桥(`codex-approval.ts`)、连接层与池的测试(并更新 AGENTS.md 的测试基线)。

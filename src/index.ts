@@ -51,9 +51,16 @@ export interface BackendConfig {
   model?: string
   /** `'session'`: switch model via `session/set_model` (agy); no `--model` flag. Default `'flag'`. */
   modelSelect?: ModelSelect
+  /** ACP: `--effort` flag. Codex: `effort` of every `turn/start`. */
   effort?: string
   permission: PermissionPolicy
   env: Record<string, string>
+  /** Wire protocol of the child: `acp` (default) or Codex `app-server` (D25; `model` required). */
+  protocol?: 'acp' | 'codex'
+  /** Codex only: `read-only` (default) | `workspace-write` | `danger-full-access`. */
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
+  /** Codex only: `never` (default) | `untrusted` | `on-request` | `on-failure`. */
+  approvalPolicy?: 'never' | 'untrusted' | 'on-request' | 'on-failure'
   /** Neutral user-facing description; omitted falls back to name and command basename. */
   description?: string
 }
@@ -171,6 +178,9 @@ export const Config: z<Config> = z.object({
     modelSelect: z.union(['flag', 'session'] as const).default('flag'),
     permission: z.union(['allow', 'reject', 'ask'] as const).default('reject'),
     env: z.dict(z.string()).default({}),
+    protocol: z.union(['acp', 'codex'] as const).default('acp'),
+    sandbox: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const),
+    approvalPolicy: z.union(['never', 'untrusted', 'on-request', 'on-failure'] as const),
     description: z.string(),
   })),
   toolPrefix: z.string().default('acp_chat_'),
@@ -250,7 +260,8 @@ class AcpProvider implements SubagentProvider {
 function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string, BackendSpec> {
   const base = (backend: BackendConfig): Omit<AcpSessionSpec, 'cwd'> => ({
     command: backend.command,
-    args: buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.modelSelect === undefined ? {} : { modelSelect: backend.modelSelect }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
+    // Codex has no ACP engine/model/effort flags: its args are exactly the user's (default `app-server`).
+    args: backend.protocol === 'codex' ? (backend.args.length === 0 ? ['app-server'] : backend.args) : buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.modelSelect === undefined ? {} : { modelSelect: backend.modelSelect }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
     ...(backend.modelSelect === 'session' && backend.model !== undefined && backend.model !== '' ? { sessionModel: backend.model } : {}),
     permission: backend.permission, env: { ...config.env, ...backend.env }, disposeEofGraceMs: config.disposeEofGraceMs, disposeGraceMs: config.disposeGraceMs,
     spawn: spec => ctx.subprocess.spawn(spec),
@@ -259,8 +270,15 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.modelSelect === undefined ? {} : { modelSelect: config.modelSelect }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
   const named = Object.entries(config.backends ?? {})
   if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
+  for (const [name, value] of named) {
+    if (value.protocol === 'codex' && (value.model === undefined || value.model === '')) throw new Error(`acp-resume: backend ${name} uses protocol codex and requires an explicit model`)
+  }
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
-    name, { name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value) },
+    name,
+    {
+      name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value),
+      ...(value.protocol === 'codex' ? { protocol: 'codex' as const, codex: { model: value.model as string, ...(value.sandbox === undefined ? {} : { sandbox: value.sandbox }), ...(value.approvalPolicy === undefined ? {} : { approvalPolicy: value.approvalPolicy }), ...(value.effort === undefined ? {} : { effort: value.effort }) } } : {}),
+    },
   ])
   entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: defaultBackend.command.split('/').at(-1) ?? defaultBackend.command, specBase: base(defaultBackend) }])
   return new Map(entries)
