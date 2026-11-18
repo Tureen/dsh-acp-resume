@@ -26,11 +26,11 @@ The Persistent chats panel in the right sidebar shows each chat's state, turn co
 - `command`: The external ACP agent executable. The default example uses `kiro-cli`.
 - `permission`: `allow` approves automatically, `reject` denies automatically, and `ask` forwards every request to the host user-confirmation interface. The bundle defaults to `allow`; `ask` denies when no confirmation service or valid answer is available.
 - `agentEngine: none`: Set this when the agent does not accept kiro's `--agent-engine` argument, so the plugin does not append it.
-- `model` / `effort`: These work through the `--model` / `--effort` CLI flags and only for agents that accept them. agy rejects them, so do not configure either field for agy.
+- `model` / `effort`: These work through the `--model` / `--effort` CLI flags and only for agents that accept them (kiro v2 engine). agy and kiro v3 reject them, so setting them directly fails startup. For those backends use `modelSelect: session` + `model` (session-level method).
 
 ### Backend support levels
 
-- **First-class: kiro-cli.** The default backend supports `_session/steer`, `--agent-engine v3`, cross-process `session/load`, and model/effort CLI flags.
+- **First-class: kiro-cli.** The default backend supports `_session/steer`, `--agent-engine v3`, and cross-process `session/load`. On v3 (default) pick the model with `modelSelect: session` + `model` (via `session/set_config_option`); do not set model/effort directly (it appends CLI flags v3 rejects and startup fails). Only v2 (legacy) supports the `--model` / `--effort` flags.
 - **First-class: agy / Antigravity.** Supports update normalization, `session/set_model`, and cross-process `session/load`; it must use `agentEngine: 'none'`, must not set model/effort, and is best configured with `permission: ask`.
 - **First-class: Codex.** Drives `codex app-server`'s private protocol (`protocol: codex`, named backends only): native steer, cross-process `thread/resume`, and per-item approvals (`permission: ask` asks the user each time). It must set `model` and may set `sandbox`, `approvalPolicy`, and `effort` (`low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `ultra` on some models only). Codex models come from `model/list` of `codex app-server`; agy's come from `models.availableModels` in the `initialize` response, with effort embedded in the model id; kiro's are dynamic (auto). Verified against a mock only; a real-machine probe is pending.
 - **Generic ACP (Other).** For standard ACP CLIs such as opencode and gemini-cli; it must use `agentEngine: 'none'`. steer, loadSession, and model/effort availability depend on that agent's capabilities and CLI flag support.

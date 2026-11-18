@@ -51,8 +51,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         command: /path/to/agent-cli  # 必填:子 agent 可执行文件
         args: [acp]                  # 默认 []
         agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3 / none。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加;none = 完全不追加,供不认该旗标的 agent 使用(D19)
-        model: glm-5                 # 追加 --model <id>;仅接受该 CLI 旗标的 agent 有效(kiro-cli 已验证);agy 不接受,请改用 modelSelect: session
-        effort: high                 # 追加 --effort <档>;仅接受该 CLI 旗标的 agent 有效(kiro-cli 已验证);agy 不接受,不要设置
+        model: glm-5                 # 追加 --model <id>;仅接受该 CLI 旗标的 agent 有效(kiro v2 引擎);kiro v3 与 agy 不接受,请改用 modelSelect: session
+        effort: high                 # 追加 --effort <档>;仅接受该 CLI 旗标的 agent 有效(kiro v2 引擎);kiro v3 与 agy 不接受,不要设置
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
         permission: allow            # bundle 默认自动选择允许项;也可用 reject 或 ask(见下文)
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
@@ -98,7 +98,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
     permission: ask
 ```
 
-> **兼容性：** `model` 与 `effort` 通过追加 `--model` / `--effort` CLI 旗标实现，**仅对接受这些旗标的 agent 有效**（kiro-cli 已验证）。部分 agent（如 agy）不接受这些旗标，请勿为其后端设置这两个字段，设了会导致启动失败。agy 请设 `modelSelect: session`(默认 `flag`):此时不追加 `--model`,会话建立后(`session/new` / `session/load` 之后)改调 `session/set_model` 切到 `model`;agent 对 `session/set_model` 回 `-32601`(方法不存在)或 `-32603`(kiro v3 的实际返回)时降级调 `session/set_config_option {sessionId, configId: "model", value}`,kiro v3 经 set_config_option 适配(kiro v3 不认 `--model` / `--effort`,参数形态已探针验证)。两者都失败仅告警不阻断连接。
+> **兼容性：** `model` 与 `effort` 通过追加 `--model` / `--effort` CLI 旗标实现，**仅对接受这些旗标的 agent 有效**（kiro v2 引擎已验证）。部分 agent（如 agy）与 kiro v3 不接受这些旗标，请勿为其后端直接设置这两个字段，设了会追加被拒绝的旗标，导致启动失败。kiro v3 与 agy 类似，需要 `modelSelect: session` 走会话级方法；直接设 model/effort 会追加 CLI 旗标，v3 拒绝。agy / kiro v3 请设 `modelSelect: session`(默认 `flag`):此时不追加 `--model`,会话建立后(`session/new` / `session/load` 之后)改调 `session/set_model` 切到 `model`;agent 对 `session/set_model` 回 `-32601`(方法不存在)或 `-32603`(kiro v3 的实际返回)时降级调 `session/set_config_option {sessionId, configId: "model", value}`,kiro v3 经 set_config_option 适配(kiro v3 不认 `--model` / `--effort`,参数形态已探针验证)。两者都失败仅告警不阻断连接。
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
@@ -112,7 +112,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 | 后端 | 私有扩展支持 | 特殊配置 |
 |---|---|---|
-| **kiro-cli**（默认后端） | `_session/steer` 中途插话；`--agent-engine v3` 旗标；`session/load` 跨进程重连；model/effort 走 CLI 旗标 | `agentEngine: v3`（默认，不设即用）；可设 model/effort（追加旗标）；远端清理用 `kiro-cli chat --list-sessions` / `--delete-session` |
+| **kiro-cli**（默认后端） | `_session/steer` 中途插话；`--agent-engine v3` 旗标；`session/load` 跨进程重连；v3 的模型/effort 走会话级 `session/set_config_option`，不走 CLI 旗标 | `agentEngine: v3`（默认，不设即用）。**v3（默认）**：模型选择用 `modelSelect: session` + `model`（经 `session/set_config_option` 切换，探针已验证）；effort 同属会话级配置项（`configId: "effortLevel"`），不是 CLI 旗标。⚠️ 不要在 v3 后端上直接设 `model` / `effort` 而不设 `modelSelect: session`——会追加 v3 不支持的 `--model` / `--effort` 旗标，导致启动失败；v3 上也不要设 `effort` 字段。**v2（遗留）**：支持 `--model` / `--effort` CLI 旗标，但不推荐降级到 v2。远端清理用 `kiro-cli chat --list-sessions` / `--delete-session` |
 | **agy / Antigravity** | 协议归一化层自动把平铺 update 归一为嵌套形态；`session/set_model` 按会话切模型；`session/load` 跨进程重连（已实测 SIGKILL 后恢复） | **必须** `agentEngine: 'none'`；**不要设** model/effort（CLI 旗标会被拒绝）。模型选择走 `session/set_model`，effort 已内嵌在模型 ID，例如 `gemini-4-carbon-high` 表示 Carbon 模型的 high 档。建议 `permission: ask`，因为权限请求中可能混入“向用户提问”。默认模型为 `gemini-4-carbon-medium`；可用模型含 Gemini 4 全系（Carbon/Argon/Hydrogen）、Claude Sonnet/Opus 4.6、GPT-OSS 120B 等共 18 个。 |
 | **Codex**（`protocol: codex`，仅命名后端） | 走 `codex app-server` 私有 JSON-RPC 协议，不说 ACP：原生 `turn/steer` 插话（不打断正在跑的命令）；`thread/resume` 跨进程恢复；`item/*/requestApproval` 分项审批（`permission: ask` 逐次问用户：允许 / 拒绝该步 / 取消整轮） | **必须**设 `model`（Codex 默认模型在部分账号不可用）；可设 `sandbox`（`read-only` 默认 / `workspace-write` / `danger-full-access`）、`approvalPolicy`（`never` 默认 / `untrusted` / `on-request` / `on-failure`）、`effort`（每轮 `turn/start` 的推理档位，完整档位 `low` / `medium` / `high` / `xhigh` / `max` / `ultra`，其中 `ultra` 仅部分模型支持，见下方「模型从哪查」）。`args` 缺省为 `[app-server]`，不追加 `--agent-engine` / `--model` / `--effort`。`reject` 回 decline（该步被拒、整轮继续），`ask` 无确认服务或回答无效时取消整轮。已用 mock 全绿，真机探针待做；私有协议无稳定性承诺，升级 Codex 后需复测。 |
 
@@ -139,7 +139,12 @@ Codex 0.170.0 实测 `model/list`：默认 `gpt-6.2-sol`；另有 `gpt-6.2-astra
 
 ```yaml
 # 等级 1：一等支持 — kiro（默认后端，顶层配置，无需额外设置）
-# agentEngine/model/effort/permission 均可用
+# kiro v3 + 模型钉死(推荐)
+command: kiro-cli
+args: [acp]
+modelSelect: session
+model: claude-opus-5.5     # 经 set_config_option 切换,非 CLI 旗标
+# 注意:不要直接设 model 而不设 modelSelect: session(v3 会拒旗标);v3 上不要设 effort 字段
 ```
 
 ```yaml
