@@ -1,7 +1,10 @@
 /**
  * The persistent-chat panel body (PANEL-DESIGN §2.2/§2.3): header with
- * refresh, empty state, one card per chat, release without confirmation,
- * delete behind a confirmation dialog. A card opens the chat's detail tab
+ * refresh, empty state, one card per chat, release without confirmation
+ * while idle (behind one while a turn is in flight, since releasing cancels
+ * it), delete behind a confirmation dialog. A card's summary line shows the
+ * in-flight message's first line (`当前:…`) while a turn runs, else the
+ * first-turn title. A card opens the chat's detail tab
  * (D18) on a click anywhere on it; its release/delete buttons stop the click.
  * Active chats come first; released ones
  * sit under a "Released (N)" group header, collapsed by default, with the
@@ -100,6 +103,16 @@ function failure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Longest in-flight message excerpt on a card, in characters (code points). */
+const CURRENT_MESSAGE_MAX = 60
+
+/** First non-empty line of a message, cut to {@link CURRENT_MESSAGE_MAX} characters with an ellipsis. */
+function messageExcerpt(message: string): string {
+  const line = message.split('\n').map(part => part.trim()).find(part => part !== '') ?? ''
+  const chars = Array.from(line)
+  return chars.length > CURRENT_MESSAGE_MAX ? `${chars.slice(0, CURRENT_MESSAGE_MAX).join('')}…` : line
+}
+
 interface ChatCardProps {
   readonly chat: PanelChat
   readonly now: number
@@ -144,7 +157,9 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCa
         <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}
           onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
       </div>
-      <p style={styles.line}>{chat.title === undefined ? t('noValue') : chat.title}</p>
+      <p style={styles.line}>{chat.inFlight !== undefined
+        ? t('currentMessage', { message: messageExcerpt(chat.inFlight.message) })
+        : chat.title === undefined ? t('noValue') : chat.title}</p>
       <p style={styles.meta} data-owner={chat.ownerSessionId === undefined ? 'unknown' : chat.ownerSessionId.slice(0, 8)}>
         {status}
         <> · <span style={styles.origin}>{ownerLabel(t, chat)}</span></>
@@ -163,7 +178,7 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
   const snapshot = useChats(s => s)
   const { tab } = useTabInfo()
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
-  const [confirming, setConfirming] = useState<PanelChat | undefined>(undefined)
+  const [confirming, setConfirming] = useState<{ readonly chat: PanelChat; readonly kind: 'delete' | 'release' } | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [releasedOpen, setReleasedOpen] = useState(false)
 
@@ -192,12 +207,17 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
       {chats.map(chat => (
         <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
           onOpen={(target) => { tab.actions.openResource(chatAddress(target.chatId)) }}
-          onRelease={(target) => { run(target.chatId, close) }}
-          onDelete={(target) => { setConfirming(target) }} />
+          onRelease={(target) => {
+            // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
+            if (target.inFlight === undefined) run(target.chatId, close)
+            else setConfirming({ chat: target, kind: 'release' })
+          }}
+          onDelete={(target) => { setConfirming({ chat: target, kind: 'delete' }) }} />
       ))}
     </ul>
   )
-  const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chatId)
+  const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chat.chatId)
+  const releasing = confirming?.kind === 'release'
   return (
     <section style={styles.root} aria-label={t('title')}>
       <div style={styles.header}>
@@ -235,14 +255,14 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
             </>
           )}
       <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
-        title={t('confirmTitle', { chatId: confirmingShort })} description={t('confirmBody')}
+        title={t(releasing ? 'releaseConfirmTitle' : 'confirmTitle', { chatId: confirmingShort })} description={t(releasing ? 'releaseConfirmBody' : 'confirmBody')}
         footer={(
           <>
             <Button variant="outline" data-modal-autofocus onClick={() => { setConfirming(undefined) }}>{t('cancel')}</Button>
             <Button variant="primary" onClick={() => {
-              if (confirming !== undefined) run(confirming.chatId, purge)
+              if (confirming !== undefined) run(confirming.chat.chatId, confirming.kind === 'release' ? close : purge)
               setConfirming(undefined)
-            }}>{t('delete')}</Button>
+            }}>{t(releasing ? 'release' : 'delete')}</Button>
           </>
         )} />
     </section>

@@ -228,6 +228,38 @@ describe('ChatsPanel', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('asks before releasing a chat with a turn in flight; cancel keeps it, confirm releases', async () => {
+    const p = props(ready([chat({ inFlight: { chatId: `chat-${UUID_A}`, message: 'm', startedAt: NOW - 5_000 } })]))
+    render(<ChatsPanel {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    const dialog = screen.getByRole('dialog', { name: '释放 chat-a1b2c3d4?' })
+    expect(within(dialog).getByText('将中止正在运行的本轮任务并释放进程(历史记录保留,后续仍可重连)。')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(p.close).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '释放' }))
+    })
+    expect(p.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
+    expect(p.purge).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('shows the in-flight message first line as the summary while running, else the first-turn title', () => {
+    const long = `${'长'.repeat(70)}\n第二行`
+    const { container, rerender } = render(<ChatsPanel {...props(ready([chat({ title: '首轮标题', inFlight: { chatId: `chat-${UUID_A}`, message: `\n  ${long}`, startedAt: NOW - 5_000 } })]))} />)
+    const summary = (): string => (container.querySelector('[data-chat-id] p') as HTMLElement).textContent ?? ''
+    expect(summary()).toBe(`当前:${'长'.repeat(60)}…`)
+    rerender(<ChatsPanel {...props(ready([chat({ title: '首轮标题', inFlight: { chatId: `chat-${UUID_A}`, message: '短指令', startedAt: NOW - 5_000 } })]))} />)
+    expect(summary()).toBe('当前:短指令')
+    rerender(<ChatsPanel {...props(ready([chat({ title: '首轮标题' })]))} />)
+    expect(summary()).toBe('首轮标题')
+    rerender(<ChatsPanel {...props(ready([chat()]))} />)
+    expect(summary()).toBe('—')
+  })
+
   it('asks before deleting, naming the chat; cancel deletes nothing', async () => {
     const p = props(ready([chat()]))
     render(<ChatsPanel {...p} />)
@@ -945,6 +977,23 @@ describe('ChatDetail (D18)', () => {
     render(<ChatDetail {...released.injected} />)
     expect((screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByText(/已释放\(下次发送自动重连\)/)).toBeTruthy()
+  })
+
+  it('asks before releasing from the detail page while a turn is in flight; confirm releases without closing the tab', async () => {
+    const running = { kind: 'running' as const, message: '长任务', startedAt: NOW - 5_000 }
+    const source = fakeSource(detailSnapshot({ entries: [running] }))
+    const { injected, info } = detailProps(source)
+    render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    const dialog = screen.getByRole('dialog', { name: '释放 chat-a1b2c3d4?' })
+    expect(within(dialog).getByText('将中止正在运行的本轮任务并释放进程(历史记录保留,后续仍可重连)。')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(injected.close).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '释放' })) })
+    expect(injected.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
+    expect(injected.purge).not.toHaveBeenCalled()
+    expect(info.closeTab).not.toHaveBeenCalled()
   })
 
   it('asks before deleting; cancel deletes nothing; confirming purges and closes the tab', async () => {

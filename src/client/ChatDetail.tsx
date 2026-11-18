@@ -2,7 +2,7 @@
  * The chat detail tab body (D18, PANEL-DESIGN §2.6). Three zones with their
  * own visual weight: a header (the chat's identity — a state dot and its label
  * or short id — as the one primary line, with the refresh/release/delete
- * controls), a quiet meta strip (state, turn count, cwd, remote id, first-turn
+ * controls; release asks first while a turn is in flight, delete always), a quiet meta strip (state, turn count, cwd, remote id, first-turn
  * title) that recedes behind the header, and the turn history as one card per
  * entry, newest first, spaced apart. Each turn card shows the question and
  * answer as the subject (first non-empty line as a preview) with seq, stop
@@ -270,7 +270,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set())
   const [fulls, setFulls] = useState<Readonly<Record<number, FullState>>>({})
   const [pending, setPending] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const [confirming, setConfirming] = useState<'delete' | 'release' | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const short = shortChatId(chatId)
 
@@ -327,9 +327,13 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
         </div>
         <Button size="sm" variant="ghost" onClick={() => { void source.refresh() }}>{t('refreshDetail')}</Button>
         <Button size="sm" variant="ghost" disabled={pending || chat?.active !== true} aria-label={t('releaseLabel', { chatId: short })}
-          onClick={() => { run(close) }}>{t('release')}</Button>
+          onClick={() => {
+            // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
+            if (chat?.inFlight === undefined && running === undefined) run(close)
+            else setConfirming('release')
+          }}>{t('release')}</Button>
         <Button size="sm" variant="ghost" disabled={pending || chat === undefined} aria-label={t('deleteLabel', { chatId: short })}
-          onClick={() => { setConfirming(true) }}>{t('delete')}</Button>
+          onClick={() => { setConfirming('delete') }}>{t('delete')}</Button>
       </div>
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
@@ -370,15 +374,18 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
           <Button size="sm" variant="ghost" onClick={() => { void source.loadMore() }}>{t('loadMore')}</Button>
         </div>
       ) : null}
-      <Modal open={confirming} onClose={() => { setConfirming(false) }} closeLabel={t('dismiss')}
-        title={t('confirmTitle', { chatId: short })} description={t('confirmBody')}
+      <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
+        title={t(confirming === 'release' ? 'releaseConfirmTitle' : 'confirmTitle', { chatId: short })}
+        description={t(confirming === 'release' ? 'releaseConfirmBody' : 'confirmBody')}
         footer={(
           <>
-            <Button variant="outline" data-modal-autofocus onClick={() => { setConfirming(false) }}>{t('cancel')}</Button>
+            <Button variant="outline" data-modal-autofocus onClick={() => { setConfirming(undefined) }}>{t('cancel')}</Button>
             <Button variant="primary" onClick={() => {
-              setConfirming(false)
-              run(purge, closeTab)
-            }}>{t('delete')}</Button>
+              const kind = confirming
+              setConfirming(undefined)
+              if (kind === 'release') run(close)
+              else run(purge, closeTab)
+            }}>{t(confirming === 'release' ? 'release' : 'delete')}</Button>
           </>
         )} />
     </section>

@@ -36,6 +36,8 @@ export const zh = {
   deleteLabel: '删除 {chatId}',
   confirmTitle: '删除 {chatId}?',
   confirmBody: '将释放进程并删除本地记录,之后无法重连该会话。',
+  releaseConfirmTitle: '释放 {chatId}?',
+  releaseConfirmBody: '将中止正在运行的本轮任务并释放进程(历史记录保留,后续仍可重连)。',
   cancel: '取消',
   dismiss: '关闭',
   actionFailed: '操作失败:{message}',
@@ -86,6 +88,7 @@ export const zh = {
   goneBody: '它的记录已被删除,无法再查看或重连。',
   closeTab: '关闭页签',
   chatTitle: '首轮:{title}',
+  currentMessage: '当前:{message}',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -120,6 +123,8 @@ export const en: Record<PanelCopyKey, string> = {
   deleteLabel: 'Delete {chatId}',
   confirmTitle: 'Delete {chatId}?',
   confirmBody: 'This releases the process and deletes the local record. The chat cannot be reconnected afterwards.',
+  releaseConfirmTitle: 'Release {chatId}?',
+  releaseConfirmBody: 'This stops the turn that is running and releases the process. The history is kept and the chat can be reconnected later.',
   cancel: 'Cancel',
   dismiss: 'Close',
   actionFailed: 'Action failed: {message}',
@@ -170,6 +175,7 @@ export const en: Record<PanelCopyKey, string> = {
   goneBody: 'Its record is gone; it can no longer be viewed or reconnected.',
   closeTab: 'Close tab',
   chatTitle: 'First turn: {title}',
+  currentMessage: 'Now: {message}',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */
