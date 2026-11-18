@@ -66,6 +66,10 @@ These are top-level overrides in the profile's `cordis.patch.yml` while the bund
 
 See the [README](../README.en.md#configuration) for all configuration fields, defaults, and manual wiring.
 
+## ACP Dispatcher mode
+
+An optional preset, "ACP Dispatcher": the main agent only dispatches (splits tasks, delegates to ACP backends, collects results) and has no bash, file or web tools. Pick it in the session mode menu; if you don't, nothing changes.
+
 ## Known limitations
 
 - kiro-cli and agy / Antigravity have first-class support; verify generic Other ACP backends against their own capabilities.

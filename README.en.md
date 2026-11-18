@@ -192,6 +192,15 @@ dsh plugin --profile <name> add dsh-acp-resume
       command: /absolute/path/to/kiro-cli
   ```
 
+## ACP Dispatcher mode
+
+The package ships an **optional** agent preset, "ACP Dispatcher" (see D26). It is a dispatch-only mode: the main agent splits the task, hands pieces to ACP backends with `acp_chat_start` / `acp_chat_send`, checks progress with `acp_chat_list`, and summarizes the results. It has no bash, file or web tools of its own.
+
+- **How to use**: enable the bundle, restart DSH, then pick **ACP Dispatcher** in the session mode menu. If you don't pick it, nothing changes: in the standard mode the `acp_chat_*` tools stay available and can be mixed with your own bash.
+- **Good for**: work that splits into several parts, where backends such as kiro or agy do the work and the main model only coordinates.
+- **Not for**: small tasks where the main model should edit files or run commands directly. Use the standard mode.
+- **Note**: the plugin inside the preset has no config and uses plugin defaults. To customize the command or backends, see the known risks in D26.
+
 ## Host prerequisites for background job mode
 
 The background mode of `acp_chat_send` needs the host to have both `@deepseek-ai/dsh-jobs-local` (provides `ctx.jobs`) and `@deepseek-ai/dsh-tool-jobs` (mounts the job controller and provides `job_output` / `job_list` / `job_kill` and completion notifications). With only the former, send fails with a "no controller" tool error; with neither, send falls back to waiting synchronously.

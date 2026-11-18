@@ -399,3 +399,34 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 ### 后续轮次
 
 审批层与 `ask` 桥(`codex-approval.ts`)、连接层与池的测试(并更新 AGENTS.md 的测试基线)。
+
+## D26 ACP Dispatcher preset:可选的纯派工模式(2026-11-18)
+
+### 动机
+
+插件提供 ACP 工具(能力层),但用户有时需要一种纯派工模式(模式层):主 Agent 只做调度(拆任务、分配、收结果),不直接执行。DSH 原生有 agent preset(会话模式菜单里的预设),用它实现,由用户选择,不强绑。
+
+### 设计原则:能力与模式解耦
+
+- 装插件 = 所有模式都能用 `acp_chat_*` 工具。标准模式下可混用:自己跑 bash,或委派 ACP。
+- 选 Dispatcher preset = 工具集里物理上只有 ACP 工具与任务管理工具(无 bash / fs / web / subagent),模型只能派活。
+- 是否使用完全由用户决定。不选 preset,任何现有模式的行为不变。
+
+### 实现
+
+在包自带 `cordis.patch.yml` 的 `insert` 之后追加第二个 `- insert:`,定义 preset `acp-dispatcher`(名称 ACP Dispatcher,`order: 10`),引用 `@deepseek-ai/dsh-agent-preset`。preset 内含的插件:
+- `persona`(调度者身份提示词)、`agent-instructions`(maxBytes 65536)、`time-context`;
+- `subagent-acp-resume`(本插件);
+- `tool-jobs`(后台任务收发)、`tool-todo`(`allowParallelInProgress: true`)、`tool-ask-user`(需澄清时问用户)。
+
+### 不做
+
+- 不新增 `acp_dispatch` 之类的快捷工具;现有五个工具足够,模型在 persona 指引下自然使用。
+- 不改 `src/`,不改现有 preset。
+- 不做后端自动路由;模型自己读工具描述选 backend(见 D24)。
+
+### 已知风险(未验证,须真机核对)
+
+- preset 在 DSH 里按 preset 单独挂载一棵插件树(读 `agent-preset-registry/src/mount.ts` 得出,未实机验证)。preset 内再声明 `dsh-acp-resume`,可能与 bundle 已全局挂载的同名插件并存:一是 `acp-resume` provider 重名(`DUPLICATE_PROVIDER`),二是两个插件实例各有一个池,同一注册表文件被两处写。若实测出问题,改法是去掉 preset 内的这一项,依赖全局实例提供工具,并确认 preset 工具白名单如何引用全局工具。
+- preset 内的 `dsh-acp-resume` 不带 config,走插件默认值(`command` 缺省等),不继承 bundle 段的 `kiro-cli` / `permission: allow` 与用户顶层覆盖。
+- persona 提示词为英文,与官方 persona 一致;中文用户通常不受影响,不另做本地化。

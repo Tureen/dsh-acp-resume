@@ -190,6 +190,15 @@ dsh plugin --profile <name> add dsh-acp-resume
       command: /absolute/path/to/kiro-cli
   ```
 
+## ACP Dispatcher 模式
+
+本包自带一个**可选**的 agent preset「ACP Dispatcher」(见 D26)。它是纯派工模式:主 Agent 只拆任务、用 `acp_chat_start` / `acp_chat_send` 派给 ACP 后端、用 `acp_chat_list` 看进度、最后汇总结果,自己没有 bash、文件和网络工具。
+
+- **怎么用**:启用 bundle 后重启 DSH,在会话的模式菜单里选 **ACP Dispatcher**。不选就和以前完全一样,标准模式下 `acp_chat_*` 工具照常可用,可以和自己的 bash 混用。
+- **适合**:任务能拆成多块、想让 kiro / agy 等后端各干各的、主模型只负责统筹的场景。
+- **不适合**:需要主模型直接改文件、跑命令的小任务,用标准模式更省事。
+- **注意**:preset 内的插件不带 config,用插件默认值;需要自定义命令或后端时,见 D26 已知风险。
+
 ## 后台任务模式的宿主前提
 
 `acp_chat_send` 的后台模式依赖宿主同时装有 `@deepseek-ai/dsh-jobs-local`(提供 `ctx.jobs`)与 `@deepseek-ai/dsh-tool-jobs`(挂 job 控制器、提供 `job_output` / `job_list` / `job_kill` 与完成通知)。只有前者时 send 会以"无控制器"报工具错误;两者都没有时 send 回到同步等待。

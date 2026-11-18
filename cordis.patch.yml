@@ -21,3 +21,40 @@
         command: kiro-cli
         args: [acp]
         permission: allow
+
+# ACP Dispatcher preset (D26): 可选的纯派工模式,用户在会话模式菜单中选择。
+# 该 preset 只含 ACP 与任务管理工具,没有 bash / fs / web / subagent;
+# 不选它时,标准模式与 Kiro 模式不受任何影响。
+- insert:
+    - id: preset-acp-dispatcher
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: acp-dispatcher
+        name: ACP Dispatcher
+        order: 10
+        plugins:
+          # 身份:调度者
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a task dispatcher. Break down user requests into sub-tasks and delegate them to ACP workers using acp_chat_start and acp_chat_send. Track progress with acp_chat_list. You do not execute tasks directly — no bash, no file operations, no code analysis. Collect results from completed jobs and synthesize the final answer.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          # ACP 工具(本插件,核心)
+          - id: subagent-acp-resume
+            name: 'dsh-acp-resume'
+          # 任务管理(后台 job 收发)
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          # 用户交互(需要澄清时)
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          # 没有 bash、fs、web tools、subagent:模型只能通过 ACP 工具执行任务

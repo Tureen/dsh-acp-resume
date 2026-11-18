@@ -66,6 +66,10 @@
 
 完整配置、默认值和手动接线方式见 [README](../README.md#配置)。
 
+## ACP Dispatcher 模式
+
+自带可选 preset「ACP Dispatcher」:主 Agent 只派工(拆任务、派给 ACP 后端、收结果),没有 bash / 文件 / 网络工具。在会话模式菜单里选择;不选则一切照旧。
+
 ## 已知限制
 
 - kiro-cli 与 agy / Antigravity 属一等支持；Other 通用 ACP 后端仍需按其能力自行验证。
