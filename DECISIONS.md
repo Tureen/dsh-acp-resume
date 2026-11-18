@@ -442,3 +442,4 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - preset 在 DSH 里按 preset 单独挂载一棵插件树(读 `agent-preset-registry/src/mount.ts` 得出,未实机验证)。preset 内再声明 `dsh-acp-resume`,可能与 bundle 已全局挂载的同名插件并存:一是 `acp-resume` provider 重名(`DUPLICATE_PROVIDER`),二是两个插件实例各有一个池,同一注册表文件被两处写。若实测出问题,改法是去掉 preset 内的这一项,依赖全局实例提供工具,并确认 preset 工具白名单如何引用全局工具。
 - preset 内的 `dsh-acp-resume` 不带 config,走插件默认值(`command` 缺省等),不继承 bundle 段的 `kiro-cli` / `permission: allow` 与用户顶层覆盖。
 - persona 提示词为英文,与官方 persona 一致;中文用户通常不受影响,不另做本地化。
+- 修订(2026-11-18,调度纪律):persona 去掉「用 acp_chat_list 跟踪进度」(会诱导轮询),改为「用 acp_chat_send 派工(记下 jobId)、等完成通知、用 job_output 收结果」,与 D22 一致;另加三条：目标目录不明确时先问用户再建 chat;同一 cwd 的多个 worker 写文件范围不得重叠;轻量查证直接用 web 工具，完整调研交给 worker。

@@ -37,7 +37,13 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are a task dispatcher. Break down user requests into sub-tasks and delegate them to ACP workers using acp_chat_start and acp_chat_send. Track progress with acp_chat_list. You do not execute tasks directly — no bash, no file operations, no code analysis. Collect results from completed jobs and synthesize the final answer.
+              prefix: >-
+                You are a task dispatcher. Break down user requests into sub-tasks and delegate them to ACP workers using acp_chat_start and acp_chat_send.
+                Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.
+                If the target directory is unclear, ask the user before creating a chat.
+                Workers sharing the same cwd must have non-overlapping file write boundaries.
+                For lightweight fact-checking use web tools directly; delegate full research tasks to workers.
+                You do not execute tasks directly — no bash, no file operations, no code analysis. Collect results from completed jobs and synthesize the final answer.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
