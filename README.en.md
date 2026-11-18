@@ -53,7 +53,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         command: /path/to/agent-cli  # required: the child agent executable
         args: [acp]                  # default []
         agentEngine: v3              # default v3; one of v1 / v2 / v3 / none. Appends --agent-engine <value> when spawning the child; if args already contains that flag, args wins and nothing is appended; none = never append, for agents that do not accept the flag (D19)
-        model: glm-5                 # appends --model <id>; only agents accepting this CLI flag support it (verified for kiro-cli); do not set for agy
+        model: glm-5                 # appends --model <id>; only agents accepting this CLI flag support it (verified for kiro-cli); for agy use modelSelect: session
         effort: high                 # appends --effort <level>; only agents accepting this CLI flag support it (verified for kiro-cli); do not set for agy
         providerName: acp-resume     # default acp-resume; does not conflict with the official acp
         permission: allow            # default bundle policy: automatically selects an allow option; reject or ask are also supported (see below)
@@ -100,7 +100,7 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
     permission: ask
 ```
 
-> **Compatibility:** `model` and `effort` work by appending the `--model` / `--effort` CLI flags and are **only effective for agents that accept those flags** (verified for kiro-cli). Some agents, including agy, reject them. Do not configure either field for those backends, or startup will fail.
+> **Compatibility:** `model` and `effort` work by appending the `--model` / `--effort` CLI flags and are **only effective for agents that accept those flags** (verified for kiro-cli). Some agents, including agy, reject them. Do not configure either field for those backends, or startup will fail. For agy set `modelSelect: session` (default `flag`): no `--model` is appended, and after `session/new` / `session/load` the plugin calls `session/set_model` with `model`; a failure only warns and does not block the connection.
 
 `model` / `effort` also apply to both paths and are **spawn-level** choices (they act on the session the child process starts). When either is unset, its flag is not appended, which keeps kiro's `auto` (the server picks the model per task dynamically, and `effort` is not under your control); when set, the model/level is pinned. **Effective semantics**: they only apply to the next process that starts. A session process that is already running is not affected, and a session you are continuing has to wait until it is released when idle and reconnected by the next `acp_chat_send` (a new process) before the new model is applied. Like `--agent-engine`, the fingerprint check also ignores `--model` / `--effort` (reason in D19): `auto` already switches models per task within a session, so pinning a different model does not make it "a different agent", and old sessions stay continuable.
 

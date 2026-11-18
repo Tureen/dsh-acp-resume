@@ -484,3 +484,26 @@ describe('openAcpConnection / AcpConnection', () => {
     expect(text(turn.output)).toBe('fine')
   })
 })
+
+describe('sessionModel (session/set_model)', () => {
+  it('calls session/set_model after session/new and after session/load', async () => {
+    const file = join(tempDir(), 'set-model.log')
+    const store = join(tempDir(), 'sessions.json')
+    const env = { MOCK_SET_MODEL_FILE: file, MOCK_SESSION_STORE: store }
+    const first = makeSpec(env)
+    const conn = await open({ ...first.spec, sessionModel: 'gemini-4-carbon-high' })
+    const sid = conn.remoteSessionId
+    await conn.dispose()
+    const again = await open({ ...makeSpec(env, first.dir).spec, sessionModel: 'gemini-4-carbon-high' }, { mode: 'load', sessionId: sid })
+    expect(again.remoteSessionId).toBe(sid)
+    expect(readFileSync(file, 'utf8').trim().split('\n')).toEqual([`set_model ${sid} gemini-4-carbon-high`, `set_model ${sid} gemini-4-carbon-high`])
+  })
+
+  it('a failing set_model warns but does not block the connection', async () => {
+    const errors: Error[] = []
+    const { spec } = makeSpec({ MOCK_SET_MODEL_FAIL: '1' }, undefined, { onError: (e) => { errors.push(e) } })
+    const conn = await open({ ...spec, sessionModel: 'x' })
+    expect(conn.remoteSessionId).toBeTruthy()
+    expect(errors.map(e => e.message).join('\n')).toContain('session/set_model(x) failed')
+  })
+})

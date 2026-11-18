@@ -37,6 +37,9 @@ import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestR
 export type { PermissionPolicy }
 
 /** Startup step that failed. */
+/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied by `session/set_model` after open. */
+export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string }
+
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
 
 /** Failure class of a startup error. */
@@ -286,7 +289,7 @@ function hasProcessErrorCode(error: Error | undefined): error is Error {
  * @param open - establish a fresh session or reconnect a saved one.
  * @param signal - optional cancellation for the startup window.
  */
-export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, signal?: AbortSignal): Promise<AcpConnection> {
+export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode, signal?: AbortSignal): Promise<AcpConnection> {
   if (signal?.aborted) throw new Error('subagent request was aborted before the ACP child started')
   const id = brandString<SessionId>(randomUUID())
 
@@ -471,6 +474,14 @@ export async function openAcpConnection(spec: AcpRunSpec, open: OpenAcpMode, sig
             cwd: spec.cwd,
             mcpServers: [],
           })
+        }
+        if (spec.sessionModel !== undefined && remoteSessionId !== undefined) {
+          // agy takes no `--model`; switch per session. A failure leaves the agent's default model.
+          try {
+            await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel })
+          } catch (error: unknown) {
+            try { spec.onError?.(new Error(`session/set_model(${spec.sessionModel}) failed: ${toError(error).message}`), 'error') } catch { /* sink cannot replace the failure */ }
+          }
         }
         if (flags.cancelled) throw new Error('subagent cancelled before the ACP session started')
       })(),

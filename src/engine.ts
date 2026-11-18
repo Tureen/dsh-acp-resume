@@ -44,6 +44,9 @@ function hasFlag(args: readonly string[], flag: string): boolean {
   return args.some(arg => matchesFlag(arg, flag))
 }
 
+/** How `model` reaches the agent: `--model` CLI flag, or `session/set_model` after the session opens. */
+export type ModelSelect = 'flag' | 'session'
+
 /**
  * Child spawn flags added on top of the configured args. Each is appended only
  * when the user did not already set it in `args`.
@@ -53,6 +56,8 @@ export interface ChildFlags {
   readonly engine: AgentEngineSetting
   /** When set, the model id appended as `--model <id>` (otherwise server auto-routes). */
   readonly model?: string
+  /** `'session'`: the model is switched via `session/set_model`, so `--model` is never appended. */
+  readonly modelSelect?: ModelSelect
   /** When set, the effort level appended as `--effort <level>`. */
   readonly effort?: string
 }
@@ -72,7 +77,7 @@ function appendFlag(args: string[], flag: string, value: string | undefined): vo
 export function buildChildArgs(args: readonly string[], flags: ChildFlags): string[] {
   const next = [...args]
   appendFlag(next, ENGINE_FLAG, flags.engine === 'none' ? undefined : flags.engine)
-  appendFlag(next, MODEL_FLAG, flags.model)
+  appendFlag(next, MODEL_FLAG, flags.modelSelect === 'session' ? undefined : flags.model)
   appendFlag(next, EFFORT_FLAG, flags.effort)
   return next
 }

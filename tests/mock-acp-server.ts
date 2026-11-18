@@ -61,6 +61,9 @@
  *                        for permission (as MOCK_PERMISSION, only on those turns).
  * - `MOCK_CANCEL_FILE` — if set, every received `session/cancel` appends one
  *                        line (`cancel <sessionId>`) to this file.
+ * - `MOCK_SET_MODEL_FILE` — every received `session/set_model` appends one line
+ *                        (`set_model <sessionId> <modelId>`) to this file; with
+ *                        `MOCK_SET_MODEL_FAIL=1` it then rejects.
  * - `MOCK_STEER_FILE` — every received `_session/steer` appends one line
  *                        (`steer <sessionId> <message>`) to this file and replies
  *                        `{queued:true, messageId:'steer-test'}`.
@@ -376,6 +379,16 @@ function makeAgent() {
 
 const implementation = makeAgent()
 const agentApp = createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
+agentApp.onRequest(
+  'session/set_model',
+  (params: unknown) => params as { sessionId: string; modelId: string },
+  ({ params }) => {
+    const file = process.env.MOCK_SET_MODEL_FILE
+    if (file !== undefined) appendFileSync(file, `set_model ${params.sessionId} ${params.modelId}\n`)
+    if (process.env.MOCK_SET_MODEL_FAIL === '1') return Promise.reject(new Error('mock: set_model rejected'))
+    return Promise.resolve({})
+  },
+)
 if (!NO_STEER) {
   // Private extension, as kiro-cli's `_session/steer`: not advertised, only recorded and acknowledged.
   agentApp.onRequest(

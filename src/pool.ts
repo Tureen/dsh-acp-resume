@@ -40,11 +40,10 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AcpConnection, AcpSteerResult } from './connection.js'
+import type { AcpConnection, AcpSessionSpec, AcpSteerResult } from './connection.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
-import type { AcpRunSpec } from './run.js'
 import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
@@ -116,12 +115,12 @@ export interface PoolSendHooks {
 export interface BackendSpec {
   readonly name: string
   readonly description: string
-  readonly specBase: Omit<AcpRunSpec, 'cwd'>
+  readonly specBase: Omit<AcpSessionSpec, 'cwd'>
 }
 
 export interface PoolOptions {
   /** Everything except `cwd` of the default backend's per-run spawn spec. */
-  readonly specBase: Omit<AcpRunSpec, 'cwd'>
+  readonly specBase: Omit<AcpSessionSpec, 'cwd'>
   /** Named backends in addition to the default backend (D24). */
   readonly backends?: ReadonlyMap<string, BackendSpec>
   /** Registry file path; created (with parent dirs) on first change. */
@@ -680,7 +679,7 @@ export class AcpSessionPool {
   /** A saved session is only reloaded by the agent that created it. */
   private backendName(entry: RegistryEntry): string { return entry.backend ?? DEFAULT_BACKEND }
 
-  private specFor(entry: RegistryEntry): Omit<AcpRunSpec, 'cwd'> {
+  private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
     const backend = this.backends.get(this.backendName(entry))
     if (backend === undefined) throw new Error(`acp-resume: chat ${entry.chatId} uses unavailable backend ${this.backendName(entry)}`)
     return backend.specBase

@@ -124,6 +124,12 @@ describe('engine flag helpers', () => {
       .toEqual(['acp', '--model', 'glm-5', '--effort', 'high'])
   })
 
+  it("modelSelect 'session' appends no --model; default 'flag' still does", () => {
+    expect(buildChildArgs(['acp'], { engine: 'none', model: 'm', modelSelect: 'session' })).toEqual(['acp'])
+    expect(buildChildArgs(['acp'], { engine: 'none', model: 'm', modelSelect: 'flag' })).toEqual(['acp', '--model', 'm'])
+    expect(buildChildArgs(['acp'], { engine: 'none', model: 'm' })).toEqual(['acp', '--model', 'm'])
+  })
+
   it('strips --agent-engine and its value, leaving every other arg in order', () => {
     expect(stripVolatileFlags(['a', '--agent-engine', 'v3', 'b'])).toEqual(['a', 'b'])
     expect(stripVolatileFlags(['a', '--agent-engine=v2', 'b'])).toEqual(['a', 'b'])

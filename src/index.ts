@@ -31,7 +31,8 @@ import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS,
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
 import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
-import { type AgentEngineSetting, buildChildArgs } from './engine.js'
+import type { AcpSessionSpec } from './connection.js'
+import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
 
@@ -48,6 +49,8 @@ export interface BackendConfig {
   args: string[]
   agentEngine: AgentEngineSetting
   model?: string
+  /** `'session'`: switch model via `session/set_model` (agy); no `--model` flag. Default `'flag'`. */
+  modelSelect?: ModelSelect
   effort?: string
   permission: PermissionPolicy
   env: Record<string, string>
@@ -85,6 +88,13 @@ export interface Config {
    * effect on the NEXT reconnect (a new process), not on the live one.
    */
   model?: string
+  /**
+   * How {@link model} is applied. `'flag'` (default) appends `--model <id>`;
+   * `'session'` appends nothing and calls `session/set_model` right after
+   * `session/new` / `session/load` (for agents such as agy that reject
+   * `--model`). A failed `set_model` is logged and does not block the chat.
+   */
+  modelSelect?: ModelSelect
   /**
    * Reasoning effort the child's sessions are pinned to, appended as
    * `--effort <level>` (typically `low` / `medium` / `high` / `xhigh` /
@@ -145,6 +155,7 @@ export const Config: z<Config> = z.object({
   // Optional: no .required()/.default() ⇒ absent when unset (schemastery 3.18.5),
   // so the flag is only appended when the user pins a model/effort.
   model: z.string(),
+  modelSelect: z.union(['flag', 'session'] as const).default('flag'),
   effort: z.string(),
   permission: z.union(['allow', 'reject', 'ask'] as const).default('reject'),
   env: z.dict(z.string()).default({}),
@@ -157,6 +168,7 @@ export const Config: z<Config> = z.object({
     args: z.array(z.string()).default([]),
     agentEngine: z.union(['v1', 'v2', 'v3', 'none'] as const).default('v3'),
     model: z.string(), effort: z.string(),
+    modelSelect: z.union(['flag', 'session'] as const).default('flag'),
     permission: z.union(['allow', 'reject', 'ask'] as const).default('reject'),
     env: z.dict(z.string()).default({}),
     description: z.string(),
@@ -215,6 +227,7 @@ class AcpProvider implements SubagentProvider {
       args: buildChildArgs(this.config.args, {
         engine: this.config.agentEngine,
         ...(this.config.model === undefined ? {} : { model: this.config.model }),
+        ...(this.config.modelSelect === undefined ? {} : { modelSelect: this.config.modelSelect }),
         ...(this.config.effort === undefined ? {} : { effort: this.config.effort }),
       }),
       cwd,
@@ -235,14 +248,15 @@ class AcpProvider implements SubagentProvider {
 }
 
 function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string, BackendSpec> {
-  const base = (backend: BackendConfig): Omit<AcpRunSpec, 'cwd'> => ({
+  const base = (backend: BackendConfig): Omit<AcpSessionSpec, 'cwd'> => ({
     command: backend.command,
-    args: buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
+    args: buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.modelSelect === undefined ? {} : { modelSelect: backend.modelSelect }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
+    ...(backend.modelSelect === 'session' && backend.model !== undefined && backend.model !== '' ? { sessionModel: backend.model } : {}),
     permission: backend.permission, env: { ...config.env, ...backend.env }, disposeEofGraceMs: config.disposeEofGraceMs, disposeGraceMs: config.disposeGraceMs,
     spawn: spec => ctx.subprocess.spawn(spec),
     onError: (error, stopReason) => { ctx.logger.warn(`acp-resume chat child failed (${stopReason}): ${error.message}`) },
   })
-  const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
+  const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.modelSelect === undefined ? {} : { modelSelect: config.modelSelect }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
   const named = Object.entries(config.backends ?? {})
   if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
