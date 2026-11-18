@@ -53,6 +53,7 @@ const styles = {
   line: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' },
   meta: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', overflowWrap: 'anywhere' },
   dotActive: { color: 'var(--dsw-alias-state-success-primary)' },
+  dotRunning: { color: 'var(--dsw-alias-state-info-primary, #3b82f6)' },
   dotReleased: { color: 'var(--dsw-alias-label-tertiary)' },
   list: { display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' },
   groupToggle: { alignSelf: 'flex-start' },
@@ -123,10 +124,13 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCa
     t('turns', { count: turns }),
     relativeTime(t, chat.lastActive, now),
   ].join(' · ')
+  // Running (a turn in flight) outranks active (process alive) outranks released.
+  const dotState = chat.inFlight !== undefined ? 'running' : chat.active ? 'active' : 'released'
+  const dotStyle = dotState === 'running' ? styles.dotRunning : dotState === 'active' ? styles.dotActive : styles.dotReleased
   return (
     <li style={styles.card} data-chat-id={chat.chatId} onClick={() => { onOpen(chat) }}>
       <div style={styles.cardHead}>
-        <span aria-hidden="true" style={chat.active ? styles.dotActive : styles.dotReleased}>{chat.active ? '●' : '○'}</span>
+        <span aria-hidden="true" data-dot={dotState} style={dotStyle}>{chat.active ? '●' : '○'}</span>
         {/* The click is handled by the card; this button is the keyboard and screen-reader way in. */}
         <button type="button" style={styles.nameButton} title={chat.chatId} aria-label={t('viewDetail', { chatId: short })}>
           <span style={styles.name}>

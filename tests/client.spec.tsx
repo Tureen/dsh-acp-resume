@@ -134,6 +134,21 @@ describe('ChatsPanel', () => {
     expect((second.getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('colours the status dot by state: running > active > released', () => {
+    const { container } = render(<ChatsPanel {...props(ready([
+      chat({ chatId: 'chat-run', inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 } }),
+      chat({ chatId: 'chat-act', active: true }),
+      chat({ chatId: 'chat-rel', active: false }),
+    ]))} />)
+    fireEvent.click(screen.getByRole('button', { name: '已释放 (1) · 展开' }))
+    const dot = (id: string): HTMLElement => container.querySelector(`[data-chat-id="${id}"] [data-dot]`) as HTMLElement
+    expect(dot('chat-run').getAttribute('data-dot')).toBe('running')
+    expect(dot('chat-run').style.color).toContain('state-info-primary')
+    expect(dot('chat-act').getAttribute('data-dot')).toBe('active')
+    expect(dot('chat-act').style.color).toContain('state-success-primary')
+    expect(dot('chat-rel').getAttribute('data-dot')).toBe('released')
+  })
+
   it('shows a backend badge only when more than one backend is configured', () => {
     const { rerender, container } = render(<ChatsPanel {...props(ready([chat({ backend: 'review', backendCount: 2 })]))} />)
     expect(within(container.querySelector('[data-chat-id]') as HTMLElement).getByText('后端 review')).toBeTruthy()
