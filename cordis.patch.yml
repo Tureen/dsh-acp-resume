@@ -61,4 +61,8 @@
             name: '@deepseek-ai/dsh-tool-web'
             config:
               fetch: true
+          # 展示最终交付物(报告/文档)
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          # 注:session_search 和 goal 工具来自 base bundle(全局挂载),无需在此声明
           # 没有 bash、fs、subagent:模型通过 ACP 工具执行任务,轻量查询直接用 web 工具
