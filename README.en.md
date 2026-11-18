@@ -2,15 +2,15 @@
 
 # dsh-acp-resume
 
-A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods but has **only been tested with kiro-cli** so far; mid-turn steering (`_session/steer`) is a kiro-specific extension, and the steering tool reports a clear error when the agent does not support it. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
+A **resumable ACP subagent backend** for DeepSeek Harness (DSH): an independent sibling of the official `@deepseek-ai/dsh-subagent-acp`. It keeps the official one-shot delegation behavior intact and adds a **persistent session pool**: the agent process is kept alive, the remote session id is saved to disk, and after the process dies the session is reconnected through `session/load`. This lets the model collaborate with the same external ACP agent over many turns. It uses standard ACP methods, with first-class private-protocol adaptations for kiro-cli and agy / Antigravity; other ACP agents use the generic compatibility path. Point Config `command` at another ACP agent, and set `agentEngine: none` to stop appending `--agent-engine` (kiro's engine flag) for agents that do not accept it.
 
 Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3` and Node >= 24).
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.1.22 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
+Status: 0.1.23 pending release. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented and have been through one six-dimension review fix round (D16).
 
-**Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is currently covered by tests against the mock server; only kiro-cli has been tested, other ACP agents have not. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+**Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
 ## Motivation
 
@@ -53,8 +53,8 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         command: /path/to/agent-cli  # required: the child agent executable
         args: [acp]                  # default []
         agentEngine: v3              # default v3; one of v1 / v2 / v3 / none. Appends --agent-engine <value> when spawning the child; if args already contains that flag, args wins and nothing is appended; none = never append, for agents that do not accept the flag (D19)
-        model: glm-5                 # default unset = server auto routing (picks a model per task). When set, pins the model by appending --model <id>; if args already contains --model, args wins
-        effort: high                 # default unset = the model's own default level. When set, appends --effort <level> (low/medium/high/xhigh/max, depends on the model); if args already contains --effort, args wins
+        model: glm-5                 # appends --model <id>; only agents accepting this CLI flag support it (verified for kiro-cli); do not set for agy
+        effort: high                 # appends --effort <level>; only agents accepting this CLI flag support it (verified for kiro-cli); do not set for agy
         providerName: acp-resume     # default acp-resume; does not conflict with the official acp
         permission: allow            # default bundle policy: automatically selects an allow option; reject or ask are also supported (see below)
         env: {}                      # variables layered on top of the sanitized parent environment (e.g. the child agent's own key)
@@ -65,13 +65,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         disposeEofGraceMs: 6000      # default 6000; how long to wait for the child to wrap up by itself after stdin is closed
         disposeGraceMs: 3000         # default 3000; grace for observing failure/escalation signals, and also the upper bound close waits for an in-flight turn to settle
         registryPath: ''             # default empty string = $DSH_HOME/storages/acp-resume/registry.json; a custom value must be an absolute path
-        backends:                    # optional named backends; top-level fields remain the default
-          other:
-            command: /absolute/path/to/other-acp-agent
-            args: [acp]
-            agentEngine: none
-            permission: ask
-            description: 'Other ACP agent'
+        backends:                    # optional named backends; see “Backend support levels” below for recipes
 ```
 
 `agentEngine` applies to both the one-shot provider and the persistent sessions. The default `v3` appends `--agent-engine v3` to the child process; this is kiro-cli's engine selection flag. When you use another ACP agent that does not accept the flag (most will exit on an unknown argument), set `agentEngine` to `none` and it is no longer appended. `none` only affects the appending: a `--agent-engine` that you write yourself in `args` is passed to the child process as is. When reconnecting an old session, the fingerprint check ignores this flag, so switching engines does not make an old session get rejected; if the new engine cannot read the old session, it degrades to a new session under the usual rule.
@@ -106,11 +100,65 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
     permission: ask
 ```
 
+> **Compatibility:** `model` and `effort` work by appending the `--model` / `--effort` CLI flags and are **only effective for agents that accept those flags** (verified for kiro-cli). Some agents, including agy, reject them. Do not configure either field for those backends, or startup will fail.
+
 `model` / `effort` also apply to both paths and are **spawn-level** choices (they act on the session the child process starts). When either is unset, its flag is not appended, which keeps kiro's `auto` (the server picks the model per task dynamically, and `effort` is not under your control); when set, the model/level is pinned. **Effective semantics**: they only apply to the next process that starts. A session process that is already running is not affected, and a session you are continuing has to wait until it is released when idle and reconnected by the next `acp_chat_send` (a new process) before the new model is applied. Like `--agent-engine`, the fingerprint check also ignores `--model` / `--effort` (reason in D19): `auto` already switches models per task within a session, so pinning a different model does not make it "a different agent", and old sessions stay continuable.
 
 `allowChatJobWait` (D22): one conversation turn often runs for ten-odd minutes, and a model hard-waiting with `job_output`'s `wait: true` hits the host's 600-second ceiling, during which the user's new messages queue up. By default, a wait on a **running** acp-chat job is rejected before the tool is dispatched, and the model is told to wait for the completion notification; jobs that have already settled and jobs of other kinds (such as bash) are not affected. Set `true` to turn this block off.
 
 `backends` is an optional named table that lets different chats bind to different ACP agents; top-level command/args settings remain the default backend. With multiple backends, `acp_chat_start` accepts an optional `backend` parameter. Names and descriptions are neutral, never recommendations or priority labels.
+
+### Backend support levels
+
+#### First-class support (private-protocol adaptations)
+
+| Backend | Private extension support | Special configuration |
+|---|---|---|
+| **kiro-cli** (default backend) | Mid-turn `_session/steer`; `--agent-engine v3`; cross-process `session/load`; model/effort via CLI flags | `agentEngine: v3` is the default; model/effort may be set and append flags; clean up remote sessions with `kiro-cli chat --list-sessions` / `--delete-session` |
+| **agy / Antigravity** | The normalization layer automatically converts flat updates to the nested shape; per-session `session/set_model`; cross-process `session/load` (verified after SIGKILL) | **Must** use `agentEngine: 'none'`. **Do not set** model/effort because agy rejects those CLI flags. Model selection uses `session/set_model`; effort is embedded in the model id, such as `gemini-4-carbon-high` for the Carbon model at high effort. `permission: ask` is recommended because permission requests can include questions for the user. The default model is `gemini-4-carbon-medium`; its 18 available models include the Gemini 4 Carbon/Argon/Hydrogen families, Claude Sonnet/Opus 4.6, and GPT-OSS 120B. |
+
+#### Generic ACP backends (Other)
+
+- Any CLI implementing standard ACP, such as opencode or gemini-cli.
+- **Must** use `agentEngine: 'none'`.
+- model/effort support depends on whether the agent accepts the matching CLI flags and is not guaranteed.
+- `acp_chat_steer` reports the standard `-32601` fallback when unsupported.
+- `session/load` depends on the agent declaring `loadSession` capability.
+- The normalization layer attempts to accept non-standard update shapes.
+
+### Backend recipes
+
+```yaml
+# Tier 1: first-class support — kiro (default backend, top-level config, no extra setup)
+# agentEngine/model/effort/permission are all available
+```
+
+```yaml
+# Tier 1: first-class support — agy
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /Users/<you>/.local/bin/agy
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+    # Do not set model/effort: agy rejects these CLI flags
+    # Model changes use session/set_model inside the session (agent-managed)
+    description: 'Antigravity (Google)'
+```
+
+```yaml
+# Tier 2: generic ACP — other vendors
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    backends:
+      other:
+        command: /path/to/other-acp-agent
+        args: [acp]
+        agentEngine: 'none'
+        description: 'Other ACP agent'
+```
 
 The three duration fields must be positive and no greater than Node's timer limit, and a relative `registryPath` makes the plugin error at startup.
 

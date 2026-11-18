@@ -15,7 +15,7 @@
 
 - `acp_chat_start`：建立持久会话并返回 `chatId`。
 - `acp_chat_send`：发送消息。宿主支持后台任务时会立即返回 job id；否则同步等待回答。
-- `acp_chat_list`：列出活跃和已释放的会话。
+- `acp_chat_list`：仅列出当前 DSH 会话创建的活跃和已释放会话。
 - `acp_chat_close`：释放进程；使用 `purge` 同时删除本地记录。
 - `acp_chat_steer`：向正在执行的一轮插入后续指令。
 
@@ -26,6 +26,15 @@
 - `command`：外部 ACP agent 的可执行文件。默认示例使用 `kiro-cli`。
 - `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
+- `model` / `effort`：通过 `--model` / `--effort` CLI 旗标生效，仅对接受这些旗标的 agent 有效；agy 会拒绝它们，请勿设置。
+
+### 后端支持等级
+
+- **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load` 与 model/effort CLI 旗标。
+- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；必须设 `agentEngine: 'none'`，不要设 model/effort，建议 `permission: ask`。
+- **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
+
+完整的支持等级、agy 配方和模型列表见 [README 的后端支持等级](../README.md#后端支持等级)。
 
 ### 新手配方
 
@@ -59,7 +68,7 @@
 
 ## 已知限制
 
-- 目前只在 `kiro-cli` 上实测；其他 ACP agent 需要自行验证。
+- kiro-cli 与 agy / Antigravity 属一等支持；Other 通用 ACP 后端仍需按其能力自行验证。
 - `acp_chat_steer` 使用 kiro 专属的 `_session/steer` 扩展。其他 agent 未实现时会明确报错。
 - 持久会话依赖远端 agent 支持 `session/load`。会话丢失或连续失败时，插件会新开会话并提示重新提供必要上下文。
 

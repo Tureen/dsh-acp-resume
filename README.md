@@ -2,13 +2,13 @@
 
 # dsh-acp-resume
 
-A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods but has only been tested with kiro-cli; mid-turn steering (`_session/steer`) is a kiro-specific extension. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
+A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the official `@deepseek-ai/dsh-subagent-acp` that keeps an external ACP agent alive across turns and reconnects through `session/load` after the process exits. It uses standard ACP methods with first-class private-protocol adaptations for kiro-cli and agy / Antigravity; other ACP agents use the generic compatibility path. Set `command` to use another ACP agent, and set `agentEngine: none` if it does not accept kiro's `--agent-engine` flag. Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0.2.2-rc.3`, Node >= 24). The documentation below is in Chinese; a full English version is in [README.en.md](README.en.md).
 
-DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法,但**目前只在 kiro-cli 上实测**;会话中途插话(`_session/steer`)是 kiro 专属扩展,其他 agent 不支持时该工具会明确报错。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
+DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:待发布 0.1.22。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
+状态:待发布 0.1.23。连接原语、会话池、五个工具、持久会话面板与接线均已实现,并完成一轮六维评审修复(D16)。
 
-**已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间的行为目前由 mock 服务器的测试覆盖;只在 kiro-cli 上有过实测,其他 ACP agent 未实测。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
+**已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
 ## 动机
 
@@ -51,8 +51,8 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         command: /path/to/agent-cli  # 必填:子 agent 可执行文件
         args: [acp]                  # 默认 []
         agentEngine: v3              # 默认 v3;可选 v1 / v2 / v3 / none。启动子进程时追加 --agent-engine <值>;args 里已写该旗标则以 args 为准、不再追加;none = 完全不追加,供不认该旗标的 agent 使用(D19)
-        model: glm-5                 # 默认不设 = 服务器 auto 路由(按任务选模型)。设了就钉死,追加 --model <id>;args 里已写 --model 则以 args 为准
-        effort: high                 # 默认不设 = 模型自身默认档。设了追加 --effort <档>(low/medium/high/xhigh/max,依模型而异);args 里已写 --effort 则以 args 为准
+        model: glm-5                 # 追加 --model <id>;仅接受该 CLI 旗标的 agent 有效(kiro-cli 已验证);agy 不接受,不要设置
+        effort: high                 # 追加 --effort <档>;仅接受该 CLI 旗标的 agent 有效(kiro-cli 已验证);agy 不接受,不要设置
         providerName: acp-resume     # 默认 acp-resume;不与官方 acp 冲突
         permission: allow            # bundle 默认自动选择允许项;也可用 reject 或 ask(见下文)
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
@@ -63,13 +63,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         disposeEofGraceMs: 6000      # 默认 6000;关 stdin 后等子进程自行收尾的时间
         disposeGraceMs: 3000         # 默认 3000;观察失败/升级信号的宽限,也是 close 等在途轮结算的上限
         registryPath: ''             # 默认空串 = $DSH_HOME/storages/acp-resume/registry.json;自定义时必须是绝对路径
-        backends:                    # 可选命名后端；顶层字段始终是默认后端
-          other:
-            command: /absolute/path/to/other-acp-agent
-            args: [acp]
-            agentEngine: none
-            permission: ask
-            description: '其他 ACP agent'
+        backends:                    # 可选命名后端；完整配方见下方“后端支持等级”
 ```
 
 `agentEngine` 对一次性 provider 与持久会话两条路径都生效。默认 `v3` 会给子进程追加 `--agent-engine v3`,这是 kiro-cli 的引擎选择旗标;换用其他 ACP agent 时,若它不认该旗标(多数会因未知参数退出),把 `agentEngine` 设为 `none` 即不再追加。`none` 只影响追加:你在 `args` 里自己写的 `--agent-engine` 照常原样传给子进程。重连旧会话时指纹校验忽略该旗标,所以换引擎不会让旧会话被拒;新引擎读不了旧会话时按原规则降级为新会话。
@@ -104,11 +98,65 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
     permission: ask
 ```
 
+> **兼容性：** `model` 与 `effort` 通过追加 `--model` / `--effort` CLI 旗标实现，**仅对接受这些旗标的 agent 有效**（kiro-cli 已验证）。部分 agent（如 agy）不接受这些旗标，请勿为其后端设置这两个字段，设了会导致启动失败。
+
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
 `allowChatJobWait`(D22):一轮对话常跑十几分钟,模型用 `job_output` 的 `wait: true` 硬等会顶满宿主 600 秒上限,期间用户新消息排队。默认在工具派发前拒绝对**运行中**的 acp-chat 任务的 wait,并告诉模型等完成通知;任务已结算、其他种类任务(如 bash)不受影响。设 `true` 关闭该拦截。
 
 `backends` 可选命名表可让不同 chat 绑定不同 ACP agent；顶层 command/args 等字段始终代表默认后端。配置多个后端时，`acp_chat_start` 可选 `backend` 参数；名称和 description 应使用中性说明，不应标“推荐”或优先级。
+
+### 后端支持等级
+
+#### 一等支持（私有协议定制）
+
+| 后端 | 私有扩展支持 | 特殊配置 |
+|---|---|---|
+| **kiro-cli**（默认后端） | `_session/steer` 中途插话；`--agent-engine v3` 旗标；`session/load` 跨进程重连；model/effort 走 CLI 旗标 | `agentEngine: v3`（默认，不设即用）；可设 model/effort（追加旗标）；远端清理用 `kiro-cli chat --list-sessions` / `--delete-session` |
+| **agy / Antigravity** | 协议归一化层自动把平铺 update 归一为嵌套形态；`session/set_model` 按会话切模型；`session/load` 跨进程重连（已实测 SIGKILL 后恢复） | **必须** `agentEngine: 'none'`；**不要设** model/effort（CLI 旗标会被拒绝）。模型选择走 `session/set_model`，effort 已内嵌在模型 ID，例如 `gemini-4-carbon-high` 表示 Carbon 模型的 high 档。建议 `permission: ask`，因为权限请求中可能混入“向用户提问”。默认模型为 `gemini-4-carbon-medium`；可用模型含 Gemini 4 全系（Carbon/Argon/Hydrogen）、Claude Sonnet/Opus 4.6、GPT-OSS 120B 等共 18 个。 |
+
+#### 通用 ACP 后端（Other）
+
+- 任何实现标准 ACP 协议的 CLI，例如 opencode、gemini-cli。
+- **必须**设 `agentEngine: 'none'`。
+- model/effort 是否可用取决于该 agent 是否接受对应 CLI 旗标，不保证兼容。
+- `acp_chat_steer` 不支持时按标准 `-32601` 降级报错。
+- `session/load` 是否可用取决于 agent 是否声明 `loadSession` 能力。
+- 协议归一化层会尝试兼容非规范的 update 形态。
+
+### 后端配方
+
+```yaml
+# 等级 1：一等支持 — kiro（默认后端，顶层配置，无需额外设置）
+# agentEngine/model/effort/permission 均可用
+```
+
+```yaml
+# 等级 1：一等支持 — agy
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    command: /Users/<you>/.local/bin/agy
+    args: [acp]
+    agentEngine: 'none'
+    permission: ask
+    # 不要设 model/effort：agy 不接受这些 CLI 旗标
+    # 模型切换：在会话中使用 session/set_model（由 agent 自行管理）
+    description: 'Antigravity (Google)'
+```
+
+```yaml
+# 等级 2：通用 ACP — 其他厂商
+- id: subagent-acp-resume
+  name: 'dsh-acp-resume'
+  config:
+    backends:
+      other:
+        command: /path/to/other-acp-agent
+        args: [acp]
+        agentEngine: 'none'
+        description: 'Other ACP agent'
+```
 
 三个时长字段须为正数且不超过 Node 定时器上限,`registryPath` 为相对路径时插件启动即报错。
 

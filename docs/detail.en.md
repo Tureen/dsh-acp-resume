@@ -15,7 +15,7 @@ The model can use five tools:
 
 - `acp_chat_start`: Create a persistent chat and return its `chatId`.
 - `acp_chat_send`: Send a message. It returns a job id immediately when the host supports background jobs, otherwise it waits for the answer.
-- `acp_chat_list`: List active and released chats.
+- `acp_chat_list`: List active and released chats created by the current DSH session.
 - `acp_chat_close`: Release the process; use `purge` to also delete the local record.
 - `acp_chat_steer`: Add a follow-up instruction to a turn that is still running.
 
@@ -26,6 +26,15 @@ The Persistent chats panel in the right sidebar shows each chat's state, turn co
 - `command`: The external ACP agent executable. The default example uses `kiro-cli`.
 - `permission`: `allow` approves automatically, `reject` denies automatically, and `ask` forwards every request to the host user-confirmation interface. The bundle defaults to `allow`; `ask` denies when no confirmation service or valid answer is available.
 - `agentEngine: none`: Set this when the agent does not accept kiro's `--agent-engine` argument, so the plugin does not append it.
+- `model` / `effort`: These work through the `--model` / `--effort` CLI flags and only for agents that accept them. agy rejects them, so do not configure either field for agy.
+
+### Backend support levels
+
+- **First-class: kiro-cli.** The default backend supports `_session/steer`, `--agent-engine v3`, cross-process `session/load`, and model/effort CLI flags.
+- **First-class: agy / Antigravity.** Supports update normalization, `session/set_model`, and cross-process `session/load`; it must use `agentEngine: 'none'`, must not set model/effort, and is best configured with `permission: ask`.
+- **Generic ACP (Other).** For standard ACP CLIs such as opencode and gemini-cli; it must use `agentEngine: 'none'`. steer, loadSession, and model/effort availability depend on that agent's capabilities and CLI flag support.
+
+See the [README backend support levels](../README.en.md#backend-support-levels) for the full tiering, agy recipe, and model list.
 
 ### Starter recipes
 
@@ -59,7 +68,7 @@ See the [README](../README.en.md#configuration) for all configuration fields, de
 
 ## Known limitations
 
-- Only `kiro-cli` has been tested so far. Verify other ACP agents independently.
+- kiro-cli and agy / Antigravity have first-class support; verify generic Other ACP backends against their own capabilities.
 - `acp_chat_steer` uses kiro's private `_session/steer` extension. Other agents report a clear error when they do not implement it.
 - Persistent chats need the remote agent to support `session/load`. When a session is lost or repeatedly fails, the plugin starts a fresh chat and tells the model to restate the needed context.
 
