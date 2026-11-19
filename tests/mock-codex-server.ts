@@ -22,6 +22,7 @@
  *                          `item/<kind>/requestApproval` request and apply the decision. `accept` runs on;
  *                          `decline` runs on with the item declined; `cancel` ends the turn `interrupted`.
  * - `MOCK_CODEX_APPROVAL_FILE` — every received approval decision is appended as `decision <value>`.
+ * - `MOCK_CODEX_START_REPLY_DELAY_MS` — delay the `turn/start` reply this long (the turn itself starts at once).
  * - `MOCK_CODEX_STEER_UNSUPPORTED` — if `1`, `turn/steer` answers -32601 Method not found.
  * - `MOCK_STEER_FILE`    — every accepted `turn/steer` appends `steer <threadId> <text>`.
  * - `MOCK_CANCEL_FILE`   — every `turn/interrupt` appends `interrupt <threadId> <turnId>`.
@@ -184,7 +185,10 @@ const handle = (id: unknown, method: string, params: Json): void => {
       saveStore()
       const turn: ActiveTurn = { threadId, turnId: `turn-${randomUUID()}`, interrupted: false, wake: () => {} }
       active = turn
-      reply(id, { turn: { id: turn.turnId, status: 'inProgress' } })
+      const replyDelay = env['MOCK_CODEX_START_REPLY_DELAY_MS']
+      const startReply = (): void => { reply(id, { turn: { id: turn.turnId, status: 'inProgress' } }) }
+      if (replyDelay === undefined) startReply()
+      else setTimeout(startReply, Number(replyDelay))
       void runTurn(turn, prompt, record)
       return
     }

@@ -492,12 +492,22 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
       }
       try {
         if (turnCancelled) throw new Error('subagent cancelled before the Codex turn was sent')
+        const turnStart = request('turn/start', {
+          threadId,
+          input: toCodexInput(blocks),
+          ...(spec.codexEffort === undefined ? {} : { effort: spec.codexEffort }),
+        })
+        // Cancelled before the turn id arrived: the race below has already settled `aborted`
+        // and sendInterrupt had no id, so interrupt the late-started turn here. Registered
+        // before the race, so on a normal reply it runs first and sees turnCancelled false.
+        void turnStart.then((reply) => {
+          if (!turnCancelled || state.turnId !== undefined) return
+          const lateTurnId = str(asRecord(asRecord(reply)?.['turn'])?.['id'])
+          if (lateTurnId === undefined) return
+          void request('turn/interrupt', { threadId, turnId: lateTurnId }).catch(() => { /* child gone */ })
+        }, () => { /* failure is observed by the race below */ })
         const started = asRecord(await Promise.race([
-          request('turn/start', {
-            threadId,
-            input: toCodexInput(blocks),
-            ...(spec.codexEffort === undefined ? {} : { effort: spec.codexEffort }),
-          }),
+          turnStart,
           turnCancel.then((): never => { throw new Error('subagent cancelled while the Codex turn was starting') }),
         ]))
         const turnId = str(asRecord(started?.['turn'])?.['id'])

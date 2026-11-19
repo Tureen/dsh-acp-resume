@@ -264,6 +264,23 @@ describe('codex steer and cancel', () => {
     expect(lines(interrupts)[0]).toMatch(new RegExp(`^interrupt ${conn.remoteSessionId} turn-`))
   })
 
+  it('cancel before the turn/start reply still sends turn/interrupt once the turn id arrives', async () => {
+    const dir = tempDir()
+    const interrupts = join(dir, 'interrupt.log')
+    const ready = join(dir, 'ready')
+    const conn = await open(makeSpec({
+      MOCK_HANG: '1', MOCK_READY_FILE: ready, MOCK_CANCEL_FILE: interrupts, MOCK_CODEX_START_REPLY_DELAY_MS: '300',
+    }))
+    const abort = new AbortController()
+    const pending = conn.prompt(ask('p'), abort.signal)
+    await until(() => existsSync(ready), 'turn in flight')
+    abort.abort()
+    expect((await pending).stopReason).toBe('aborted')
+    expect(lines(interrupts)).toEqual([])
+    await until(() => lines(interrupts).length === 1, 'late interrupt request')
+    expect(lines(interrupts)[0]).toMatch(new RegExp(`^interrupt ${conn.remoteSessionId} turn-`))
+  })
+
   it('does not start a turn when the signal is already aborted', async () => {
     const requests = join(tempDir(), 'requests.log')
     const conn = await open(makeSpec({ MOCK_REQUEST_FILE: requests }))
