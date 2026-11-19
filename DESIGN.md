@@ -48,5 +48,5 @@
 
 - kiro load 对 cwd 敏感 → 注册表回放原 cwd,冒烟前置验证;
 - kiro 会话积累 → close 文档提示 --delete-session;
-- App 升级 peer 失配 → 钉 DSH `~0.2.2-rc.3`、Cordis `~4.1.0`,升级重装+回归;
+- App 升级 peer 失配 → 钉 DSH `~0.2.2-rc.5`(2026-11-19,D2)、Cordis `~4.1.0`,升级重装+回归;
 - 官方未来做 continuable ACP → 注册表结构可平移迁移。

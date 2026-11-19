@@ -7,14 +7,16 @@
 依据:fork 会破坏三条硬要求——现有 kiro 链路隔离(同名包替换会劫持 `provider: acp` 配置)、官方更新可跟进(rebase 负担)、客户端升级可适配(peer 面缩小到 seam 契约)。独立包注册 `acp-resume`,与官方 `acp` 并存,三条全部成立。
 后果:包内自持官方 one-shot 源码副本;2026-11-09 已与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 的 npm `src/run.ts` 对照，除 D11 记录的 ask 权限决策器与 ENOENT 指引窄例外外，`src/run.ts` 无差异;官方缺陷修复需择要摘入(面小)。
 
-## D2 基线钉 0.2.2-rc.3,与已装 App 对齐(2026-11-03;2026-11-09 修订)
+## D2 基线钉 0.2.2-rc.3,与已装 App 对齐(2026-11-03;2026-11-09、2026-11-19 修订)
 
 依据:用户 App 已自动升级至 0.2.2-rc.3;错版先例:误装 0.1.0-rc.6 导致 provider 行无法激活。
-后果:DSH peer 与对应 devDependencies 全部 `~0.2.2-rc.3`;Cordis peer/devDependencies 保持 `~4.1.0`，loader devDependency 保持 `~1.1.0`；新版工具运行时将执行器拆出，直接调度 ToolRuntime 的回归用例另加 `@deepseek-ai/dsh-tool-executor-native` devDependency；App 升级时同步重装并跑回归。
+后果:DSH peer 与对应 devDependencies 全部 `~0.2.2-rc.3`(2026-11-19 起为 `~0.2.2-rc.5`,见下方修订);Cordis peer/devDependencies 保持 `~4.1.0`，loader devDependency 保持 `~1.1.0`；新版工具运行时将执行器拆出，直接调度 ToolRuntime 的回归用例另加 `@deepseek-ai/dsh-tool-executor-native` devDependency；App 升级时同步重装并跑回归。
 
 修订(2026-11-09):包所有者决定将 `engines.dsh` 改为仅设最低版本 `>=0.2.2-rc.1`、移除上限，避免每次宿主跨版本线升级都必须发布新版插件。所有者接受代价：未来 0.3+ 宿主若不兼容，安装不再被 engines 拦截，问题可能表现为构建、加载或运行期故障；这不改变 DSH peer 仍钉 `~0.2.2-rc.1` 的策略。官方 checkout 已切到 tag `dsh-v0.2.2-rc.1`，除 D11 已记录的 ask 权限决策器与 ENOENT 指引窄例外外，`src/run.ts` 与官方一致；D8 的 24 个真实子进程用例在该 checkout 下实际运行，连同 42 个 mock 协议面和其余套件共 320 例全绿。
 
 修订(2026-11-09,rc.3):`engines.dsh` 最低版本同步抬为 `>=0.2.2-rc.3`，无上限策略及已接受的 0.3+ 风险不变。任务开始时官方 checkout 未持有 rc.3 tag，故 checkout 固定到 origin/master 的 `ff6db9df9f37db545e8b124b9043269f17256a34`（`apps/cli` 与 `dsh-subagent-acp` 均为 0.2.2-rc.3）；run.ts 基线以 npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 的 `src/run.ts` 为准。已逐项核对该 release commit 中 `docs/upgrade-guide/v0.2.2-rc.1` 的 19 项，均不触及本包 tools/jobs/userQuestions/subagent provider/panel Remote/client/dsh.bundle API 面，无生产适配项。rc.3 的 `SubagentRuntime.startActivation` 将 `parent` 提到 activation spec 顶层并移除 provider `list()`；测试辅助与注册/卸载断言已按新版 API 调整，插件 `AcpProvider.start` 不变。D8 的 24 个真实子进程用例在 master pin 下实际运行，连同其余套件共 321 例全绿。
+
+修订(2026-11-19,rc.5):DSH App 升至 0.2.2-rc.5,dependencies、peerDependencies、devDependencies 中全部 `@deepseek-ai/dsh-*` 由 `~0.2.2-rc.3` 改为 `~0.2.2-rc.5`,从 registry.npmjs.org 重装,lockfile 中 dsh-* 全部解析为 0.2.2-rc.5;rc.5 各包对 Cordis 的要求仍是 `~4.1.0`,Cordis 与 loader 不动。pnpm 因 rc.5 发布时间短于最短发布期，在 `pnpm-workspace.yaml` 写入这批包的 `minimumReleaseAgeExclude`,随本次提交保留。npm `@deepseek-ai/dsh-subagent-acp` 的 rc.3 与 rc.5 `src/` 逐字相同,`src/run.ts` 不需摘入;官方 checkout pin 与 `engines.dsh`(`>=0.2.2-rc.3`)本次不动。回归:官方 checkout 在场,D8 的 24 例实际运行;首轮全量 431/432,失败的是 `connection-codex.spec.ts` 的 `cancel settles aborted locally and sends turn/interrupt with the turn id`(卡满 5 秒超时),单独重跑 10/10、全量重跑 6/6 均 432 全绿。根因与 peer 无关：该用例在 mock 写出 ready 文件后立即取消，若客户端此时尚未读到 `turn/start` 的回复(未知 turnId),`sendInterrupt` 直接返回、之后也不补发,`turn/interrupt` 永不发出，用例等待中断日志而超时;把 mock 的 `turn/start` 回复延迟 300ms 可稳定复现。本地 `aborted` 结算正确;D6 的远端取消本属尽力而为，该竞态的修复另行处理。
 
 ## D3 不接入内核续聊体系(prepareContinuable)(2026-11-04)
 
@@ -163,7 +165,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **不加 `wait` 参数**:官方 bash/workflow 都是默认前台、`run_in_background` 选择后台;本包按需求反过来默认后台。需要内联等待时,`job_output` 的 `wait: true` 就是官方的阻塞原语(上限受 tool-jobs 配置约束),再加一个 `wait` 只是第二条做同一件事的路径。(2026-11-06:D22 起,对运行中 acp-chat 任务的 `wait: true` 默认被拒,结果只走完成通知。)
 - **接线**:与 bash 相同(`tool-bash/src/index.ts:546-555`):tools 作用域内,无 `ctx.jobs` 时注册同步 send;jobs 到达时换成后台 send;jobs 离开而 tools 仍在时换回同步。start/list/close 不随之变化。
 - **降级**:无 jobs 服务的上下文(官方 spec 的 setup、未装 jobs-local 的宿主)保持原同步语义与原工具说明,既有用例不变。
-- **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(当前 D2 基线 `~0.2.2-rc.3`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
+- **依赖**:`@deepseek-ai/dsh-jobs` 进 peer + dev(当前 D2 基线 `~0.2.2-rc.5`),peer 标 optional:源码只做类型导入,构建产物不在运行时引用它(`lib/*.js` 中无该包名);`@deepseek-ai/dsh-jobs-local` 只进 dev(测试用真注册表)。
 
 后果:模型发出 send 后可继续工作,回答经完成通知 + `job_output` 取回;面板不受影响(数据源仍是池注册表,PANEL-DESIGN.md 不动)。已知边界:会话正处于释放中(空闲释放刚触发)时 send 要先等释放完成才占住会话,这一小段窗口内同会话的第二个后台 send 能通过前置检查,随后它的 job 以 `already has a prompt in flight` 结束为 `failed`,不会产生第二条连接(2026-11-04:此描述自 D6 释放条 P2-1 修订起成立;此前释放一开始就移出活跃表,第一个 send 不等待直接重连)。
 

@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:0.2.4。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 432 例全绿。
+状态:0.2.5。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 432 例全绿。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -311,7 +311,7 @@ pnpm install && pnpm build     # 构建 lib/
 pnpm test                      # vitest;324 绿 = 官方协议面 68 + connection 28 + pool 61 + tools 15 + jobs 12 + panel 17 + client 71 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- 基线:源码经 npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 的 `src/run.ts` 与官方 checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34` 对照；除 D11 记录的 `permission: ask` 与 ENOENT 窄例外外，`src/run.ts` 与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 一致；DSH peer 钉 `~0.2.2-rc.3`，Cordis peer 保持 `~4.1.0`;
+- 基线:源码经 npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 的 `src/run.ts` 与官方 checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34` 对照；除 D11 记录的 `permission: ask` 与 ENOENT 窄例外外，`src/run.ts` 与 `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` 一致；DSH peer 钉 `~0.2.2-rc.5`(rc.5 的官方 `run.ts` 与 rc.3 逐字相同)，Cordis peer 保持 `~4.1.0`;
 - 条件运行的用例:真实子进程类 24 例需要官方 checkout 里的 `spawn.ts`(npm 分发包不含)。官方 checkout(路径由环境变量 `DSH_OFFICIAL_CHECKOUT` 指定,未设置时用测试里的默认位置)在场时全绿、退出码 0;不在时这 24 例自动跳过(见 DECISIONS D8);
 - 双实现并存:除 D11 记录的 `permission: ask` 权限决策器与 ENOENT 指引窄例外外，run.ts 保持官方基线、不重构;connection.ts 是池专用姊妹实现;
 - 参考用官方源码 checkout:pin `ff6db9df9f37db545e8b124b9043269f17256a34`(master 的 0.2.2-rc.3 状态,只读对照)。

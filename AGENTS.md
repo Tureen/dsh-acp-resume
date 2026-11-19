@@ -4,7 +4,7 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 
 ## 基线与隔离(硬约束)
 
-- 基线钉 `0.2.2-rc.3`,DSH peer 依赖全部 `~0.2.2-rc.3`、Cordis peer `~4.1.0`(D2);DSH App 升级时同步重装 peer 并跑全量回归。
+- DSH peer 依赖全部 `~0.2.2-rc.5`、Cordis peer `~4.1.0`(D2,2026-11-19 随 App 升 rc.5);`src/run.ts` 的 one-shot 基线仍对照 `dsh-subagent-acp@0.2.2-rc.3`(rc.5 的官方 `run.ts` 与之逐字相同);DSH App 升级时同步重装 peer 并跑全量回归。
 - 本包 provider 注册名 `acp-resume`,永不触碰官方 `acp` provider 与现有 kiro 链路(D1)。
 - `src/run.ts` 保持官方源码逐字基线，只有 D11 明确记录的 `permission: ask` 权限决策器和 ENOENT 固定指引例外；禁止为消重而重构。`src/connection.ts` 是池专用姊妹实现,约 200 行受控重复是刻意选择,不是待清理债务。
 - 42 个官方协议面用例是 one-shot 行为的不回归门槛;真实子进程类 24 例依赖官方 checkout 的 `spawn.ts`(npm 分发包不含),checkout 在场时运行、缺席时自动跳过(D8),跳过属预期,不是待修缺陷。

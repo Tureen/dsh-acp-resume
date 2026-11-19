@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.2.4. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 432 tests.
+Status: 0.2.5. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 432 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -313,7 +313,7 @@ pnpm install && pnpm build     # build lib/
 pnpm test                      # vitest; 324 green = official protocol surface 68 + connection 28 + pool 61 + tools 15 + jobs 12 + panel 17 + client 71 + steer 5 + engine 16 + turn-log 18 + job-wait-gate 13
 ```
 
-- Baseline: checked against npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` `src/run.ts` and official checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34`. Except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3`. DSH peers are pinned to `~0.2.2-rc.3`, and the Cordis peer remains `~4.1.0`;
+- Baseline: checked against npm `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3` `src/run.ts` and official checkout pin `ff6db9df9f37db545e8b124b9043269f17256a34`. Except for D11's narrow `permission: ask` and ENOENT guidance changes, `src/run.ts` matches `@deepseek-ai/dsh-subagent-acp@0.2.2-rc.3`. DSH peers are pinned to `~0.2.2-rc.5` (the official rc.5 `run.ts` is identical to rc.3), and the Cordis peer remains `~4.1.0`;
 - Conditionally run cases: the 24 real-child-process cases need `spawn.ts` from the official checkout (not included in the npm distribution). When the official checkout (its path given by the environment variable `DSH_OFFICIAL_CHECKOUT`; when unset, the default location in the tests is used) is present, everything is green and the exit code is 0; when it is absent, these 24 cases are skipped automatically (see DECISIONS D8);
 - Two implementations side by side: except for D11's narrow `permission: ask` and ENOENT guidance changes, run.ts follows the official baseline and is not refactored; connection.ts is the sibling implementation dedicated to the pool;
 - Official source checkout used for reference: pin `ff6db9df9f37db545e8b124b9043269f17256a34` (master's 0.2.2-rc.3 state, read-only comparison).
