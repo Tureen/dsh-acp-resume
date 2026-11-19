@@ -155,6 +155,15 @@ describe('ChatsPanel', () => {
     expect(dot('chat-rel')).toEqual(['released', 'idle'])
   })
 
+  it('orders active chats running first, then idle by newest lastActive', () => {
+    const { container } = render(<ChatsPanel {...props(ready([
+      chat({ chatId: 'chat-new', lastActive: NOW - 60_000 }),
+      chat({ chatId: 'chat-old', lastActive: NOW - 60 * 60_000 }),
+      chat({ chatId: 'chat-run', lastActive: NOW - 2 * 60 * 60_000, inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 } }),
+    ]))} />)
+    expect([...container.querySelectorAll('[data-chat-id]')].map(el => el.getAttribute('data-chat-id'))).toEqual(['chat-run', 'chat-new', 'chat-old'])
+  })
+
   it('counts the session chats by state in the header line', () => {
     render(<ChatsPanel {...props(ready([
       chat({ chatId: 'chat-run', inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 } }),

@@ -37,6 +37,19 @@ export type ChatsPanelProps = Omit<ChatsPanelInjected, 'hooks'> & {
   readonly t: PanelTranslate
 }
 
+/** Newest `lastActive` first. */
+function byLastActive(a: PanelChat, b: PanelChat): number {
+  return b.lastActive - a.lastActive
+}
+
+/** Chats with a turn in flight first (newest prompt first), then the rest by newest `lastActive`. */
+function activeOrder(a: PanelChat, b: PanelChat): number {
+  if (a.inFlight !== undefined && b.inFlight !== undefined) return b.inFlight.startedAt - a.inFlight.startedAt
+  if (a.inFlight !== undefined) return -1
+  if (b.inFlight !== undefined) return 1
+  return byLastActive(a, b)
+}
+
 /** Active chats shown before the rest fold behind an "expand all" toggle. */
 const ACTIVE_FOLD_AT = 5
 
@@ -231,8 +244,8 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
   const visible = currentSessionId === undefined
     ? []
     : snapshot.chats.filter(chat => chat.ownerSessionId === currentSessionId)
-  const activeChats = visible.filter(c => c.active)
-  const releasedChats = visible.filter(c => !c.active)
+  const activeChats = visible.filter(c => c.active).sort(activeOrder)
+  const releasedChats = visible.filter(c => !c.active).sort(byLastActive)
   const cards = (chats: readonly PanelChat[]): ReactNode => (
     <ul style={styles.list}>
       {chats.map(chat => (
