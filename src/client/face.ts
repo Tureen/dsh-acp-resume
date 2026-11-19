@@ -32,6 +32,8 @@ export interface PanelChat {
   readonly backend?: string
   /** What the newest log entry asks the user to notice (`error` / `warning`); absent when nothing does or with an older host. */
   readonly attention?: 'error' | 'warning'
+  /** The newest log entry is a plainly completed turn; absent otherwise or with an older host. */
+  readonly lastCompleted?: true
   /** Backend label for display (default backend shows its command basename); absent with an older host. */
   readonly backendDisplay?: string
   /** Configured backend count; controls whether a badge is useful. */

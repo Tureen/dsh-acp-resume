@@ -7,13 +7,15 @@
  * first-turn title. A card opens the chat's detail tab
  * (D18) on a click anywhere on it; its release/delete buttons stop the click.
  * A header line counts the session's chats by state (running · idle ·
- * released). Each card's dot is the official StateDot over five panel states
- * ({@link chatDotState}). Active chats come first, the first five shown and the
- * rest behind an "expand all (N)" toggle; released ones
+ * released). Each row is one line (dot, name, backend badge, running time);
+ * the current message, turn count and last activity sit in its hover text.
+ * The dot is the official StateDot over the panel states ({@link chatDotState}).
+ * Active chats come first; past six, the first five show and the rest sit
+ * behind a "show the other N" toggle whose state survives a remount; released ones
  * sit under a "Released (N)" group header, collapsed by default, with the
  * open state kept in component state only. Both groups keep the snapshot's
- * newest-first order. The panel is strictly scoped to chats opened by the visible DSH session (D20);
- * each card shows its recorded owner in its meta row. This is discovery only:
+ * newest-first order. The panel is strictly scoped to chats opened by the visible DSH session (D20),
+ * so rows show no owner. This is discovery only:
  * knowing a chat id still permits operations from any session. The host list
  * remains profile-global; this component only filters its local view. Pure props: data arrives
  * through the bound `useChats` hook, the current session id and commands
@@ -21,7 +23,7 @@
  * @module dsh-acp-resume/client/ChatsPanel
  */
 
-import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { chatAddress } from './chat-address.ts'
 import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, SelectorHook, TabInfoHook } from './face.ts'
@@ -50,8 +52,22 @@ function activeOrder(a: PanelChat, b: PanelChat): number {
   return byLastActive(a, b)
 }
 
-/** Active chats shown before the rest fold behind an "expand all" toggle. */
-const ACTIVE_FOLD_AT = 5
+/** Active chats fold only past this many: the toggle takes a row itself, so hiding a single chat saves nothing. */
+const ACTIVE_FOLD_ABOVE = 6
+/** Active chats left visible while folded. */
+const ACTIVE_FOLD_SHOWN = 5
+
+/**
+ * Whether the active group is unfolded. Module scope on purpose: the panel
+ * remounts when hidden and shown again, and the choice should survive that
+ * (but not a reload).
+ */
+let activeExpanded = false
+
+/** Reset module-scoped view state (tests only). */
+export function resetChatsPanelViewState(): void {
+  activeExpanded = false
+}
 
 /** Tool the empty state points the user to. */
 const START_TOOL = 'acp_chat_start'
@@ -72,22 +88,30 @@ const styles = {
   cardHead: { display: 'flex', alignItems: 'center', gap: 6 },
   name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   id: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
-  line: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' },
-  meta: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', overflowWrap: 'anywhere' },
   dot: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, flex: 'none' },
   list: { display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' },
   groupToggle: { alignSelf: 'flex-start' },
   controls: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   countNote: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
-  origin: { fontWeight: 500, color: 'var(--dsw-alias-label-secondary)' },
+  elapsed: { flex: 'none', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
 } satisfies Record<string, CSSProperties>
 
-/** A chat's panel state, most urgent first: a turn in flight, then the newest log entry's attention, then process liveness. */
-export type ChatDotState = 'ongoing' | 'error' | 'warning' | 'idle' | 'released'
+/**
+ * A chat's panel state, most urgent first: a turn in flight (`ongoing`), the
+ * newest log entry's attention (`error` / `warning`), then for a live process
+ * `done` when its newest turn completed or `idle` otherwise; a released process
+ * is `released`.
+ */
+export type ChatDotState = 'ongoing' | 'error' | 'warning' | 'done' | 'idle' | 'released'
 
-/** The official StateDot state for each panel state: idle (process alive) is green `done`, released is neutral `idle`. */
+/**
+ * The official StateDot state per panel state, following the DSH colour rule
+ * (green means finished, grey means tracked but not working). `released`
+ * draws the grey `idle` dot hollow (the `step` appearance) so it reads weaker
+ * than a live idle chat.
+ */
 const STATE_DOT: Readonly<Record<ChatDotState, StateDotState>> = {
-  ongoing: 'ongoing', error: 'error', warning: 'warning', idle: 'done', released: 'idle',
+  ongoing: 'ongoing', error: 'error', warning: 'warning', done: 'done', idle: 'idle', released: 'idle',
 }
 
 /**
@@ -97,10 +121,11 @@ const STATE_DOT: Readonly<Record<ChatDotState, StateDotState>> = {
  * @param chat - the row, or the detail page's chat plus whether a running entry is shown.
  * @param running - a turn is known to be in flight even if `chat.inFlight` lags.
  */
-export function chatDotState(chat: Pick<PanelChat, 'inFlight' | 'attention' | 'active'>, running = false): ChatDotState {
+export function chatDotState(chat: Pick<PanelChat, 'inFlight' | 'attention' | 'active' | 'lastCompleted'>, running = false): ChatDotState {
   if (running || chat.inFlight !== undefined) return 'ongoing'
   if (chat.attention !== undefined) return chat.attention
-  return chat.active ? 'idle' : 'released'
+  if (!chat.active) return 'released'
+  return chat.lastCompleted === true ? 'done' : 'idle'
 }
 
 /**
@@ -108,7 +133,11 @@ export function chatDotState(chat: Pick<PanelChat, 'inFlight' | 'attention' | 'a
  * @param props.state - the panel state from {@link chatDotState}.
  */
 export function ChatStateDot({ state }: { readonly state: ChatDotState }): ReactNode {
-  return <span data-dot={state} style={styles.dot}><StateDot state={STATE_DOT[state]} /></span>
+  return (
+    <span data-dot={state} style={styles.dot}>
+      <StateDot state={STATE_DOT[state]} {...(state === 'released' ? { appearance: 'step' as const } : {})} />
+    </span>
+  )
 }
 
 /**
@@ -135,14 +164,42 @@ export function relativeTime(t: PanelTranslate, then: number, now: number): stri
   return t('daysAgo', { count: Math.floor(elapsed / DAY) })
 }
 
-export function elapsedTime(t: PanelTranslate, startedAt: number, now: number): string {
-  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
-  if (seconds < 60) return t('runningSeconds', { count: seconds })
+/**
+ * A duration in at most two adjacent units: `12秒`, `3分12秒`, `1时5分`, `2天3时`
+ * (`12s`, `3m 12s`, `1h 5m`, `2d 3h` in English).
+ * @param t - panel copy.
+ * @param ms - duration in milliseconds; negative reads as zero.
+ */
+export function formatDuration(t: PanelTranslate, ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return t('durationSeconds', { s: seconds })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return t('runningMinutes', { count: minutes })
+  if (minutes < 60) return t('durationMinutes', { m: minutes, s: seconds % 60 })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return t('runningHours', { count: hours })
-  return t('runningDays', { count: Math.floor(hours / 24) })
+  if (hours < 24) return t('durationHours', { h: hours, m: minutes % 60 })
+  return t('durationDays', { d: Math.floor(hours / 24), h: hours % 24 })
+}
+
+/** `已运行 3分12秒`: how long a turn has been running at `now`. */
+export function elapsedTime(t: PanelTranslate, startedAt: number, now: number): string {
+  return t('runningFor', { duration: formatDuration(t, now - startedAt) })
+}
+
+/**
+ * A running turn's elapsed time, ticking once a second while mounted. It is
+ * mounted only for a chat with a turn in flight, so no clock runs when nothing
+ * is running, and only this span re-renders on each tick. The base is the
+ * snapshot's `fetchedAt` (host time) plus local time passed since mount.
+ */
+function LiveElapsed({ startedAt, now, t }: { readonly startedAt: number; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+  const [drift, setDrift] = useState(0)
+  useEffect(() => {
+    const base = Date.now()
+    setDrift(0)
+    const timer = setInterval(() => { setDrift(Date.now() - base) }, 1000)
+    return () => { clearInterval(timer) }
+  }, [now, startedAt])
+  return <span style={styles.elapsed} data-elapsed>{elapsedTime(t, startedAt, now + drift)}</span>
 }
 
 function failure(error: unknown): string {
@@ -169,45 +226,46 @@ interface ChatCardProps {
   readonly t: PanelTranslate
 }
 
-/** The recorded owner shown in a card's meta row; legacy rows have no owner. */
-function ownerLabel(t: PanelTranslate, chat: PanelChat): string {
-  return chat.ownerSessionId === undefined ? t('originUnknown') : t('owner', { id: chat.ownerSessionId.slice(0, 8) })
+/**
+ * The row's hover text (native `title`): the in-flight message's first line
+ * (`当前:…`) or the first-turn title, then state, turn count, and last activity.
+ * Recomputed on refresh only; it does not tick.
+ */
+function rowHint(t: PanelTranslate, chat: PanelChat, now: number): string {
+  const turns = chat.turnCount === undefined ? t('noValue') : String(chat.turnCount)
+  const summary = chat.inFlight !== undefined
+    ? t('currentMessage', { message: messageExcerpt(chat.inFlight.message) })
+    : chat.title === undefined ? undefined : t('chatTitle', { title: chat.title })
+  const status = [chat.active ? t('active') : t('released'), t('turns', { count: turns }), relativeTime(t, chat.lastActive, now)].join(' · ')
+  return summary === undefined ? status : `${summary}\n${status}`
 }
 
+/**
+ * One chat row: state dot, name (label, else first-turn title, else short id;
+ * one line with an ellipsis), backend badge, and the running time while a turn
+ * is in flight. Everything else sits in the hover text and the detail tab.
+ */
 function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
   const short = shortChatId(chat.chatId)
-  const turns = chat.turnCount === undefined ? t('noValue') : String(chat.turnCount)
-  const status = [
-    ...(chat.inFlight === undefined ? [] : [t('running'), elapsedTime(t, chat.inFlight.startedAt, now)]),
-    chat.active ? t('active') : t('released'),
-    t('turns', { count: turns }),
-    relativeTime(t, chat.lastActive, now),
-  ].join(' · ')
+  const name = chat.label ?? chat.title ?? short
   return (
-    <li style={styles.card} data-chat-id={chat.chatId} onClick={() => { onOpen(chat) }}>
+    <li style={styles.card} data-chat-id={chat.chatId} title={rowHint(t, chat, now)} onClick={() => { onOpen(chat) }}>
       <div style={styles.cardHead}>
         <ChatStateDot state={chatDotState(chat)} />
         {/* The click is handled by the card; this button is the keyboard and screen-reader way in. */}
-        <button type="button" style={styles.nameButton} title={chat.chatId} aria-label={t('viewDetail', { chatId: short })}>
-          <span style={styles.name}>
-            {chat.label ?? short}
-            {chat.label === undefined ? null : <span style={styles.id}> {short}</span>}
+        <button type="button" style={styles.nameButton} aria-label={t('viewDetail', { chatId: short })}>
+          <span style={styles.name} data-name>
+            {name}
+            {name === short ? null : <span style={styles.id}> {short}</span>}
           </span>
         </button>
         {(chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? <Tag tone="neutral">{t('backendBadge', { name: chat.backendDisplay ?? chat.backend })}</Tag> : null}
+        {chat.inFlight === undefined ? null : <LiveElapsed startedAt={chat.inFlight.startedAt} now={now} t={t} />}
         <Button size="sm" variant="ghost" disabled={pending || !chat.active} aria-label={t('releaseLabel', { chatId: short })}
           onClick={(event: MouseEvent) => { event.stopPropagation(); onRelease(chat) }}>{t('release')}</Button>
         <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}
           onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
       </div>
-      <p style={styles.line}>{chat.inFlight !== undefined
-        ? t('currentMessage', { message: messageExcerpt(chat.inFlight.message) })
-        : chat.title === undefined ? t('noValue') : chat.title}</p>
-      <p style={styles.meta} data-owner={chat.ownerSessionId === undefined ? 'unknown' : chat.ownerSessionId.slice(0, 8)}>
-        {status}
-        <> · <span style={styles.origin}>{ownerLabel(t, chat)}</span></>
-      </p>
-      <p style={styles.meta}>{t('cwd', { cwd: chat.cwd })} · {t('remote', { id: chat.remoteSessionId.slice(0, 8) })}</p>
     </li>
   )
 }
@@ -224,7 +282,11 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
   const [confirming, setConfirming] = useState<{ readonly chat: PanelChat; readonly kind: 'delete' | 'release' } | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [releasedOpen, setReleasedOpen] = useState(false)
-  const [activeOpen, setActiveOpen] = useState(false)
+  const [activeOpen, setActiveOpenState] = useState(activeExpanded)
+  const setActiveOpen = (open: boolean): void => {
+    activeExpanded = open
+    setActiveOpenState(open)
+  }
 
   const run = (chatId: string, action: (chatId: string) => Promise<void>): void => {
     setPending(current => new Set(current).add(chatId))
@@ -261,7 +323,8 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
     </ul>
   )
   const runningCount = visible.filter(c => c.inFlight !== undefined).length
-  const shownActive = activeOpen || activeChats.length <= ACTIVE_FOLD_AT ? activeChats : activeChats.slice(0, ACTIVE_FOLD_AT)
+  const foldable = activeChats.length > ACTIVE_FOLD_ABOVE
+  const shownActive = activeOpen || !foldable ? activeChats : activeChats.slice(0, ACTIVE_FOLD_SHOWN)
   const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chat.chatId)
   const releasing = confirming?.kind === 'release'
   return (
@@ -292,10 +355,10 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
                 {t('statsLine', { running: runningCount, idle: activeChats.length - runningCount, released: releasedChats.length })}
               </p>
               {activeChats.length === 0 ? null : cards(shownActive)}
-              {activeChats.length <= ACTIVE_FOLD_AT ? null : (
+              {!foldable ? null : (
                 <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={activeOpen}
-                  onClick={() => { setActiveOpen(open => !open) }}>
-                  {activeOpen ? t('collapseActive') : t('expandAll', { count: activeChats.length })}
+                  onClick={() => { setActiveOpen(!activeOpen) }}>
+                  {activeOpen ? t('collapseActive') : t('showRest', { count: activeChats.length - ACTIVE_FOLD_SHOWN })}
                 </Button>
               )}
               {releasedChats.length === 0 ? null : (

@@ -16,7 +16,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as client from '../src/client/index.ts'
-import { ChatsPanel, relativeTime, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
+import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
@@ -40,6 +40,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 
 afterEach(() => {
   cleanup()
+  resetChatsPanelViewState()
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
@@ -108,42 +109,43 @@ describe('ChatsPanel', () => {
     expect(screen.getByRole('alert').textContent).toBe('读取失败:gateway/internal: boom')
   })
 
-  it('renders one card per chat with every field, label when present, and placeholders for old rows', () => {
+  it('renders one single-line row per chat: name by label, else title, else short id; the rest in the hover text', () => {
     const labelled = chat({ label: '审阅', title: '记住暗号P', turnCount: 12 })
+    const titled = chat({ chatId: 'chat-titled', title: '首轮问题', lastActive: NOW - 4 * 60_000 })
     const legacy = chat({ chatId: `chat-${UUID_B}`, remoteSessionId: '9c0d1e2f-2222', cwd: '/work', active: false, lastActive: NOW - 2 * 3_600_000 })
-    render(<ChatsPanel {...props(ready([labelled, legacy]))} />)
+    render(<ChatsPanel {...props(ready([labelled, titled, legacy]))} />)
     fireEvent.click(screen.getByRole('button', { name: '已释放 (1) · 展开' }))
-    const cards = screen.getAllByRole('listitem')
-    expect(cards).toHaveLength(2)
+    const cards = screen.getAllByRole('listitem') as HTMLElement[]
+    expect(cards).toHaveLength(3)
+    const name = (card: HTMLElement): string => (card.querySelector('[data-name]') as HTMLElement).textContent ?? ''
 
-    const first = within(cards[0] as HTMLElement)
-    expect((cards[0] as HTMLElement).querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('idle')
-    expect(first.getByText('审阅')).toBeTruthy()
-    expect(first.getByText('chat-a1b2c3d4')).toBeTruthy()
-    expect(first.getByText('记住暗号P')).toBeTruthy()
-    expect(first.getByText('活跃 · 12 轮 · 3 分钟前', { exact: false })).toBeTruthy()
-    expect(first.getByText('cwd /tmp · 远端 4fb07582')).toBeTruthy()
-
-    const second = within(cards[1] as HTMLElement)
-    expect(second.getByText('已释放(下次发送自动重连)', { exact: false }).closest('[data-chat-id]')?.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('released')
-    expect(second.getByText('chat-e5f6a7b8')).toBeTruthy()
-    expect(second.getByText('—')).toBeTruthy()
-    expect(second.getByText('已释放(下次发送自动重连) · — 轮 · 2 小时前', { exact: false })).toBeTruthy()
-    expect(second.getByText('cwd /work · 远端 9c0d1e2f')).toBeTruthy()
+    expect(name(cards[0] as HTMLElement)).toBe('审阅 chat-a1b2c3d4')
+    expect((cards[0] as HTMLElement).getAttribute('title')).toBe('首轮:记住暗号P\n活跃 · 12 轮 · 3 分钟前')
+    expect(name(cards[1] as HTMLElement)).toBe('首轮问题 chat-titled')
+    expect(name(cards[2] as HTMLElement)).toBe('chat-e5f6a7b8')
+    expect((cards[2] as HTMLElement).getAttribute('title')).toBe('已释放(下次发送自动重连) · — 轮 · 2 小时前')
+    // cwd, remote id, and owner live on the detail tab, not on the row.
+    for (const card of cards) {
+      expect(card.textContent).not.toMatch(/cwd|远端|归属/)
+      expect(card.querySelectorAll('p')).toHaveLength(0)
+    }
     // A released chat has nothing to release.
-    expect((second.getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(cards[2] as HTMLElement).getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('maps five panel states onto the official StateDot: ongoing > error > warning > idle > released', () => {
+  it('maps panel states onto the official StateDot: ongoing > error > warning > done > idle > released', () => {
     const { container } = render(<ChatsPanel {...props(ready([
       chat({ chatId: 'chat-run', inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 }, attention: 'error' }),
+      chat({ chatId: 'chat-done', active: true, lastCompleted: true }),
       chat({ chatId: 'chat-act', active: true }),
+      // Completed but released: the process is gone, so it reads as released, not green.
+      chat({ chatId: 'chat-rel-done', active: false, lastCompleted: true }),
       chat({ chatId: 'chat-warn', active: true, attention: 'warning' }),
       // An error turn releases its process; the failure must still show on the released chat.
       chat({ chatId: 'chat-err', active: false, attention: 'error' }),
       chat({ chatId: 'chat-rel', active: false }),
     ]))} />)
-    fireEvent.click(screen.getByRole('button', { name: '已释放 (2) · 展开' }))
+    fireEvent.click(screen.getByRole('button', { name: '已释放 (3) · 展开' }))
     const dot = (id: string): [string | null, string | null | undefined] => {
       const el = container.querySelector(`[data-chat-id="${id}"] [data-dot]`) as HTMLElement
       return [el.getAttribute('data-dot'), el.querySelector('[data-state-dot]')?.getAttribute('data-state')]
@@ -151,8 +153,10 @@ describe('ChatsPanel', () => {
     expect(dot('chat-run')).toEqual(['ongoing', 'ongoing'])
     expect(dot('chat-err')).toEqual(['error', 'error'])
     expect(dot('chat-warn')).toEqual(['warning', 'warning'])
-    expect(dot('chat-act')).toEqual(['idle', 'done'])
+    expect(dot('chat-done')).toEqual(['done', 'done'])
+    expect(dot('chat-act')).toEqual(['idle', 'idle'])
     expect(dot('chat-rel')).toEqual(['released', 'idle'])
+    expect(dot('chat-rel-done')).toEqual(['released', 'idle'])
   })
 
   it('orders active chats running first, then idle by newest lastActive', () => {
@@ -175,20 +179,53 @@ describe('ChatsPanel', () => {
     expect(screen.getByText('1 进行中 · 2 空闲 · 1 已释放')).toBeTruthy()
   })
 
-  it('folds active chats past five behind "expand all (N)", and leaves the released group alone', () => {
-    const rows = Array.from({ length: 7 }, (_, i) => chat({ chatId: `chat-act${i}`, active: true }))
+  it('folds active chats only past six, showing five and "show the other N"; the released group is untouched', () => {
+    const rows = Array.from({ length: 8 }, (_, i) => chat({ chatId: `chat-act${i}`, active: true }))
     const { container } = render(<ChatsPanel {...props(ready([...rows, chat({ chatId: 'chat-rel', active: false })]))} />)
     const shown = (): number => container.querySelectorAll('[data-chat-id^="chat-act"]').length
     expect(shown()).toBe(5)
-    fireEvent.click(screen.getByRole('button', { name: '展开全部(7)' }))
-    expect(shown()).toBe(7)
+    fireEvent.click(screen.getByRole('button', { name: '显示其余 3 个' }))
+    expect(shown()).toBe(8)
     fireEvent.click(screen.getByRole('button', { name: '收起' }))
     expect(shown()).toBe(5)
     expect(screen.getByRole('button', { name: '已释放 (1) · 展开' })).toBeTruthy()
     cleanup()
-    const { container: few } = render(<ChatsPanel {...props(ready(rows.slice(0, 5)))} />)
-    expect(few.querySelectorAll('[data-chat-id]').length).toBe(5)
-    expect(screen.queryByRole('button', { name: /^展开全部/ })).toBeNull()
+    // Six fit without folding: a toggle would cost a row to hide one chat.
+    const { container: six } = render(<ChatsPanel {...props(ready(rows.slice(0, 6)))} />)
+    expect(six.querySelectorAll('[data-chat-id]').length).toBe(6)
+    expect(screen.queryByRole('button', { name: /^显示其余/ })).toBeNull()
+  })
+
+  it('keeps the unfolded active group across a remount', () => {
+    const rows = Array.from({ length: 7 }, (_, i) => chat({ chatId: `chat-act${i}`, active: true }))
+    const { unmount } = render(<ChatsPanel {...props(ready(rows))} />)
+    fireEvent.click(screen.getByRole('button', { name: '显示其余 2 个' }))
+    unmount()
+    const { container } = render(<ChatsPanel {...props(ready(rows))} />)
+    expect(container.querySelectorAll('[data-chat-id]').length).toBe(7)
+    expect(screen.getByRole('button', { name: '收起' })).toBeTruthy()
+  })
+
+  it('formats durations in at most two adjacent units', () => {
+    const tEn = translator(en)
+    expect([5_000, 192_000, 3_900_000, 2 * 86_400_000 + 3 * 3_600_000 + 59_000].map(ms => formatDuration(t, ms))).toEqual(['5秒', '3分12秒', '1时5分', '2天3时'])
+    expect(formatDuration(tEn, 192_000)).toBe('3m 12s')
+    expect(formatDuration(t, -1)).toBe('0秒')
+  })
+
+  it('ticks the running time once a second only while a turn is in flight', () => {
+    vi.useFakeTimers({ now: NOW })
+    const running = chat({ inFlight: { chatId: `chat-${UUID_A}`, message: 'm', startedAt: NOW - 5_000 } })
+    const { container, rerender } = render(<ChatsPanel {...props(ready([running]))} />)
+    const elapsed = (): string | null | undefined => container.querySelector('[data-elapsed]')?.textContent
+    expect(elapsed()).toBe('已运行 5秒')
+    act(() => { vi.advanceTimersByTime(3_000) })
+    expect(elapsed()).toBe('已运行 8秒')
+    expect(vi.getTimerCount()).toBe(1)
+    rerender(<ChatsPanel {...props(ready([chat()]))} />)
+    expect(elapsed()).toBeUndefined()
+    // No turn in flight: no clock is left running.
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('shows a backend badge only when more than one backend is configured', () => {
@@ -289,17 +326,17 @@ describe('ChatsPanel', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('shows the in-flight message first line as the summary while running, else the first-turn title', () => {
+  it('puts the in-flight message first line in the hover text while running, else the first-turn title', () => {
     const long = `${'长'.repeat(70)}\n第二行`
     const { container, rerender } = render(<ChatsPanel {...props(ready([chat({ title: '首轮标题', inFlight: { chatId: `chat-${UUID_A}`, message: `\n  ${long}`, startedAt: NOW - 5_000 } })]))} />)
-    const summary = (): string => (container.querySelector('[data-chat-id] p') as HTMLElement).textContent ?? ''
-    expect(summary()).toBe(`当前:${'长'.repeat(60)}…`)
+    const hint = (): string => ((container.querySelector('[data-chat-id]') as HTMLElement).getAttribute('title') ?? '').split('\n')[0] ?? ''
+    expect(hint()).toBe(`当前:${'长'.repeat(60)}…`)
+    // The long text stays off the row itself.
+    expect((container.querySelector('[data-chat-id]') as HTMLElement).textContent).not.toContain('当前:')
     rerender(<ChatsPanel {...props(ready([chat({ title: '首轮标题', inFlight: { chatId: `chat-${UUID_A}`, message: '短指令', startedAt: NOW - 5_000 } })]))} />)
-    expect(summary()).toBe('当前:短指令')
+    expect(hint()).toBe('当前:短指令')
     rerender(<ChatsPanel {...props(ready([chat({ title: '首轮标题' })]))} />)
-    expect(summary()).toBe('首轮标题')
-    rerender(<ChatsPanel {...props(ready([chat()]))} />)
-    expect(summary()).toBe('—')
+    expect(hint()).toBe('首轮:首轮标题')
   })
 
   it('asks before deleting, naming the chat; cancel deletes nothing', async () => {
@@ -344,7 +381,6 @@ describe('ChatsPanel attribution filter (D20)', () => {
   it('strictly shows only chats owned by the visible session', () => {
     const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION })} />)
     expect(ids(container)).toEqual(['chat-mine'])
-    expect((container.querySelector('[data-chat-id="chat-mine"] [data-owner]') as HTMLElement).textContent).toContain('归属 session-')
     expect(container.querySelector('[data-chat-id="chat-other"]')).toBeNull()
     expect(container.querySelector('[data-chat-id="chat-legacy"]')).toBeNull()
   })
@@ -368,13 +404,13 @@ describe('ChatsPanel attribution filter (D20)', () => {
     expect(container.querySelector('[data-empty="session"]')).toBeTruthy()
   })
 
-  it('has the owner and session-empty copy in both locales', () => {
-    for (const key of ['countMine', 'owner', 'emptySessionHint'] as const) {
+  it('has the session-scope copy in both locales and shows no owner on rows (every row is this session\'s)', () => {
+    for (const key of ['countMine', 'emptySessionHint'] as const) {
       expect(zh[key]).toBeTruthy()
       expect(en[key]).toBeTruthy()
     }
     const { container } = render(<ChatsPanel {...props(ready(rows()), { currentSessionId: MY_SESSION, t: translator(en) })} />)
-    expect((container.querySelector('[data-chat-id="chat-mine"] [data-owner]') as HTMLElement).textContent).toContain('Owner session-')
+    expect((container.querySelector('[data-chat-id="chat-mine"]') as HTMLElement).textContent).not.toContain('Owner')
   })
 })
 
@@ -793,7 +829,7 @@ describe('ChatDetail (D18)', () => {
     const { container } = render(<ChatDetail {...injected} />)
     // Zone 1: identity is the heading, with a state dot and the short id beside it.
     expect((screen.getByRole('heading', { level: 2 })).textContent).toBe('审阅')
-    expect(container.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('done')
+    expect(container.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('idle')
     expect(screen.getByText('chat-a1b2c3d4')).toBeTruthy()
     // Zone 2: meta strip, quiet and factual.
     expect(screen.getByText('活跃')).toBeTruthy()
@@ -834,7 +870,7 @@ describe('ChatDetail (D18)', () => {
     const cards = [...container.querySelectorAll('li')]
     expect(cards[0]?.hasAttribute('data-running')).toBe(true)
     expect(within(cards[0] as HTMLElement).getByText('进行中')).toBeTruthy()
-    expect(within(cards[0] as HTMLElement).getByText('已运行 1 分钟')).toBeTruthy()
+    expect(within(cards[0] as HTMLElement).getByText('已运行 1分30秒')).toBeTruthy()
     expect(within(cards[0] as HTMLElement).getByText('第一行')).toBeTruthy()
     await act(async () => { fireEvent.click(within(cards[0] as HTMLElement).getByRole('button', { name: '展开进行中的消息' })) })
     expect((cards[0] as HTMLElement).querySelector('[data-running-full]')?.textContent).toBe(running.message)
@@ -1313,6 +1349,7 @@ describe('snapshot-equal (D21)', () => {
     expect(chatEqual(base, { ...base, backendCount: 1 })).toBe(false)
     expect(chatEqual(base, { ...base, backendDisplay: 'kiro-cli' })).toBe(false)
     expect(chatEqual(base, { ...base, attention: 'error' })).toBe(false)
+    expect(chatEqual(base, { ...base, lastCompleted: true })).toBe(false)
   })
 
   it('chatsEqual is order- and length-sensitive', () => {

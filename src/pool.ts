@@ -76,6 +76,8 @@ export interface PooledChatInfo {
   readonly inFlight?: InFlightTurn
   /** What the newest turn-log entry asks the user to notice; absent when it settled normally or the log is empty. */
   readonly attention?: ChatAttention
+  /** The newest turn-log entry is a turn that settled `completed` on its saved session; absent otherwise. */
+  readonly lastCompleted?: true
 }
 
 /**
@@ -408,10 +410,12 @@ export class AcpSessionPool {
     }))
   }
 
-  /** Add the newest log entry's attention; the turn log caches by file stamp, so a poll costs one stat per chat. */
+  /** Add the newest log entry's attention or plain completion; the turn log caches by file stamp, so a poll costs one stat per chat. */
   private withAttention(chatId: string, info: PooledChatInfo): PooledChatInfo {
-    const attention = attentionOf(this.turnLog.read(chatId).at(-1))
-    return attention === undefined ? info : { ...info, attention }
+    const newest = this.turnLog.read(chatId).at(-1)
+    const attention = attentionOf(newest)
+    if (attention !== undefined) return { ...info, attention }
+    return newest?.kind === 'turn' && newest.stopReason === 'completed' ? { ...info, lastCompleted: true } : info
   }
 
   /** One chat's registry projection, or undefined when the chatId is unknown. */

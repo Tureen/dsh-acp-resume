@@ -917,10 +917,12 @@ describe('AcpSessionPool', () => {
     expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('attention')
     await pool.send(chat.chatId, 'ok')
     expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('attention')
+    expect(pool.chatInfo(chat.chatId)).toMatchObject({ lastCompleted: true })
     writeFileSync(crash, 'on')
     expect((await pool.send(chat.chatId, 'boom')).stopReason).toBe('error')
     // The error turn released the process; the attention still says error.
     expect(pool.chatInfo(chat.chatId)).toMatchObject({ active: false, attention: 'error' })
+    expect(pool.chatInfo(chat.chatId)).not.toHaveProperty('lastCompleted')
     rmSync(crash)
     writeFileSync(loadMissing, 'on')
     expect((await pool.send(chat.chatId, 'again')).freshSession).toBe(true)

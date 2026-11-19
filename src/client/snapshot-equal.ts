@@ -30,6 +30,7 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.backend === b.backend
     && a.backendDisplay === b.backendDisplay
     && a.attention === b.attention
+    && a.lastCompleted === b.lastCompleted
     && a.backendCount === b.backendCount
 }
 
