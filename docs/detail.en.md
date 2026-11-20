@@ -2,6 +2,10 @@
 
 `dsh-acp-resume` lets DeepSeek Harness (DSH) keep a multi-turn conversation with an external ACP agent. It preserves the official one-shot delegation path while saving the remote session id locally. When the process exits or is released after idle time, the next send continues the session through `session/load`.
 
+## Workspace roles and workflows
+
+Write `.agents/acp-team.yml` in the workspace root to define role blueprints (name, backend, working directory, seeding message) and workflow templates. The model can then dispatch work by role name: pass `role` to `acp_chat_send`, and the first reference in a session creates the role's chat and sends its seeding message; later references reuse it. `acp_workflow` runs a template across several roles, such as a dual review or two-track research: roles in the same step run in parallel, later steps see earlier results, and the model or a chosen role merges them. See [docs/acp-team.example.yml](acp-team.example.yml) for an example.
+
 ## Install
 
 - **npm:** Run `dsh plugin --profile <name> add dsh-acp-resume`. If a newly published version is filtered by `minimumReleaseAge`, pin it: `dsh plugin --profile <name> add dsh-acp-resume@<version>`.
