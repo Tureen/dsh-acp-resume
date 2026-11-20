@@ -30,6 +30,56 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 > ⚠️ **不要从 GitHub 地址安装。** 仓库不含构建产物，也没有安装时编译的 `prepare` 脚本，直接安装会因缺少 `lib/index.js` 加载失败。
 
+## 选择后端
+
+<a id="配置"></a><a id="后端支持等级"></a>
+
+| 后端 | 支持能力 |
+| --- | --- |
+| **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话。 |
+| **Antigravity**（agy） | 通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
+| **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批，只能配置为命名后端。 |
+
+### 只用一个后端
+
+使用 kiro 时，确保 DSH 能从 `PATH` 找到 `kiro-cli`，即可直接快速上手。要换成 agy，在 profile 的 `cordis.patch.yml` 中按同一插件 id 覆盖顶层 `command` 和 `args`，并设 `agentEngine: none` 关闭 kiro 专用的启动参数：
+
+```yaml
+- id: subagent-acp-resume
+  name: dsh-acp-resume
+  config:
+    command: agy
+    args: [acp]
+    agentEngine: none
+```
+
+重启 DSH 后，模型新建会话时就会使用 agy。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。只使用 Codex 时也需按下节将其注册为命名后端，建会话时指定 `backend: codex`。
+
+### 让模型在多个后端中选择
+
+要用 kiro 作为默认后端、Codex 作为备选，在同一处使用下面这份配置。顶层字段定义默认后端，`backends` 下的键是模型可选择的名称。把 `model` 换成你账号在 Codex `model/list` 中可用的 ID。
+
+```yaml
+- id: subagent-acp-resume
+  name: dsh-acp-resume
+  config:
+    command: kiro-cli
+    args: [acp]
+    backends:
+      codex:
+        protocol: codex
+        command: codex
+        model: gpt-6.2-astra
+        effort: high
+        sandbox: read-only
+        approvalPolicy: on-request
+        permission: ask
+```
+
+重启 DSH 后，`acp_chat_start` 会列出可选后端。模型传入工作目录的绝对路径 `cwd`，省略 `backend` 即用 kiro，指定 `backend: codex` 即用 Codex。侧栏徽标显示每个会话的后端；之后用同一个 `chatId` 续聊即可。
+
+Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。`approvalPolicy` 决定 Codex 何时请求审批，各后端的 `permission` 决定如何答复，可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问。自带配置为默认后端设置了 `allow`，命名后端省略此字段时使用 `reject`。
+
 ## 快速上手
 
 在有工作目录的 DSH 会话里，依次发两条消息。等第一轮回答后再发第二条：
@@ -47,45 +97,18 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ## 进阶使用
 
-<a id="配置"></a><a id="后端支持等级"></a>
-
-### Resume · 为不同会话选择后端
-
-在 profile 的 `cordis.patch.yml` 添加顶层同 id 覆盖，保留默认的 `kiro-cli acp`，再注册 Codex 和 Antigravity（agy）。启用 bundle 时重复 `insert` 会导致 `DUPLICATE_PROVIDER`。请将示例模型换成账号可用的 ID。
-
-```yaml
-- id: subagent-acp-resume
-  name: dsh-acp-resume
-  config:
-    workflow: true
-    backends:
-      codex: {
-        protocol: codex, command: codex,
-        model: gpt-6.2-astra, effort: high,
-        sandbox: read-only, approvalPolicy: on-request, permission: ask
-      }
-      agy: {
-        command: agy, args: [acp], agentEngine: none,
-        modelSelect: session, model: gemini-4-carbon-high, permission: ask
-      }
-```
-
-**建会话。** 重启 DSH 后，模型调用 `acp_chat_start` 时传工作目录的绝对路径 `cwd`，再用 `backend: codex` 或 `backend: agy` 选引擎，省略则用 kiro。侧栏在各个会话旁显示对应的后端徽标，后续用同一 `chatId` 发送即可续聊。
-
-**模型与权限。** kiro v3 默认自动选模型，要固定模型就同时设 `modelSelect: session` 和 `model`，省略 `effort`。agy 也按会话选模型，推理强度写在模型 ID 里。Codex 必填 `model`（见 `model/list`），可设每轮 `effort`，并通过 `sandbox` 选择 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。各后端的 `permission` 可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问；自带 kiro 配置为 `allow`，手动配置省略时为 `reject`。Codex 的 `approvalPolicy` 决定何时发起审批。
-
 ### ACP Dispatcher 模式
 
 启用 bundle 并重启 DSH，在**新会话的模式菜单**选择 **ACP Dispatcher**。主 Agent 可用 ACP 工具派工、用 web 轻量查证、用 jobs 跟踪任务；它没有 bash 或文件工具，命令执行和文件操作都通过 `acp_chat_send` 派给子代理。任务完成后，主 Agent 收到通知，用 `job_output` 取回结果。适合在一个窗口并行分工、让两个引擎交叉审核，或跟进耗时任务；标准模式同样能用 ACP 工具（D26）。
 
 ### ACP Workflow · 按工作区模板派工
 
-在上面的插件配置中启用 `workflow: true`，将以下内容保存为工作区根目录下的 `.agents/acp-team.yml`。两位审核员各有分工，最后一步把两份结果交给主模型。[更多模板，包括由编辑角色汇总的示例](docs/acp-team.example.yml)
+在插件的顶层 `config` 中设置 `workflow: true` 并重启 DSH，再将以下内容保存为工作区根目录下的 `.agents/acp-team.yml`。两位审核员使用默认后端、各自独立审查，最后把结果交给主模型。要让某个角色改用已配置的 Codex，可在它的蓝图中添加 `backend: codex`。[更多模板，包括由编辑角色汇总的示例](docs/acp-team.example.yml)
 
 ```yaml
 roles:
-  - { name: reviewerA, backend: codex, cwd: ., seeding: "Review for correctness." }
-  - { name: reviewerB, backend: agy, cwd: ., seeding: "Review for maintainability." }
+  - { name: reviewerA, cwd: ., seeding: "Review for correctness." }
+  - { name: reviewerB, cwd: ., seeding: "Review for maintainability." }
 templates:
   - name: dual_review
     params: [target]

@@ -30,6 +30,56 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 
 > ⚠️ **Do not install from a GitHub URL.** The repository omits compiled files and has no `prepare` script to build them at install time. DSH will fail to load the plugin because `lib/index.js` is missing.
 
+## Choose a backend
+
+<a id="configuration"></a><a id="backend-support-levels"></a>
+
+| Backend | Capabilities |
+| --- | --- |
+| **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. |
+| **Antigravity** (agy) | Connects through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
+| **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and requires a named backend. |
+
+### Use a single backend
+
+For kiro, make sure DSH can find `kiro-cli` on its `PATH`, then continue to the quick start. To switch to agy, override the top-level `command` and `args` under the same plugin ID in your profile’s `cordis.patch.yml`. Set `agentEngine: none` to omit kiro’s engine flag.
+
+```yaml
+- id: subagent-acp-resume
+  name: dsh-acp-resume
+  config:
+    command: agy
+    args: [acp]
+    agentEngine: none
+```
+
+Restart DSH and new chats will use agy automatically. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. If you use Codex exclusively, register it as a named backend as shown below and select `backend: codex` when starting a chat.
+
+### Let the model choose between backends
+
+To keep kiro as the default and offer Codex as an alternative, use the following configuration in the same file. The top-level fields define the default backend. Each key under `backends` is a name the model can select. Replace `model` with an ID available to your account in the Codex `model/list` response.
+
+```yaml
+- id: subagent-acp-resume
+  name: dsh-acp-resume
+  config:
+    command: kiro-cli
+    args: [acp]
+    backends:
+      codex:
+        protocol: codex
+        command: codex
+        model: gpt-6.2-astra
+        effort: high
+        sandbox: read-only
+        approvalPolicy: on-request
+        permission: ask
+```
+
+After restarting DSH, the model can see the available backends in `acp_chat_start`. It supplies an absolute working directory in `cwd` and either omits `backend` to use kiro or passes `backend: codex` to use Codex. A sidebar badge identifies each chat’s backend. Follow-ups use the same `chatId`.
+
+For Codex, `effort` sets the reasoning level per turn. The `sandbox` options are `read-only` (default), `workspace-write`, and `danger-full-access`. Codex uses `approvalPolicy` to decide when to request approval. Each backend’s `permission` controls the response: `allow` approves automatically, `reject` declines, and `ask` prompts the user. The bundle sets `allow` for the default backend. A named backend defaults to `reject` if the field is omitted.
+
 ## Quick start
 
 Open a DSH session with a working directory. Send the first message, wait for the reply, then send the second.
@@ -47,45 +97,18 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 
 ## Advanced usage
 
-<a id="configuration"></a><a id="backend-support-levels"></a>
-
-### Resume · Choose a backend for each chat
-
-Add a top-level override with the same plugin ID to your profile’s `cordis.patch.yml`. This keeps `kiro-cli acp` as the default and adds Codex and Antigravity (agy). A second `insert` with the bundle enabled causes a `DUPLICATE_PROVIDER` error. Use model IDs available to your account.
-
-```yaml
-- id: subagent-acp-resume
-  name: dsh-acp-resume
-  config:
-    workflow: true
-    backends:
-      codex: {
-        protocol: codex, command: codex,
-        model: gpt-6.2-astra, effort: high,
-        sandbox: read-only, approvalPolicy: on-request, permission: ask
-      }
-      agy: {
-        command: agy, args: [acp], agentEngine: none,
-        modelSelect: session, model: gemini-4-carbon-high, permission: ask
-      }
-```
-
-**Start a chat.** Restart DSH. When the model calls `acp_chat_start`, it supplies an absolute working directory in `cwd` and selects an engine with `backend: codex` or `backend: agy`. Omitting the backend selects kiro. The sidebar shows a backend badge on each chat. Subsequent sends use the same `chatId`.
-
-**Models and permissions.** kiro v3 selects a model automatically. To pin one, set both `modelSelect: session` and `model` and omit `effort`. agy also selects its model per session, with reasoning effort encoded in the model ID. Codex requires a `model` from `model/list`, accepts a per-turn `effort`, and supports three `sandbox` settings: `read-only` (default), `workspace-write`, and `danger-full-access`. Each backend’s `permission` can allow requests automatically (`allow`), decline them (`reject`), or prompt each time (`ask`). The bundled kiro configuration uses `allow`. A manually configured backend defaults to `reject`. For Codex, `approvalPolicy` determines when to request approval.
-
 ### ACP Dispatcher mode
 
 Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode menu in a new session**. The main agent has ACP tools for delegation, web tools for quick lookups, and jobs tools for tracking work. It has no shell or file tools, so it delegates commands and file operations to workers through `acp_chat_send`. When a job finishes, the main agent receives a notification and retrieves the result with `job_output`. Use this mode to run independent tasks in parallel, cross-check a review with two engines, or follow a long-running task from one conversation. ACP tools are also available in standard mode (D26).
 
 ### ACP Workflow · Run a workspace template
 
-Enable `workflow: true` in the plugin configuration above and save the following as `.agents/acp-team.yml` at the workspace root. Each reviewer has a different brief, and the final step returns both reviews to the main model. [More templates, including one with an editor role](docs/acp-team.example.yml)
+Set `workflow: true` in the plugin’s top-level `config`, restart DSH, and save the following as `.agents/acp-team.yml` at the workspace root. The reviewers work independently on the default backend, and the final step returns both reviews to the main model. To assign a role to your configured Codex backend, add `backend: codex` to its blueprint. [More templates, including one with an editor role](docs/acp-team.example.yml)
 
 ```yaml
 roles:
-  - { name: reviewerA, backend: codex, cwd: ., seeding: "Review for correctness." }
-  - { name: reviewerB, backend: agy, cwd: ., seeding: "Review for maintainability." }
+  - { name: reviewerA, cwd: ., seeding: "Review for correctness." }
+  - { name: reviewerB, cwd: ., seeding: "Review for maintainability." }
 templates:
   - name: dual_review
     params: [target]
