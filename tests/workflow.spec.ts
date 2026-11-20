@@ -134,6 +134,18 @@ describe('workflow engine (D27)', () => {
     expect(fillPrompt('keep {unknown} and {target}', { target: 'T' }, [])).toBe('keep {unknown} and T')
   })
 
+  it('does not fill {constructor}, {toString} or {__proto__} from Object.prototype', () => {
+    expect(fillPrompt('{constructor} {toString} {__proto__} {hasOwnProperty}', { target: 'T' }, [])).toBe('{constructor} {toString} {__proto__} {hasOwnProperty}')
+    expect(fillPrompt('{constructor}', bindParams(template('chain'), { target: 'T' }), [])).toBe('{constructor}')
+  })
+
+  it('reports a declared __proto__ or constructor param as missing when not given, and binds it when given', () => {
+    const [proto] = parseTeamConfig('roles:\n  - name: a\ntemplates:\n  - name: t\n    params: [__proto__, constructor]\n    steps:\n      - id: s\n        parallel: [a]\n', '/ws').templates as [Template]
+    expect(() => bindParams(proto, {})).toThrow('template t needs params: __proto__, constructor')
+    const bound = bindParams(proto, JSON.parse('{"__proto__": "P", "constructor": "C"}'))
+    expect(fillPrompt('{__proto__}/{constructor}', bound, [])).toBe('P/C')
+  })
+
   it('stops between steps once cancelled and reports aborted', async () => {
     const controller = new AbortController()
     const pool: WorkflowPool = {

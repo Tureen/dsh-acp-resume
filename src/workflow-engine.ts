@@ -62,7 +62,8 @@ export interface WorkflowResult {
 export function bindParams(template: Template, params: unknown): Readonly<Record<string, string>> {
   const given = params === undefined || params === null ? {} : params
   if (typeof given !== 'object' || Array.isArray(given)) throw new Error('params must be an object of name → value')
-  const bound: Record<string, string> = {}
+  // Null prototype: a declared param named `constructor` or `__proto__` must not resolve to an Object.prototype member.
+  const bound: Record<string, string> = Object.create(null) as Record<string, string>
   for (const [name, value] of Object.entries(given)) {
     if (!template.params.includes(name)) {
       throw new Error(`template ${template.name} has no param ${name}; its params: ${template.params.join(', ') || '(none)'}`)
@@ -70,7 +71,7 @@ export function bindParams(template: Template, params: unknown): Readonly<Record
     if (typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) bound[name] = String(value)
     else throw new Error(`param ${name} must be a string, number, or boolean`)
   }
-  const missing = template.params.filter(name => bound[name] === undefined)
+  const missing = template.params.filter(name => !Object.hasOwn(bound, name))
   if (missing.length > 0) throw new Error(`template ${template.name} needs params: ${missing.join(', ')}`)
   return bound
 }
@@ -98,8 +99,8 @@ export function fillPrompt(prompt: string, params: Readonly<Record<string, strin
   const byId = new Map(done.map(step => [step.id, step]))
   let referencedStep = false
   const filled = prompt.replace(PLACEHOLDER, (whole, name: string) => {
-    const param = params[name]
-    if (param !== undefined) return param
+    // Own params only: `{constructor}` or `{toString}` must not pick up Object.prototype members.
+    if (Object.hasOwn(params, name)) return params[name] as string
     const step = byId.get(name)
     if (step === undefined) return whole
     referencedStep = true
