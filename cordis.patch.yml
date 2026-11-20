@@ -79,5 +79,23 @@
           # 展示最终交付物(报告/文档)
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
+          # 上下文压缩(长调度会话必需;job 输出较长,无压缩会更快撞上下文上限)
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           # 注:session_search 和 goal 工具来自 base bundle(全局挂载),无需在此声明
           # 没有 bash、fs、subagent:模型通过 ACP 工具执行任务,轻量查询直接用 web 工具
