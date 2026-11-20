@@ -24,7 +24,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpSteerUnsupportedError } from './connection.js'
 import { freshSessionNotice, type AcpSessionPool, type PoolSendHooks, type PoolSendResult, type PooledChatInfo, type RoleCallContext } from './pool.js'
 import type { PermissionRequestResolver } from './permission-request.js'
-import { bindParams, runWorkflow, type WorkflowResult } from './workflow-engine.js'
+import { bindParams, runWorkflow, type WorkflowObserver, type WorkflowResult } from './workflow-engine.js'
+import { WorkflowRecorder, type RunStopReason } from './workflow-record.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -171,6 +172,8 @@ function unknownChatError(toolPrefix: string, chatId: string): Error {
 export interface RoleSupport {
   /** The calling session's working directory, where the `.agents/acp-team.yml` search starts. */
   readonly workspaceDirFor: (agent: Agent) => string
+  /** Non-fatal conditions, e.g. a workflow progress record that could not be written. */
+  readonly onWarn?: (message: string) => void
 }
 
 /** A tool call's target: a chat by id, or a role in the calling session's roster. */
@@ -587,6 +590,29 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
 /** Name of the workflow tool (D27); fixed, not under the chat tools' prefix. */
 export const WORKFLOW_TOOL = 'acp_workflow'
 
+/** Workflow status → the official run stop reason. */
+const RUN_STOP_REASON: Readonly<Record<WorkflowResult['status'], RunStopReason>> = { completed: 'completed', failed: 'error', aborted: 'cancelled' }
+
+/**
+ * A run's observer: progress records in the calling session for a model-direct
+ * call (no `parent`, as the official workflow tool), plus the job's progress
+ * line per step. Returns the recorder to finish, if any.
+ */
+function workflowObserver(name: string, exec: { readonly parent?: unknown; readonly agent?: Agent }, onWarn: ((message: string) => void) | undefined, progress?: (line: string) => void): { observer: WorkflowObserver; recorder: WorkflowRecorder | undefined } {
+  const recorder = exec.parent === undefined && exec.agent !== undefined ? new WorkflowRecorder(exec.agent.session, onWarn) : undefined
+  recorder?.start(name)
+  return {
+    recorder,
+    observer: {
+      stepStart: (id) => { progress?.(id) },
+      ...(recorder === undefined ? {} : {
+        memberStart: (role: string, stepId: string) => recorder.memberStart(role, stepId),
+        memberEnd: (seq: number, outcome: Parameters<WorkflowRecorder['memberEnd']>[1]) => { recorder.memberEnd(seq, outcome) },
+      }),
+    },
+  }
+}
+
 /** The run's JSON output, followed by nothing else, so a model can parse it. */
 function workflowText(result: WorkflowResult): string {
   return JSON.stringify(result, undefined, 2)
@@ -599,7 +625,10 @@ function workflowText(result: WorkflowResult): string {
  * id returns at once, the completion notice wakes the model, the D22 gate
  * refuses blocking waits) whose output is the run's JSON; `job_kill` cancels
  * every in-flight role turn (D6 cancel path). Without `jobs` the call awaits
- * the run, and a run that did not complete is thrown with its JSON.
+ * the run, and a run that did not complete is thrown with its JSON. A
+ * model-direct call also writes the official `tool-workflow/*` progress
+ * records into the calling session (D27, 2026-11-20); the job variant also
+ * reports the current step as the job's progress line.
  * @param pool - the pool the roles run on.
  * @param roles - workspace role access; the tool exists only with roles.
  * @param jobs - the job registry, when the host composes one.
@@ -631,7 +660,9 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
       exec.signal.throwIfAborted()
       const { context, template, params } = prepare(args, exec.agent)
       if (jobs === undefined) {
-        const result = await runWorkflow(pool, template, params, context, exec.signal)
+        const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn)
+        const result = await runWorkflow(pool, template, params, context, exec.signal, observer)
+        recorder?.finish(RUN_STOP_REASON[result.status])
         if (result.status !== 'completed') throw new Error(`workflow ${template.name} ${result.status}: ${result.error ?? ''}\n${workflowText(result)}`)
         return { text: workflowText(result) }
       }
@@ -641,14 +672,18 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
         label: jobLabel(`workflow ${template.name}`, ''),
         toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
         ...(exec.agent === undefined ? {} : { owner: exec.agent.id }),
-        run: job => ({
-          done: runWorkflow(pool, template, params, context, controller.signal).then((result): JobOutcome => {
-            job.append(workflowText(result))
-            if (result.status === 'completed') return { status: 'completed' }
-            return { status: result.status === 'aborted' ? 'killed' : 'failed', detail: result.error ?? result.status }
-          }),
-          cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: workflow job killed')) },
-        }),
+        run: (job) => {
+          const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn, (line) => { job.updateProgress(line) })
+          return {
+            done: runWorkflow(pool, template, params, context, controller.signal, observer).then((result): JobOutcome => {
+              recorder?.finish(RUN_STOP_REASON[result.status])
+              job.append(workflowText(result))
+              if (result.status === 'completed') return { status: 'completed' }
+              return { status: result.status === 'aborted' ? 'killed' : 'failed', detail: result.error ?? result.status }
+            }),
+            cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: workflow job killed')) },
+          }
+        },
       })
       return {
         text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes.`,

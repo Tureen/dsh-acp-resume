@@ -24,7 +24,8 @@ src/
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
   team-config.ts D27:读工作区 .agents/acp-team.yml(向上至多 3 层),角色蓝图 + 模板的解析与校验;不可用时 onWarn 并视为无配置
   roster.ts      D27:按 ownerSessionId 隔离的花名册(角色 → chatId),持久化在注册表 rosters 节
-  workflow-engine.ts D27:按模板执行工作流(parallel 部分容错、{param}/{stepId} 注入、merge 两模式),无状态
+  workflow-engine.ts D27:按模板执行工作流(parallel 部分容错、{param}/{stepId} 注入、merge 两模式),无状态;可选观察者
+  workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
   panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn` 五个 Remote 方法(D15/D18)
 - `src/client/` 详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
@@ -65,7 +66,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 461 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 85 + `tools.spec.ts` 34 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 85 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13 + `team.spec.ts` 13 + `workflow.spec.ts` 10;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 465 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 85 + `tools.spec.ts` 34 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 85 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 13 + `team.spec.ts` 13 + `workflow.spec.ts` 14;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

@@ -16,8 +16,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { AcpSessionPool, type PoolSendResult, type RoleCallContext } from '../src/pool.ts'
 import { parseTeamConfig, type Template } from '../src/team-config.ts'
-import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { chatWorkflowTool, registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
 import { bindParams, fillPrompt, runWorkflow, type WorkflowPool } from '../src/workflow-engine.ts'
+import { WorkflowRecorder } from '../src/workflow-record.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -218,5 +219,109 @@ describe('acp_workflow and steer by role (D27)', () => {
     rmSync(hold)
     await expect(sending).resolves.toEqual({ text: 'echo:long task' })
     expect(existsSync(steers)).toBe(true)
+  })
+})
+
+describe('workflow progress records (D27, 2026-11-20)', () => {
+  type Record_ = { type: string; data: Record<string, unknown> }
+  const sink = (): { session: { append(type: string, data: unknown): void }; records: Record_[] } => {
+    const records: Record_[] = []
+    return { records, session: { append: (type, data) => { records.push({ type, data: data as Record<string, unknown> }) } } }
+  }
+  const observe = (recorder: WorkflowRecorder) => ({
+    memberStart: (role: string, stepId: string) => recorder.memberStart(role, stepId),
+    memberEnd: (seq: number, outcome: 'completed' | 'failed' | 'cancelled') => { recorder.memberEnd(seq, outcome) },
+  })
+
+  it('writes run-start, paired agent-start/agent-end per role with seq and phase, then run-end', async () => {
+    const { session, records } = sink()
+    const recorder = new WorkflowRecorder(session)
+    const runId = recorder.start('dual_review')
+    const result = await runWorkflow(fakePool({ reviewerB: 'error' }), template('dual_review'), { target: 't', dimensions: 'd' }, CONTEXT, new AbortController().signal, observe(recorder))
+    recorder.finish('completed')
+    expect(result.status).toBe('completed')
+    expect(records.map(r => r.type)).toEqual([
+      'tool-workflow/run-start', 'tool-workflow/agent-start', 'tool-workflow/agent-start',
+      'tool-workflow/agent-end', 'tool-workflow/agent-end', 'tool-workflow/agent-start', 'tool-workflow/agent-end', 'tool-workflow/run-end',
+    ])
+    expect(records[0]?.data).toEqual({ runId, name: 'dual_review' })
+    const starts = records.filter(r => r.type === 'tool-workflow/agent-start').map(r => r.data)
+    expect(starts).toEqual([
+      { runId, seq: 1, label: 'reviewerA', phase: 'independent', childId: 'acp-role:reviewerA' },
+      { runId, seq: 2, label: 'reviewerB', phase: 'independent', childId: 'acp-role:reviewerB' },
+      { runId, seq: 3, label: 'merger', phase: 'merge', childId: 'acp-role:merger' },
+    ])
+    const ends = Object.fromEntries(records.filter(r => r.type === 'tool-workflow/agent-end').map(r => [r.data['seq'], r.data['outcome']]))
+    expect(ends).toEqual({ 1: 'completed', 2: 'failed', 3: 'completed' })
+    expect(records.at(-1)?.data).toEqual({ runId, stopReason: 'completed' })
+  })
+
+  it('marks members and the run cancelled when the run is cancelled; return_to_model adds no member', async () => {
+    const { session, records } = sink()
+    const recorder = new WorkflowRecorder(session)
+    recorder.start('chain')
+    const controller = new AbortController()
+    const pool: WorkflowPool = {
+      async sendByRole(role) {
+        controller.abort()
+        return { chatId: role, remoteSessionId: 'r', output: '', stopReason: 'aborted', freshSession: false, freshSessionReason: undefined, diagnostic: undefined }
+      },
+    }
+    const result = await runWorkflow(pool, template('chain'), { target: 'X' }, CONTEXT, controller.signal, observe(recorder))
+    recorder.finish('cancelled')
+    expect(result.status).toBe('aborted')
+    expect(records.filter(r => r.type === 'tool-workflow/agent-end').map(r => r.data['outcome'])).toEqual(['cancelled'])
+    expect(records.at(-1)?.data['stopReason']).toBe('cancelled')
+    const full = sink()
+    const second = new WorkflowRecorder(full.session)
+    await runWorkflow(fakePool(), template('chain'), { target: 'X' }, CONTEXT, new AbortController().signal, observe(second))
+    expect(full.records.filter(r => r.type === 'tool-workflow/agent-start').map(r => r.data['phase'])).toEqual(['first', 'second', 'third'])
+  })
+
+  it('warns once and stops recording after a failed append, leaving the workflow result untouched', async () => {
+    const warnings: string[] = []
+    let calls = 0
+    const recorder = new WorkflowRecorder({ append: () => { calls += 1; if (calls === 2) throw new Error('disk full') } }, (m) => { warnings.push(m) })
+    recorder.start('dual_review')
+    const result = await runWorkflow(fakePool(), template('dual_review'), { target: 't', dimensions: 'd' }, CONTEXT, new AbortController().signal, observe(recorder))
+    recorder.finish('completed')
+    expect(result.status).toBe('completed')
+    expect(result.steps).toHaveLength(2)
+    expect(calls).toBe(2)
+    expect(warnings).toEqual(['acp-resume: workflow progress record disabled after tool-workflow/agent-start append failed: disk full'])
+  })
+
+  it('records only for a model-direct call, and reports each step as the job progress line', async () => {
+    const root = tempDir('acp-resume-wf-rec-')
+    mkdirSync(join(root, '.agents'))
+    writeFileSync(join(root, '.agents', 'acp-team.yml'), TEAM)
+    const pool = new AcpSessionPool({
+      specBase: { command: process.execPath, args: [mockServer], permission: 'reject', env: { MOCK_ECHO_PROMPT: '1', MOCK_SESSION_STORE: join(root, 's.json') }, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+      registryPath: join(root, 'registry.json'),
+      idleTimeoutMs: 600_000,
+    })
+    pools.push(pool)
+    const progress: string[] = []
+    let done: Promise<unknown> | undefined
+    const jobs = {
+      start(spec: { run: (job: unknown) => { done: Promise<unknown> } }) {
+        done = spec.run({ append: () => {}, updateProgress: (line: string) => { progress.push(line) } }).done
+        return 'job-1'
+      },
+    }
+    const tool = chatWorkflowTool(pool, { workspaceDirFor: () => root }, jobs as never)
+    const direct = sink()
+    const nested = sink()
+    const run = async (session: ReturnType<typeof sink>['session'], parent?: unknown): Promise<void> => {
+      await tool.execute({ template: 'dual_review', params: { target: 'T', dimensions: 'D' } }, { signal: new AbortController().signal, agent: { id: 'session-a', session }, ...(parent === undefined ? {} : { parent }) } as unknown as ToolRunContext)
+      await done
+    }
+    await run(direct.session)
+    expect(direct.records.map(r => r.type).at(0)).toBe('tool-workflow/run-start')
+    expect(direct.records.at(-1)).toMatchObject({ type: 'tool-workflow/run-end', data: { stopReason: 'completed' } })
+    expect(direct.records.filter(r => r.type === 'tool-workflow/agent-start')).toHaveLength(3)
+    expect(progress).toEqual(['independent', 'merge'])
+    await run(nested.session, { token: 'ptc' })
+    expect(nested.records).toEqual([])
   })
 })

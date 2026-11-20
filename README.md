@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:0.2.9。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 461 例全绿。
+状态:0.2.10。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 465 例全绿。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -306,7 +306,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ### 工作流模板(`acp_workflow`)
 
-在同一个文件的 `templates` 里写好流程，模型调 `acp_workflow(template, params)` 按模板执行。步骤按顺序执行:`parallel` 步骤把 prompt 同时发给列出的各个角色;`merge` 步骤要么把全部结果交回模型(`return_to_model`,只能是最后一步),要么交给一个角色合并(`role`)。prompt 里的 `{参数名}` 换成调用参数,`{步骤id}` 换成前面某一步的结果;一个前步都没引用的 prompt,会自动在末尾附上前一步的结果。单个角色失败只把该项记为 `{"error": …}`,其余照常;一步里所有角色都失败才中止。结果是 JSON:`{ template, status, steps: [...] }`。有后台任务服务时，它和 `acp_chat_send` 一样立即返回 jobId,完成后唤醒模型。
+在同一个文件的 `templates` 里写好流程，模型调 `acp_workflow(template, params)` 按模板执行。步骤按顺序执行:`parallel` 步骤把 prompt 同时发给列出的各个角色;`merge` 步骤要么把全部结果交回模型(`return_to_model`,只能是最后一步),要么交给一个角色合并(`role`)。prompt 里的 `{参数名}` 换成调用参数,`{步骤id}` 换成前面某一步的结果;一个前步都没引用的 prompt,会自动在末尾附上前一步的结果。单个角色失败只把该项记为 `{"error": …}`,其余照常;一步里所有角色都失败才中止。结果是 JSON:`{ template, status, steps: [...] }`。模型直接调用时，对话里会出现官方的工作流进度卡片(按步骤分组显示各角色的启停与结局)。有后台任务服务时，它和 `acp_chat_send` 一样立即返回 jobId,完成后唤醒模型。
 
 ```yaml
 templates:

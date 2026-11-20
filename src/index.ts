@@ -342,7 +342,7 @@ export function apply(ctx: Context, config: Config): void {
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
-    const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent) } : undefined
+    const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) } } : undefined
     const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles)
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })), roles)
     scope.effect(() => scope.tools.register(start))

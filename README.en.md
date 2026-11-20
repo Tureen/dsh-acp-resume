@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.2.9. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 461 tests.
+Status: 0.2.10. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 465 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -308,7 +308,7 @@ Put `.agents/acp-team.yml` in the workspace root (see [docs/acp-team.example.yml
 
 ### Workflow templates (`acp_workflow`)
 
-Define flows under `templates` in the same file; the model runs one with `acp_workflow(template, params)`. Steps run in order. A `parallel` step sends its prompt to every listed role at once. A `merge` step either hands all results back to the model (`return_to_model`, last step only) or has one role merge them (`role`). In prompts, `{param}` is a call param and `{stepId}` is an earlier step's results; a prompt that names no earlier step gets the previous step's results appended. A failing role is recorded as `{"error": …}` while the others carry on; the run stops only when every role in a step failed. The result is JSON: `{ template, status, steps: [...] }`. With the background job service it returns a jobId at once, like `acp_chat_send`, and wakes the model when done.
+Define flows under `templates` in the same file; the model runs one with `acp_workflow(template, params)`. Steps run in order. A `parallel` step sends its prompt to every listed role at once. A `merge` step either hands all results back to the model (`return_to_model`, last step only) or has one role merge them (`role`). In prompts, `{param}` is a call param and `{stepId}` is an earlier step's results; a prompt that names no earlier step gets the previous step's results appended. A failing role is recorded as `{"error": …}` while the others carry on; the run stops only when every role in a step failed. The result is JSON: `{ template, status, steps: [...] }`. When the model calls it directly, the conversation shows the official workflow progress card (roles grouped by step, with their start, end, and outcome). With the background job service it returns a jobId at once, like `acp_chat_send`, and wakes the model when done.
 
 ```yaml
 templates:

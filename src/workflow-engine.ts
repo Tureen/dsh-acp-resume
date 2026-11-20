@@ -18,6 +18,18 @@
 
 import type { PoolSendResult, RoleCallContext } from './pool.js'
 import type { Step, Template } from './team-config.js'
+import type { MemberOutcome } from './workflow-record.js'
+
+/**
+ * Optional run observer (progress records, job progress). Called around every
+ * step and every role send; a throwing observer is contained.
+ */
+export interface WorkflowObserver {
+  stepStart?(stepId: string): void
+  /** A role member is about to be sent to; returns its member seq. */
+  memberStart?(role: string, stepId: string): number
+  memberEnd?(seq: number, outcome: MemberOutcome): void
+}
 
 /** What the engine needs from the pool. */
 export interface WorkflowPool {
@@ -118,6 +130,7 @@ function message(error: unknown): string {
  * @param params - bound params from {@link bindParams}.
  * @param context - the calling session and its working directory.
  * @param signal - cancels every in-flight send.
+ * @param observer - optional progress observer.
  */
 export async function runWorkflow(
   pool: WorkflowPool,
@@ -125,12 +138,15 @@ export async function runWorkflow(
   params: Readonly<Record<string, string>>,
   context: RoleCallContext,
   signal: AbortSignal,
+  observer: WorkflowObserver = {},
 ): Promise<WorkflowResult> {
+  const send = observedSend(pool, observer, context, signal)
   const done: StepResult[] = []
   const stop = (status: 'failed' | 'aborted', error: string): WorkflowResult => ({ template: template.name, status, error, steps: done })
   for (const step of template.steps) {
     if (signal.aborted) return stop('aborted', 'the workflow was cancelled')
-    const outcome = await runStep(pool, step, params, done, context, signal)
+    contained(() => observer.stepStart?.(step.id))
+    const outcome = await runStep(send, step, params, done)
     if (signal.aborted) {
       if (outcome.result !== undefined) done.push(outcome.result)
       return stop('aborted', 'the workflow was cancelled')
@@ -141,20 +157,45 @@ export async function runWorkflow(
   return { template: template.name, status: 'completed', steps: done }
 }
 
+/** One role send in a given step. */
+type StepSend = (role: string, stepId: string, prompt: string) => Promise<PoolSendResult>
+
+function contained<T>(call: () => T): T | undefined {
+  try { return call() } catch { return undefined }
+}
+
+/** Member outcome of a settled (or rejected) send. */
+function outcomeOf(result: PoolSendResult | undefined, signal: AbortSignal): MemberOutcome {
+  if (signal.aborted || result?.stopReason === 'aborted') return 'cancelled'
+  return result?.stopReason === 'completed' ? 'completed' : 'failed'
+}
+
+/** Wrap each role send in the observer's member start and end. */
+function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: RoleCallContext, signal: AbortSignal): StepSend {
+  return async (role, stepId, prompt) => {
+    const seq = contained(() => observer.memberStart?.(role, stepId))
+    let result: PoolSendResult | undefined
+    try {
+      result = await pool.sendByRole(role, prompt, context, signal)
+      return result
+    } finally {
+      if (seq !== undefined) contained(() => { observer.memberEnd?.(seq, outcomeOf(result, signal)) })
+    }
+  }
+}
+
 async function runStep(
-  pool: WorkflowPool,
+  send: StepSend,
   step: Step,
   params: Readonly<Record<string, string>>,
   done: readonly StepResult[],
-  context: RoleCallContext,
-  signal: AbortSignal,
 ): Promise<{ readonly result?: StepResult; readonly fatal?: string }> {
   if ('merge' in step) {
     if (step.merge.mode === 'return_to_model') return { result: { id: step.id, mode: 'return_to_model' } }
     const context_ = done.map(renderStep).filter(text => text !== '').join('\n\n')
     const prompt = `${fillPrompt(step.merge.prompt ?? DEFAULT_MERGE_PROMPT, params, [])}\n\n${context_}`
     try {
-      const sent = await pool.sendByRole(step.merge.role, prompt, context, signal)
+      const sent = await send(step.merge.role, step.id, prompt)
       const error = turnError(sent)
       return error === undefined ? { result: { id: step.id, result: sent.output } } : { fatal: `merge role ${step.merge.role}: ${error}` }
     } catch (error: unknown) {
@@ -164,7 +205,7 @@ async function runStep(
   const settled = await Promise.all(step.parallel.map(async (ref): Promise<[string, RoleResult]> => {
     const prompt = fillPrompt(ref.prompt ?? step.prompt ?? '', params, done)
     try {
-      const sent = await pool.sendByRole(ref.role, prompt, context, signal)
+      const sent = await send(ref.role, step.id, prompt)
       const error = turnError(sent)
       return [ref.role, error === undefined ? sent.output : { error }]
     } catch (error: unknown) {
