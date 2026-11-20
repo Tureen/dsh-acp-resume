@@ -450,7 +450,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - 修订(2026-11-18,调度纪律):persona 去掉「用 acp_chat_list 跟踪进度」(会诱导轮询),改为「用 acp_chat_send 派工(记下 jobId)、等完成通知、用 job_output 收结果」,与 D22 一致;另加三条：目标目录不明确时先问用户再建 chat;同一 cwd 的多个 worker 写文件范围不得重叠;轻量查证直接用 web 工具，完整调研交给 worker。
 - 修订(2026-11-18,结果汇总框架与模式描述):persona 末句「Collect results from completed jobs and synthesize the final answer」换成汇总判断框架(有依赖的等前置完成;独立结果到一条报一条并说明还在跑的;区分阻塞性与参考性结果;部分结果已能回答就立即给出)。prefix 改为 YAML 字面块(`|-`)保留换行，让清单仍是清单;没有放进 persona 的 `suffix`,因为官方 suffix 排在第一方指引之后、与调度身份分离。preset 加 `description`(官方 `dsh-agent-preset` Config 字段，纯字符串、不分语言),修复选模式时描述为空。
 
-## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施:配置层、花名册、自动供给、工具 role 参数;`acp_workflow` 引擎下一轮)
+## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施：配置层、花名册、自动供给、工具 role 参数;同日第二轮实施 `acp_workflow` 引擎与 steer 的 role)
 
 ### 动机
 
@@ -523,3 +523,17 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 ### 后果
 
 注册表文件新增 `rosters` 节(字段加法，版本不变);新增运行时依赖 `yaml`;Config 新增 `workflow`;`acp_chat_send` / `acp_chat_close` 在 `workflow: true` 时 `chatId` 变为可选、新增 `role`。D6 的单飞、降级、取消语义不变，只多了「供给中」这一种单飞占位。
+
+### 修订(2026-11-18,第二轮:`acp_workflow` 引擎实施裁定)
+
+- **占位符**:prompt 里用单花括号 `{name}`。先查调用参数，再查前面步骤的 id;都不是的 `{…}` 原样保留(prompt 里可能本来就有花括号)。模板校验新增三条：参数名与步骤 id 须匹配 `[A-Za-z_][A-Za-z0-9_-]{0,63}`,且两者不得同名(同一命名空间);`return_to_model` 合并只能是最后一步;同一 parallel 步骤内同一角色只能出现一次(D6 单飞下第二个必然失败)。
+- **顺序注入**:prompt 里写了 `{stepId}` 的，就地替换为该步骤的渲染结果;一个前步都没引用的，自动在末尾追加「前一步结果」。渲染格式为 `### Step <id>`,其下每个角色一段 `#### <角色>`,失败的写 `#### <角色> (failed)` 加原因。
+- **parallel 部分容错**:单个角色发送被拒或轮未以 `completed` 结算，该项记为 `{ "error": "<原因>" }`,其余角色照常;只有一个步骤内所有角色都失败时，整个工作流以 `failed` 结束。
+- **merge**:`role` 模式把前面所有步骤的渲染结果拼在合并指令之后，发给合并角色(经自动供给),其回答即该步 `result`;合并角色失败即工作流 `failed`。合并步骤可带可选 `prompt` 作为合并指令(其中的 `{param}` 生效),缺省用固定的合并指令。`return_to_model` 只是结束运行，该步记为 `{ id, mode: "return_to_model" }`,各路结果就在前面步骤里原样返回。
+- **返回结构**:`{ template, status: "completed" | "failed" | "aborted", error?, steps: [...] }`。parallel 步骤为 `{ id, results: { 角色: 文本 | { error } } }`,role 合并为 `{ id, result }`。运行未完成时仍带已完成的步骤。
+- **参数**:声明的参数必须全部给出;未声明的参数名报错，用来拦拼写错误;取值只接受字符串、有限数字、布尔，统一转成字符串。
+- **job**:与 `acp_chat_send` 共用 job 种类 `acp-chat`,因此 D22 门同样拒绝对运行中工作流的阻塞等待，不用另改门。job 标签为 `workflow <模板名>`,输出就是上面的 JSON(结束时一次写入，不流式穿插各角色的增量),`completed` / `failed` / `aborted` 分别对应 job 的 completed / failed / killed。`job_kill` 中止 job 的信号，传给每个在途的角色发送，按 D6 取消条结算;运行在步骤之间检查信号，不再开始新步骤。无 jobs 服务时同步执行，未完成的运行作为工具错误抛出，附部分 JSON。
+- **注册**:工具名固定为 `acp_workflow`,不跟 `toolPrefix`;只在 `workflow: true` 时注册，与 send 一样随 jobs 服务在同步版与后台版之间切换。
+- **steer 的 role**:`acp_chat_steer` 加可选 `role`(与 chatId 二选一),经本会话花名册解析;该角色尚未建会话时报「没有会话，因此没有可插话的轮」,不触发自动供给(插话的前提是已有在途轮)。
+- **未做**:工作流运行不进面板(各角色 chat 的轮次照常进面板与按轮日志);不支持步骤级超时与重试。
+

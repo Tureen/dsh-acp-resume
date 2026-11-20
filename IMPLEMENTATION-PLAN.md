@@ -25,7 +25,7 @@
 | 10 | D24 多后端命名空间 | 配置/工具面/池/注册表/面板 + 测试 | 343 绿；0.1.20 单后端工具定义夹具逐字节一致；双后端 argv 路由、非默认重连与并发单飞均已验证 | ☑ |
 | 11 | D20 可见性语义 | 工具和侧栏按 owner 严格发现；操作面保持 chatId 直达 | 工具严格过滤/headless 回退/跨会话操作，侧栏 seat 会话过滤与 owner 标识均已验证 | ☑ |
 | 13 | D27 工作区角色(第一轮) | `team-config.ts` 配置层、`roster.ts` 花名册、池自动供给、send/close/list 的 role、Config `workflow` | `team.spec.ts` 13 例全绿；`workflow: false` 时工具定义与 0.2.7 逐字节一致 | ☑ |
-| 14 | D27 `acp_workflow` 引擎(第二轮) | 模板执行：parallel / 顺序注入 / merge 两模式，后台 job | 待定 | ☐ |
+| 14 | D27 `acp_workflow` 引擎(第二轮) | `workflow-engine.ts`:parallel 部分容错 / `{stepId}` 顺序注入 / merge 两模式;`acp_workflow` 工具(后台 job 或同步);steer 的 role | `workflow.spec.ts` 10 例全绿 | ☑ |
 | 12 | D25 Codex app-server 适配器 | `connection-codex.ts` 连接层、池协议路由与 Config、`mock-codex-server.ts`、`codex-approval.ts`(ask 桥)与四份文档 | mock 联调全绿(见 AGENTS.md 基线)；ACP 路径与单后端工具定义不回归；**真机 Codex 探针待做** | ☑(mock) |
 
 ## 冒烟剧本(第 6 步固定内容)

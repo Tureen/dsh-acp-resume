@@ -5,7 +5,8 @@
 # first reference and listed by acp_chat_list with a `role` column.
 
 roles:
-  # name: [A-Za-z0-9_-]{1,32}, unique. Address it as `role: reviewer` in acp_chat_send / acp_chat_close.
+  # name: [A-Za-z0-9_-]{1,32}, unique. Address it as `role: reviewer` in
+  # acp_chat_send / acp_chat_close / acp_chat_steer, or from a template step.
   - name: reviewer
     # backend: optional; a configured backend name (omit for the default backend).
     # cwd: optional; relative paths resolve against the workspace root (default: the root itself).
@@ -15,21 +16,48 @@ roles:
       You are the code reviewer for this repository. Review only; do not edit files.
       Report findings as a numbered list, most severe first, each with file and line.
 
+  - name: security-reviewer
+    seeding: |
+      You review code for security issues only: injection, auth, secrets, unsafe defaults.
+
   - name: researcher
     seeding: |
       You are a researcher. Answer with sources; say clearly when something is unverified.
 
-# Templates are run by the acp_workflow tool (next release). Steps run in order;
-# a `parallel` step runs its roles at once, a `merge` step combines results.
+  - name: editor
+    seeding: |
+      You merge several reviews into one: deduplicate, keep every distinct finding,
+      and flag where reviewers disagree.
+
+# Templates are run by the acp_workflow tool: acp_workflow(template, params).
+# Steps run in order. A `parallel` step sends its prompt to each listed role at
+# once; a role entry may carry its own prompt. Placeholders: {param} is a call
+# param, {stepId} is an earlier step's results; a prompt naming no earlier step
+# gets the previous step's results appended. A `merge` step either ends the run
+# and returns everything to the model (`return_to_model`, last step only) or
+# sends all earlier results to one role (`role`, with an optional prompt).
 templates:
-  - name: double-review
-    description: Two independent reviews, merged by the main model.
-    params: [target]
+  - name: dual_review
+    description: Two independent reviews of the same target, merged by the editor role.
+    params: [target, dimensions]
     steps:
-      - id: review
+      - id: independent
         parallel:
           - reviewer
-          - { role: researcher, prompt: "Check {{target}} against current best practice." }
-        prompt: "Review {{target}}."
+          - { role: security-reviewer, prompt: "Review {target} for security issues." }
+        prompt: "Review {target}. Focus on: {dimensions}."
       - id: merge
-        merge: { mode: return_to_model }   # or { mode: role, role: reviewer }
+        merge: { mode: role, role: editor, prompt: "Merge these reviews of {target} into one list." }
+
+  - name: research_then_review
+    description: Research best practice first, then review against it; results come back to the model.
+    params: [target]
+    steps:
+      - id: research
+        parallel: [researcher]
+        prompt: "What is current best practice for code like {target}?"
+      - id: review
+        parallel: [reviewer]
+        prompt: "Review {target} against this research: {research}"
+      - id: done
+        merge: { mode: return_to_model }
