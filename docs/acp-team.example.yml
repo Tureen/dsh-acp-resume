@@ -1,0 +1,35 @@
+# Example workspace team file for dsh-acp-resume (D27).
+# Copy to <workspace root>/.agents/acp-team.yml and edit. The plugin looks for
+# it from the session's working directory upward (that directory, its parent,
+# and its grandparent). Blueprints only: chats are created per DSH session on
+# first reference and listed by acp_chat_list with a `role` column.
+
+roles:
+  # name: [A-Za-z0-9_-]{1,32}, unique. Address it as `role: reviewer` in acp_chat_send / acp_chat_close.
+  - name: reviewer
+    # backend: optional; a configured backend name (omit for the default backend).
+    # cwd: optional; relative paths resolve against the workspace root (default: the root itself).
+    cwd: .
+    # seeding: optional; sent once as the first turn of a newly created chat.
+    seeding: |
+      You are the code reviewer for this repository. Review only; do not edit files.
+      Report findings as a numbered list, most severe first, each with file and line.
+
+  - name: researcher
+    seeding: |
+      You are a researcher. Answer with sources; say clearly when something is unverified.
+
+# Templates are run by the acp_workflow tool (next release). Steps run in order;
+# a `parallel` step runs its roles at once, a `merge` step combines results.
+templates:
+  - name: double-review
+    description: Two independent reviews, merged by the main model.
+    params: [target]
+    steps:
+      - id: review
+        parallel:
+          - reviewer
+          - { role: researcher, prompt: "Check {{target}} against current best practice." }
+        prompt: "Review {{target}}."
+      - id: merge
+        merge: { mode: return_to_model }   # or { mode: role, role: reviewer }

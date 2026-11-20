@@ -49,6 +49,8 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
+import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
+import { loadTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint } from './team-config.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -207,7 +209,20 @@ interface OpenWindow {
 interface RegistryFile {
   version: 1
   sessions: RegistryEntry[]
+  /** D27 role rosters by owner session; absent in registries written before rosters. */
+  rosters?: RosterTable
 }
+
+/** Who addresses a role and where its workspace team file is looked up from (D27). */
+export interface RoleCallContext {
+  /** The calling DSH session; rosters are per session. */
+  readonly ownerSessionId: string
+  /** The calling session's working directory: start of the `.agents/acp-team.yml` search. */
+  readonly workspaceDir: string
+}
+
+/** A send addressed by role: the pool result plus the role and whether this call provisioned it. */
+export type RoleSendResult = PoolSendResult & { readonly role: string; readonly provisioned: boolean }
 
 /** A pooled chat's live state (absent while released). */
 interface LiveChat {
@@ -256,6 +271,14 @@ function blockText(blocks: readonly { type: string; text?: string }[]): string {
   return blocks.filter(b => b.type === 'text').map(b => b.text).join('')
 }
 
+function roleKey(role: string, ownerSessionId: string): string {
+  return `${ownerSessionId}\u0000${role}`
+}
+
+function roleInFlight(role: string): Error {
+  return new Error(`acp-resume: role ${role} is still being set up or already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
+}
+
 /** Resolve once `promise` settles or `ms` elapses, whichever comes first. Never rejects. */
 async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined
@@ -292,7 +315,7 @@ function isRegistryFile(value: unknown): value is RegistryFile {
  * mis-shaped file is renamed to `<path>.corrupt-<timestamp>` and the pool
  * continues with an empty registry, reporting through `onWarn`.
  */
-class ChatRegistry {
+class ChatRegistry implements RosterStore {
   private file: RegistryFile
 
   constructor(private readonly path: string, onWarn: ((message: string) => void) | undefined) {
@@ -317,6 +340,18 @@ class ChatRegistry {
     this.file = isRegistryFile(parsed)
       ? parsed
       : this.setAside('not a version 1 registry with a sessions array', onWarn)
+    const rosters = this.file.rosters
+    if (rosters !== undefined && Object.keys(toRosterTable(rosters)).length !== Object.keys(rosters).length) {
+      onWarn?.(`acp-resume: registry ${path} has a malformed rosters section; unreadable rosters are treated as empty`)
+    }
+  }
+
+  readRosters(): unknown {
+    return this.file.rosters
+  }
+
+  writeRosters(next: RosterTable): void {
+    this.write({ ...this.file, rosters: next })
   }
 
   private setAside(reason: string, onWarn: ((message: string) => void) | undefined): RegistryFile {
@@ -339,13 +374,13 @@ class ChatRegistry {
   }
 
   remove(chatId: string): void {
-    this.write({ version: 1, sessions: this.file.sessions.filter(s => s.chatId !== chatId) })
+    this.write({ ...this.file, sessions: this.file.sessions.filter(s => s.chatId !== chatId) })
   }
 
   upsert(entry: RegistryEntry): void {
     const next = this.file.sessions.filter(s => s.chatId !== entry.chatId)
     next.push(entry)
-    this.write({ version: 1, sessions: next })
+    this.write({ ...this.file, sessions: next })
   }
 
   /** Disk first, then memory: a failed write throws and leaves both at the previous state. */
@@ -378,6 +413,9 @@ export class AcpSessionPool {
   private readonly starting = new Map<string, OpenWindow>()
   private readonly backends: ReadonlyMap<string, BackendSpec>
   private readonly registry: ChatRegistry
+  private readonly roster: Roster
+  /** Role provisioning in progress, keyed by owner and role: the D27 single-flight claim. */
+  private readonly provisioning = new Map<string, Promise<PooledChatInfo>>()
   private readonly turnLog: TurnLog
   private disposed = false
 
@@ -388,6 +426,7 @@ export class AcpSessionPool {
     }
     this.backends = new Map([[DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: basename(opts.specBase.command), specBase: opts.specBase }], ...(opts.backends ?? new Map()).entries()])
     this.registry = new ChatRegistry(opts.registryPath, opts.onWarn)
+    this.roster = new Roster(this.registry)
     this.turnLog = new TurnLog(join(dirname(opts.registryPath), 'turns'), opts.onWarn)
   }
 
@@ -678,8 +717,138 @@ export class AcpSessionPool {
       throw new Error(`acp-resume: releasing chat ${chatId} failed; its record is kept: ${toError(error).message}`, { cause: error })
     }
     this.registry.remove(chatId)
+    this.roster.removeChat(chatId)
     this.consecutiveErrorTurns.delete(chatId)
     this.turnLog.remove(chatId)
+  }
+
+  // ---- D27 roles --------------------------------------------------------
+
+  /** The session's roster entries whose chat records still exist. */
+  listRoster(ownerSessionId: string): readonly RosterEntry[] {
+    return this.roster.list(ownerSessionId).filter(entry => this.registry.get(entry.chatId) !== undefined)
+  }
+
+  /** The role a chat plays in the session's roster (any roster when the owner is unknown). */
+  roleOf(chatId: string, ownerSessionId?: string): string | undefined {
+    return this.roster.roleOf(chatId, ownerSessionId)
+  }
+
+  /** The chat instantiating `role` for the session; a binding whose chat record is gone is dropped. */
+  resolveRole(role: string, ownerSessionId: string): string | undefined {
+    const entry = this.roster.resolve(role, ownerSessionId)
+    if (entry === undefined) return undefined
+    if (this.registry.get(entry.chatId) !== undefined) return entry.chatId
+    this.roster.remove(role, ownerSessionId)
+    return undefined
+  }
+
+  /**
+   * Synchronous preflight for {@link sendByRole}, mirroring {@link assertSendable}:
+   * an instantiated role checks its chat; an uninstantiated one checks that it is
+   * not being provisioned and that the workspace defines it on a configured backend.
+   */
+  assertRoleSendable(role: string, context: RoleCallContext): void {
+    this.assertLive()
+    // Provisioning outranks the roster: the entry is written before the provisioning call's own send claims the chat.
+    if (this.provisioning.has(roleKey(role, context.ownerSessionId))) throw roleInFlight(role)
+    const chatId = this.resolveRole(role, context.ownerSessionId)
+    if (chatId !== undefined) this.assertSendable(chatId)
+    else this.blueprintFor(role, context)
+  }
+
+  /**
+   * Send to a role (D27). An instantiated role routes to its chat (reconnecting
+   * a released one through `session/load`); otherwise the role is provisioned
+   * from the workspace blueprint first — start, seeding turn, roster entry —
+   * then the message is sent. The instantiated path claims the chat before the
+   * first await, as {@link send} does; provisioning is single-flight per session and role.
+   */
+  async sendByRole(role: string, message: string, context: RoleCallContext, signal?: AbortSignal, hooks: PoolSendHooks = {}): Promise<RoleSendResult> {
+    this.assertLive()
+    if (this.provisioning.has(roleKey(role, context.ownerSessionId))) throw roleInFlight(role)
+    const existing = this.resolveRole(role, context.ownerSessionId)
+    if (existing !== undefined) return { ...await this.send(existing, message, signal, hooks), role, provisioned: false }
+    const chat = await this.provision(role, context, signal)
+    return { ...await this.send(chat.chatId, message, signal, hooks), role, provisioned: true }
+  }
+
+  /** The role's chat for this session, provisioning it from the blueprint when it has none. */
+  async startForRole(role: string, context: RoleCallContext, signal?: AbortSignal): Promise<PooledChatInfo> {
+    this.assertLive()
+    const existing = this.resolveRole(role, context.ownerSessionId)
+    if (existing !== undefined) return this.chatInfo(existing) as PooledChatInfo
+    return this.provision(role, context, signal)
+  }
+
+  /**
+   * Release a role's chat and unbind the role in the session's roster, so the
+   * next reference provisions it from the current blueprint. `purge` also
+   * deletes the chat record. Returns the released chatId.
+   */
+  async releaseRole(role: string, ownerSessionId: string, purge: boolean): Promise<string> {
+    if (this.provisioning.has(roleKey(role, ownerSessionId))) throw roleInFlight(role)
+    const chatId = this.resolveRole(role, ownerSessionId)
+    if (chatId === undefined) throw new Error(`acp-resume: role ${role} has no chat in this session`)
+    if (purge) await this.remove(chatId)
+    else await this.close(chatId)
+    this.roster.remove(role, ownerSessionId)
+    return chatId
+  }
+
+  /** Single-flight provisioning: one start + seeding + roster entry per session and role at a time. */
+  private async provision(role: string, context: RoleCallContext, signal: AbortSignal | undefined): Promise<PooledChatInfo> {
+    const key = roleKey(role, context.ownerSessionId)
+    if (this.provisioning.has(key)) throw roleInFlight(role)
+    const blueprint = this.blueprintFor(role, context)
+    const pending = this.provisionFromBlueprint(blueprint, context.ownerSessionId, signal)
+    this.provisioning.set(key, pending)
+    try {
+      return await pending
+    } finally {
+      this.provisioning.delete(key)
+    }
+  }
+
+  private async provisionFromBlueprint(blueprint: RoleBlueprint, ownerSessionId: string, signal: AbortSignal | undefined): Promise<PooledChatInfo> {
+    const backend = blueprint.backend ?? DEFAULT_BACKEND
+    const chat = await this.start(blueprint.cwd, signal, { label: blueprint.name, ownerSessionId, backend })
+    const discard = async (reason: string, cause?: unknown): Promise<never> => {
+      // A half-built role is not kept: the next reference provisions it again.
+      await this.remove(chat.chatId).catch((error: unknown) => { this.report(error) })
+      throw new Error(`acp-resume: role ${blueprint.name} could not be provisioned: ${reason}`, cause === undefined ? undefined : { cause })
+    }
+    if (blueprint.seeding !== undefined) {
+      let seeded: PoolSendResult
+      try {
+        seeded = await this.send(chat.chatId, blueprint.seeding, signal)
+      } catch (error: unknown) {
+        return discard(`its seeding turn failed: ${toError(error).message}`, error)
+      }
+      if (seeded.stopReason !== 'completed') return discard(`its seeding turn ended ${seeded.stopReason}`)
+    }
+    try {
+      this.roster.register(blueprint.name, chat.chatId, backend, ownerSessionId)
+    } catch (error: unknown) {
+      return discard(`the roster could not be written: ${toError(error).message}`, error)
+    }
+    return chat
+  }
+
+  /** The workspace blueprint of `role`, on a configured backend; throws a model-facing reason otherwise. */
+  private blueprintFor(role: string, context: RoleCallContext): RoleBlueprint {
+    const config = loadTeamConfig(context.workspaceDir, this.opts.onWarn)
+    if (config === undefined) {
+      throw new Error(`acp-resume: unknown role ${role}: no usable workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
+    }
+    const blueprint = config.roles.find(r => r.name === role)
+    if (blueprint === undefined) {
+      const names = config.roles.map(r => r.name).join(', ')
+      throw new Error(`acp-resume: unknown role ${role}; roles defined in ${config.root}/${TEAM_CONFIG_FILE}: ${names === '' ? '(none)' : names}`)
+    }
+    const backend = blueprint.backend ?? DEFAULT_BACKEND
+    if (!this.backends.has(backend)) throw new Error(`acp-resume: role ${role} names unknown backend ${backend}`)
+    return blueprint
   }
 
   /**

@@ -29,7 +29,7 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { chatSendTool, chatStaticTools, type ChatJobsFace } from './tools.js'
+import { chatSendTool, chatStaticTools, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
@@ -153,6 +153,13 @@ export interface Config {
    * wakes the model. Settled jobs and other job kinds are never affected.
    */
   allowChatJobWait?: boolean
+  /**
+   * Workspace roles and workflows (D27, default true): the chat tools accept a
+   * `role` from the workspace `.agents/acp-team.yml` instead of a chatId, and
+   * set up a role's chat on first reference. False keeps the tool definitions
+   * exactly as before D27.
+   */
+  workflow?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -187,6 +194,7 @@ export const Config: z<Config> = z.object({
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
   allowChatJobWait: z.boolean().default(false),
+  workflow: z.boolean().default(true),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */
@@ -285,6 +293,18 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   return new Map(entries)
 }
 
+/** Minimal face of the host `workingDirectory` service (optional; not injected). */
+interface WorkingDirectoryFace { get(session: Agent['session']): string }
+
+/** The session's current working directory: the host service when composed, else the session header's cwd, else the host process cwd. */
+function sessionWorkingDirectory(ctx: Context, agent: Agent): string {
+  const service = ctx.get('workingDirectory') as WorkingDirectoryFace | undefined
+  try {
+    if (service !== undefined) return service.get(agent.session)
+  } catch { /* fall back to the header */ }
+  return agent.session?.header?.cwd ?? process.cwd()
+}
+
 export function apply(ctx: Context, config: Config): void {
   // schemastery (Config) has already filled every defaulted field.
   const resolved = config as ResolvedConfig
@@ -322,8 +342,9 @@ export function apply(ctx: Context, config: Config): void {
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
-    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor)
-    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })))
+    const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent) } : undefined
+    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles)
+    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })), roles)
     scope.effect(() => scope.tools.register(start))
     scope.effect(() => scope.tools.register(steer))
     // Send follows the job registry, as the official bash tool does: the inline
