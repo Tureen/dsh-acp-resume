@@ -70,7 +70,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 500 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 85 + `tools.spec.ts` 35 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 90 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 19 + `workflow.spec.ts` 18 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 501 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 85 + `tools.spec.ts` 35 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 91 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 19 + `workflow.spec.ts` 18 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
