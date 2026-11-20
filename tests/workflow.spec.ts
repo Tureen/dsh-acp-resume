@@ -195,6 +195,12 @@ describe('acp_workflow and steer by role (D27)', () => {
     expect(pool.listChats()).toEqual([])
   })
 
+  it('tells the model in its description where progress records live and how to read them', () => {
+    const description = mount().tools.get('acp_workflow')?.description ?? ''
+    expect(description).toContain('tool-workflow/run-start')
+    expect(description).toContain('session_event_read')
+  })
+
   it('is not registered with the workflow feature off', () => {
     expect(mount({}, false).tools.has('acp_workflow')).toBe(false)
     expect(mount().tools.has('acp_workflow')).toBe(true)

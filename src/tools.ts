@@ -649,6 +649,9 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
       + 'Steps run in order: a parallel step sends its prompt to each listed role at once (a role\'s chat is set up on first use), '
       + 'later steps see earlier results, and a merge step either returns everything to you or has one role merge it. '
       + 'Pass the template\'s params; every declared param is required. '
+      + 'Progress records are written to the calling session as structured events '
+      + '(tool-workflow/run-start, agent-start, agent-end, run-end). They carry no searchable text: '
+      + 'session_event_search cannot find them by query; use session_event_read by seq number to inspect them. '
       + (jobs === undefined
         ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
         : 'Returns at once with a background job id; you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
