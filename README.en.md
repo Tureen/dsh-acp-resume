@@ -47,9 +47,11 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 
 ## Advanced usage
 
-### Configuration
+<a id="configuration"></a><a id="backend-support-levels"></a>
 
-The bundle runs `kiro-cli acp` by default. To pin a model, add a backend, or enable workflows, add a **top-level override with the same plugin ID** to your profile's `cordis.patch.yml`. The example below keeps kiro as the default and adds a backend you can select with `backend: codex` when starting a chat. Replace the example model with an ID returned by `model/list` for your account.
+### Resume · Choose a backend for each chat
+
+Add a top-level override with the same plugin ID to your profile’s `cordis.patch.yml`. This keeps `kiro-cli acp` as the default and adds Codex and Antigravity (agy). A second `insert` with the bundle enabled causes a `DUPLICATE_PROVIDER` error. Use model IDs available to your account.
 
 ```yaml
 - id: subagent-acp-resume
@@ -57,41 +59,50 @@ The bundle runs `kiro-cli acp` by default. To pin a model, add a backend, or ena
   config:
     workflow: true
     backends:
-      codex:
-        protocol: codex
-        command: codex
-        model: gpt-6.2-astra
-        effort: high
-        sandbox: read-only
-        approvalPolicy: on-request
-        permission: ask
+      codex: {
+        protocol: codex, command: codex,
+        model: gpt-6.2-astra, effort: high,
+        sandbox: read-only, approvalPolicy: on-request, permission: ask
+      }
+      agy: {
+        command: agy, args: [acp], agentEngine: none,
+        modelSelect: session, model: gemini-4-carbon-high, permission: ask
+      }
 ```
 
-The top-level `command`, `args`, and model settings apply to the default backend. Each named entry under `backends` can have its own model and permission settings. An extra `insert` with the bundle enabled causes a `DUPLICATE_PROVIDER` error. If you disable the bundle, register the plugin manually using the format in the [bundled configuration](cordis.patch.yml).
+**Start a chat.** Restart DSH. When the model calls `acp_chat_start`, it supplies an absolute working directory in `cwd` and selects an engine with `backend: codex` or `backend: agy`. Omitting the backend selects kiro. The sidebar shows a backend badge on each chat. Subsequent sends use the same `chatId`.
 
-#### Backend support levels
-
-| Backend | Session recovery and mid-turn instructions | Model and reasoning effort |
-| --- | --- | --- |
-| **kiro-cli** (v3 by default) | Resumes with `session/load` and accepts instructions during a turn. | The server chooses the model by default. To pin one on v3, set both `modelSelect: session` and `model`, and omit `effort`. v2 accepts the `--model` and `--effort` flags. |
-| **Antigravity** (`agy acp`) | Resumes with `session/load`. Recovery after process termination has been verified. | Set `agentEngine: none`. To select a model, set both `modelSelect: session` and `model`. The model ID includes the effort level, so omit `effort`. |
-| **Codex** (named backend only) | Uses the private `app-server` protocol, with `thread/resume` for recovery and native `turn/steer` for mid-turn instructions. | Set `model` explicitly. You can set a per-turn `effort` level supported by that model. The `sandbox` default is `read-only`. Other options are `workspace-write` and `danger-full-access`. |
-
-To use another standard ACP CLI, configure its `command` and `args`. Set `agentEngine: none` if the CLI does not accept kiro's `--agent-engine` flag. Resuming a chat in a new process requires the backend's `loadSession` capability. Mid-turn instructions also require backend support.
-
-**Permissions.** With `permission: allow`, the plugin automatically selects an allow option. `reject` declines the request, and `ask` prompts the DSH user for each decision. The bundled kiro configuration uses `allow`. A manually configured backend defaults to `reject` when the field is omitted. For Codex, `approvalPolicy` controls when the backend asks for approval and `permission` controls the response. If `ask` cannot obtain a valid answer, an ACP request is denied and a Codex turn is canceled in full.
-
-### Delegate by role and save repeatable tasks as templates
-
-Enable `workflow: true` and place an `.agents/acp-team.yml` file at the workspace root. Under `roles`, define each role's name, backend, working directory, and the instructions it receives when its chat is first created. Under `templates`, describe how the roles work together. [Copy the example workspace configuration](docs/acp-team.example.yml)
-
-To try the two-reviewer template, ask “Run `dual_review` on `src/pool.ts`, focusing on concurrency and resource cleanup.” The model calls `acp_workflow`, two reviewers read the file in parallel, and an editor combines their findings. A template can also return the results to the main model. The **Workflows** section of the panel shows the current step and the five most recent finished runs. Expand a step to open a participant's chat.
-
-To follow up with a reviewer, use `acp_chat_send` with `role: reviewer`. On first use, the plugin creates a chat from the role definition, sends its initial instructions, and adds it to the roster. Later requests reuse that chat. Each DSH session has its own roster. After editing a role definition, use `acp_chat_close` with the role name to clear the binding. The next assignment uses the updated definition (D27).
+**Models and permissions.** kiro v3 selects a model automatically. To pin one, set both `modelSelect: session` and `model` and omit `effort`. agy also selects its model per session, with reasoning effort encoded in the model ID. Codex requires a `model` from `model/list`, accepts a per-turn `effort`, and supports three `sandbox` settings: `read-only` (default), `workspace-write`, and `danger-full-access`. Each backend’s `permission` can allow requests automatically (`allow`), decline them (`reject`), or prompt each time (`ask`). The bundled kiro configuration uses `allow`. A manually configured backend defaults to `reject`. For Codex, `approvalPolicy` determines when to request approval.
 
 ### ACP Dispatcher mode
 
-Choose **ACP Dispatcher** from the mode menu when starting a new session to put the main model in charge of delegation. With this optional preset, the model breaks work into tasks, assigns them to subagents, tracks progress, and summarizes the results. It retains task management and lightweight web lookup tools. Subagents run commands and work with files. Standard mode also supports the chat tools and any workflows you enable (D26).
+Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode menu in a new session**. The main agent has ACP tools for delegation, web tools for quick lookups, and jobs tools for tracking work. It has no shell or file tools, so it delegates commands and file operations to workers through `acp_chat_send`. When a job finishes, the main agent receives a notification and retrieves the result with `job_output`. Use this mode to run independent tasks in parallel, cross-check a review with two engines, or follow a long-running task from one conversation. ACP tools are also available in standard mode (D26).
+
+### ACP Workflow · Run a workspace template
+
+Enable `workflow: true` in the plugin configuration above and save the following as `.agents/acp-team.yml` at the workspace root. Each reviewer has a different brief, and the final step returns both reviews to the main model. [More templates, including one with an editor role](docs/acp-team.example.yml)
+
+```yaml
+roles:
+  - { name: reviewerA, backend: codex, cwd: ., seeding: "Review for correctness." }
+  - { name: reviewerB, backend: agy, cwd: ., seeding: "Review for maintainability." }
+templates:
+  - name: dual_review
+    params: [target]
+    steps:
+      - { id: review, parallel: [reviewerA, reviewerB], prompt: "Review {target}." }
+      - { id: collect, merge: { mode: return_to_model } }
+```
+
+**Run the review.** Ask “Run `dual_review` on `src/pool.ts`” in the main conversation. The model calls `acp_workflow({ template: "dual_review", params: { target: "src/pool.ts" } })`. On first use of a role in this session, the plugin creates its chat from the blueprint, sends the `seeding` instructions, registers the chat in the roster, and sends the review assignment. A progress card in the conversation shows each step and participant’s status. The sidebar’s **Workflows** section shows the current step and the five most recent finished runs.
+
+| Object | Scope | What it records |
+| --- | --- | --- |
+| Workflow templates (`templates`) | Workspace, shared by sessions in that workspace | How roles work together, including step order, parallel participants, and how results are merged. |
+| Role blueprints (`roles`) | Workspace, shared by sessions in that workspace | Who each role is, including its `backend`, working directory (`cwd`), and initial instructions (`seeding`). |
+| Roster instance | DSH parent session, one roster per session | The plugin uses the `ownerSessionId` to track which `chatId` belongs to each role in that session. |
+
+For example, when sessions 1 and 2 run `dual_review` in the same workspace, they read the same template and role blueprints. Reviewer A (`reviewerA`) maps to a different chat in each roster. A follow-up from session 1 using `acp_chat_send` with `role: reviewerA` continues session 1’s review. After editing a blueprint, use `acp_chat_close` with the role name in the current session to clear its binding. The next assignment creates a chat from the updated blueprint (D27).
 
 ## Reference
 

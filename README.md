@@ -47,9 +47,11 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ## 进阶使用
 
-### 配置
+<a id="配置"></a><a id="后端支持等级"></a>
 
-安装后，bundle 已配置默认命令 `kiro-cli acp`。需要固定模型、增加后端或启用工作流时，在该 profile 的 `cordis.patch.yml` 写**顶层同 id 覆盖**。下面的示例保留默认 kiro，另加一个可在建会话时通过 `backend: codex` 选择的后端。将模型名换成你账号的 `model/list` 返回值。
+### Resume · 为不同会话选择后端
+
+在 profile 的 `cordis.patch.yml` 添加顶层同 id 覆盖，保留默认的 `kiro-cli acp`，再注册 Codex 和 Antigravity（agy）。启用 bundle 时重复 `insert` 会导致 `DUPLICATE_PROVIDER`。请将示例模型换成账号可用的 ID。
 
 ```yaml
 - id: subagent-acp-resume
@@ -57,41 +59,50 @@ dsh plugin --profile <name> add dsh-acp-resume
   config:
     workflow: true
     backends:
-      codex:
-        protocol: codex
-        command: codex
-        model: gpt-6.2-astra
-        effort: high
-        sandbox: read-only
-        approvalPolicy: on-request
-        permission: ask
+      codex: {
+        protocol: codex, command: codex,
+        model: gpt-6.2-astra, effort: high,
+        sandbox: read-only, approvalPolicy: on-request, permission: ask
+      }
+      agy: {
+        command: agy, args: [acp], agentEngine: none,
+        modelSelect: session, model: gemini-4-carbon-high, permission: ask
+      }
 ```
 
-顶层 `command`、`args` 和模型设置用于默认后端，`backends` 下的命名后端可各自选用模型和权限。bundle 已启用时再次 `insert` 会触发 `DUPLICATE_PROVIDER`。关闭 bundle 后才需要手动挂载，格式见[自带配置](cordis.patch.yml)。
+**建会话。** 重启 DSH 后，模型调用 `acp_chat_start` 时传工作目录的绝对路径 `cwd`，再用 `backend: codex` 或 `backend: agy` 选引擎，省略则用 kiro。侧栏在各个会话旁显示对应的后端徽标，后续用同一 `chatId` 发送即可续聊。
 
-#### 后端支持等级
-
-| 后端 | 会话恢复与插话 | 如何选模型和推理强度 |
-| --- | --- | --- |
-| **kiro-cli**（默认 v3） | 通过 `session/load` 恢复，支持在当前轮插话 | 默认由服务端选模型。v3 指定模型时同时设置 `modelSelect: session` 和 `model`，省略 `effort`。v2 支持 `--model`、`--effort` 命令行参数。 |
-| **Antigravity**（`agy acp`） | 通过 `session/load` 恢复，已实测进程被终止后续聊 | 设置 `agentEngine: none`。指定模型用 `modelSelect: session` 和 `model`。推理强度包含在模型 ID 中，省略 `effort`。 |
-| **Codex**（仅命名后端） | 通过私有 `app-server` 协议接入，用 `thread/resume` 恢复，支持原生 `turn/steer` 插话 | 必填 `model`，可按模型设置每轮的 `effort`。`sandbox` 默认为 `read-only`，也可选 `workspace-write`、`danger-full-access`。 |
-
-其他标准 ACP CLI 可通过 `command` 和 `args` 接入；若不接受 kiro 的 `--agent-engine` 参数，设置 `agentEngine: none`。能否跨进程续聊取决于后端的 `loadSession` 能力，插话也需要后端支持。
-
-**权限。** `permission: allow` 自动选择允许项，`reject` 拒绝请求，`ask` 将请求交给宿主用户逐次确认。自带的 kiro 配置使用 `allow`，手动配置后端时省略该字段则默认为 `reject`。Codex 的 `approvalPolicy` 控制何时发起审批，`permission` 决定如何答复；`ask` 无法取得有效确认时，ACP 请求会被拒绝，Codex 会取消整轮。
-
-### 按角色派工，把重复任务写成模板
-
-开启 `workflow: true` 后，在工作区根目录放一份 `.agents/acp-team.yml`。其中 `roles` 定义角色名、后端、工作目录和首次创建时发送的职责说明，`templates` 定义这些角色如何协作。[可直接复制的工作区示例](docs/acp-team.example.yml)
-
-以示例中的双人审核为例，你可以说：“用 `dual_review` 审核 `src/pool.ts`，重点看并发和资源释放。”模型调用 `acp_workflow` 后，两个审核角色会并行阅读目标文件，随后由编辑角色汇总。模板也可以把结果交回主模型。面板的**工作流**区块显示当前步骤和最近五次结束的运行，展开步骤可进入成员会话。
-
-临时追问某位审核者时，用 `acp_chat_send` 指定 `role: reviewer` 即可。首次派工会按蓝图自动建会话、发送职责说明并登记到花名册，以后复用该角色的会话。每个 DSH 会话都有自己的花名册。修改蓝图后，可用 `acp_chat_close` 按角色解除绑定，下次派工会采用新蓝图（D27）。
+**模型与权限。** kiro v3 默认自动选模型，要固定模型就同时设 `modelSelect: session` 和 `model`，省略 `effort`。agy 也按会话选模型，推理强度写在模型 ID 里。Codex 必填 `model`（见 `model/list`），可设每轮 `effort`，并通过 `sandbox` 选择 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。各后端的 `permission` 可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问；自带 kiro 配置为 `allow`，手动配置省略时为 `reject`。Codex 的 `approvalPolicy` 决定何时发起审批。
 
 ### ACP Dispatcher 模式
 
-如果希望主模型专注派工，在**新会话的模式菜单**选择 **ACP Dispatcher**。这个可选 preset 让主模型拆分任务、分派给子代理、跟踪进度并汇总结果。主模型保留任务管理和轻量联网查询，命令执行和文件操作交给子代理。标准模式也可以使用会话工具和已启用的工作流（D26）。
+启用 bundle 并重启 DSH，在**新会话的模式菜单**选择 **ACP Dispatcher**。主 Agent 可用 ACP 工具派工、用 web 轻量查证、用 jobs 跟踪任务；它没有 bash 或文件工具，命令执行和文件操作都通过 `acp_chat_send` 派给子代理。任务完成后，主 Agent 收到通知，用 `job_output` 取回结果。适合在一个窗口并行分工、让两个引擎交叉审核，或跟进耗时任务；标准模式同样能用 ACP 工具（D26）。
+
+### ACP Workflow · 按工作区模板派工
+
+在上面的插件配置中启用 `workflow: true`，将以下内容保存为工作区根目录下的 `.agents/acp-team.yml`。两位审核员各有分工，最后一步把两份结果交给主模型。[更多模板，包括由编辑角色汇总的示例](docs/acp-team.example.yml)
+
+```yaml
+roles:
+  - { name: reviewerA, backend: codex, cwd: ., seeding: "Review for correctness." }
+  - { name: reviewerB, backend: agy, cwd: ., seeding: "Review for maintainability." }
+templates:
+  - name: dual_review
+    params: [target]
+    steps:
+      - { id: review, parallel: [reviewerA, reviewerB], prompt: "Review {target}." }
+      - { id: collect, merge: { mode: return_to_model } }
+```
+
+**运行。** 在主对话里说“用 `dual_review` 审核 `src/pool.ts`”，模型会调用 `acp_workflow({ template: "dual_review", params: { target: "src/pool.ts" } })`。本会话首次用到某角色时，插件按蓝图建 chat、先发 `seeding` 交代职责，再登记到花名册并派发审核任务。对话中的进度卡片显示各步骤和成员状态，侧栏**工作流**区块可查看当前步骤及最近五次结束的运行。
+
+| 对象 | 作用域 | 记录什么 |
+| --- | --- | --- |
+| 流程模板 `templates` | 工作区，同一工作区的会话共享 | 角色怎么协作，包括步骤顺序、并行成员和合并方式。 |
+| 角色蓝图 `roles` | 工作区，同一工作区的会话共享 | 角色是谁，包括后端 `backend`、工作目录 `cwd` 和首次派工前发送的 `seeding`。 |
+| 花名册实例（roster） | DSH 主会话，每个会话独立 | 插件按 `ownerSessionId` 记录本会话的角色名与 `chatId` 的绑定。 |
+
+例如，同一工作区的主会话 1 和 2 都运行 `dual_review`，读取同一份模板和角色蓝图。审核员 A（`reviewerA`）在两份花名册中绑定的是两个不同的 chat；在会话 1 用 `acp_chat_send` 指定 `role: reviewerA` 追问，只会续上会话 1 的审核。修改蓝图后，可在当前会话用 `acp_chat_close` 按角色解除绑定，下次派工时按新蓝图创建（D27）。
 
 ## 参考
 
