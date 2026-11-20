@@ -537,3 +537,25 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 - **steer 的 role**:`acp_chat_steer` 加可选 `role`(与 chatId 二选一),经本会话花名册解析;该角色尚未建会话时报「没有会话，因此没有可插话的轮」,不触发自动供给(插话的前提是已有在途轮)。
 - **未做**:工作流运行不进面板(各角色 chat 的轮次照常进面板与按轮日志);不支持步骤级超时与重试。
 
+### 修订(2026-11-20,进度事件对齐：方案 1,直接写官方 `tool-workflow/*` 记录)
+
+- **动机**:`acp_workflow` 目前只是一个静默的后台 job,用户等待时看不到进度。官方 workflow 在对话里有进度卡片(按阶段分组、成员启停、状态统计),由 `dsh-client-ui-workflow-run` 读会话日志里的 4 种 `tool-workflow/*` 记录折叠渲染。本插件写出同样的 4 种记录，就能复用官方界面，不写任何客户端代码。
+- **4 种记录**:官方 `packages/workflow/tool-workflow/src/types.ts` 中 `SessionEventMap` 的扩展;四个类型名已列入 `dsh-session` 的 `KNOWN_SESSION_EVENT_TYPES`(`src/known-event-types.ts`),官方承诺已发布的事件类型长期保留，读旧日志不会出错。
+  - `tool-workflow/run-start {runId, name}`
+  - `tool-workflow/agent-start {runId, seq, label, phase?, childId}`
+  - `tool-workflow/agent-end {runId, seq, outcome}`,`outcome` 取 `completed` / `failed` / `cancelled`
+  - `tool-workflow/run-end {runId, stopReason}`,`stopReason` 取 `completed` / `error` / `cancelled`
+- **映射**:
+  - `runId` 为每次运行新生成的随机 UUID,`name` 取模板名。
+  - 每个角色成员(parallel 步骤里的一个角色，或 `merge: role` 的合并角色)记一次 start 和一次 end;`seq` 在本次运行内从 1 递增，同一 seq 的 start 与 end 成对;`label` 为角色名;`phase` 为所在步骤的 id。
+  - `return_to_model` 合并不产生成员。
+  - `childId` 填 `acp-role:<角色名>`。这是一个稳定的占位值，不是真实的子会话 id;官方面板查不到对应会话，读代码推断该行会显示为不可点击(`WorkflowRunPanel.tsx` 按 `childId` 查会话与导航模式，查不到即无导航)。尚未在真实界面核对。
+  - 成员结局:角色轮 `completed` → `completed`;运行被取消(信号已中止，或轮以 `aborted` 结算)→ `cancelled`;其余(发送被拒、轮以 `error` 等结算)→ `failed`。
+  - 运行结局:工作流 `completed` → `completed`,`failed` → `error`,`aborted` → `cancelled`。
+- **写入时机**:只在模型直接调用(`exec.parent === undefined`,与官方一致)时写，写进调用方会话(`exec.agent.session`);被其他工具嵌套调用时不写。后台 job 路径另外在每个步骤开始时调 `job.updateProgress(<步骤 id>)`,任务列表里能看到当前步骤。
+- **降级**:任一次写入抛错时，经 `onWarn` 告警一次，并停写本次运行余下的记录，工作流照常执行、结果不变(与官方 recorder 的策略相同)。记录器不向引擎抛任何异常;引擎对观察者回调同样兜底。
+- **类型**:不新增 peer 依赖。把 `session.append` 收窄成 `(type, data) => void` 后强转调用，结构与官方 `types.ts` 逐字段一致。
+- **风险**:
+  - 借用的是官方事件名，格式变更不由本包控制;D2 升级 DSH peer 时须对照官方 `tool-workflow/src/types.ts` 核对这 4 种记录。
+  - 记录留在会话日志里，卸载本插件后，历史会话里的进度卡片仍会显示。
+  - 已评估：这 4 种类型在 `KNOWN_SESSION_EVENT_TYPES` 中，旧日志的读取有官方兼容保证。
