@@ -583,3 +583,59 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 ### 修订(2026-11-20,三方审核：未知字段严格校验)
 
 每一层映射(文件顶层、角色、模板、步骤、`merge`、`parallel` 里的对象项)都只接受已知字段，出现未知字段即判整份配置无效，报错写明字段名与允许的字段(如 `roles[0] has unknown field seed; allowed: name, backend, cwd, seeding`)。原因：把 `seeding` 写成 `seed` 时原先静默无播种。顶层允许可选的 `version`,给出时必须为 `1`(真机配置已在用)。同一步骤同时写 `merge` 与 `parallel` 报错(原先 `parallel` 被静默丢弃);merge 步骤的步骤级 `prompt` 也报错，合并指令应写在 `merge.prompt`。
+
+## D28 后端额度查询：先接 Codex(2026-11-20)
+
+### 动机
+
+多个后端并行干活时，用户需要知道各后端的额度用了多少。Codex `app-server` 提供只读的账户与额度方法，查询不消耗额度。kiro v3 不暴露账户额度(v2 有，但代价高),本次不接入，统一显示为 `unsupported`;用户已确认跳过。
+
+### Codex 额度接口
+
+字段形状取自本机 `codex-cli 0.170.0` 的 `codex app-server generate-ts` 生成的协议类型(`v2/GetAccountRateLimitsResponse.ts`、`RateLimitSnapshot.ts`、`RateLimitWindow.ts`、`GetAccountResponse.ts`、`Account.ts`):
+- `account/read`:回 `{ account, userId, requiresOpenaiAuth }`;`account` 为 `{ type: 'chatgpt', planType, … }`、`{ type: 'apiKey' }` 等，或 `null`。
+- `account/rateLimits/read {excludeResetCreditDetails: true}`:回 `{ rateLimits: RateLimitSnapshot, … }`;`RateLimitSnapshot` 含 `primary` / `secondary` 两个窗口 `{ usedPercent, windowDurationMins, resetsAt }`(`resetsAt` 为 unix 秒，可为 null)与 `planType`。`excludeResetCreditDetails` 是协议里专为后台轮询设的参数，跳过单独的重置额度明细查询。
+- **只读白名单**:连接层只新增 `readAccount()` 与 `readRateLimits()` 两个方法，各自固定发上面一个方法名;不暴露通用的请求入口。`consume`、`sendAddCreditsNudgeEmail` 等有副作用的账户方法，本包永远不会发。
+- 被动推送 `account/rateLimits/updated`(每轮结束后)本版不用。
+
+### 统一返回结构
+
+```ts
+{ backend: string, protocol: 'codex' | 'acp',
+  status: 'ok' | 'unsupported' | 'error',
+  plan?: string,         // 如 "prolite";chatgpt 账户取 account.planType,其他账户取 account.type,都没有时取 rateLimits.planType
+  usedPercent?: number,  // 不封顶，可超过 100
+  windowMins?: number,   // 如 10080(周窗口)
+  resetsAt?: number,     // unix 秒
+  fetchedAt: number,     // 本地毫秒时间戳
+  error?: string }       // status 为 error 时
+```
+
+- `backend` 为可回传给 `acp_chat_start` 的后端名(默认后端为 `default`,同 D24 修订)。
+- **一个数字代表哪个窗口**:Codex 同时报 `primary`(通常是 5 小时窗口)与 `secondary`(通常是周窗口)。返回结构只有一组 `usedPercent` / `windowMins` / `resetsAt`,取 `usedPercent` 更高的那个窗口(相同时取更长的窗口),也就是当前最先卡住的限制。两个窗口都没有时只给 `plan`。
+- ACP 后端(含 kiro 默认后端)一律 `status: 'unsupported'`,不发任何请求。
+
+### 缓存
+
+- 单层缓存，按后端存一条结果,TTL 5 分钟(`USAGE_TTL_MS`;失败结果为 1 分钟，避免故障时频繁起进程)。
+- 没有缓存时等本次读取完成;缓存过期时先返回旧结果，同时在后台刷新;同一后端同时只有一次读取在跑，并发请求共享它。
+- `refresh: true` 跳过缓存，等一次新的读取(仍与正在进行的读取共享)。
+- 缓存只在当前插件实例内存里，重启后重新读取。
+
+### 读取方式
+
+- 优先用池里该后端的活跃 Codex 连接直接发两个只读请求(JSON-RPC 允许与在途轮并发)。
+- 没有活跃连接时临时起一个 `codex app-server`(该后端的 command / args / env,工作目录为用户主目录):只做 `initialize` → 两个只读请求 → 关闭，不开线程、不落盘。临时进程不进池、不进注册表，用完即按销毁梯子关闭。
+- 单次读取上限 15 秒，超时记为 `error`。
+
+### 暴露面
+
+- 工具 `acp_backend_usage {backend?, refresh?}`:只读，并发安全，返回统一结构数组(给了 `backend` 就只含该后端，未知后端名报工具错误)。工具名固定，不跟 `toolPrefix`;**只在至少配置了一个 Codex 后端时注册**,所以没有 Codex 的安装工具面不变。
+- Remote `acpResume/usage(refresh?)`:面板用，返回同一结构数组。
+- 面板:ChatsPanel 头部每个 `ok` 或 `error` 的后端一行(如 `codex · prolite · 83%`,悬停显示窗口与重置时间;失败行显示「额度读取失败」,悬停显示原因),`unsupported` 不显示。面板拉额度与拉会话列表互不阻塞：额度慢或失败不影响列表。额度结果跟随既有轮询节奏，由宿主缓存兜住频率：面板开着时，每个 Codex 后端约 5 分钟读一次。
+
+### 不做
+
+- kiro 额度(等 v3 提供接口，或用户确认可以接受 v2 的代价)。
+- 通用 ACP 后端的 `usage_update`。
+- 被动推送 `account/rateLimits/updated`。
