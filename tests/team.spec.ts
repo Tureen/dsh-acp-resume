@@ -93,6 +93,14 @@ describe('team config (D27)', () => {
     })
   })
 
+  it('accepts role names in any script, such as Chinese, and still rejects other characters', () => {
+    const config = parseTeamConfig('roles:\n  - name: 调研员\n  - name: 审核员-2\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        parallel: [调研员, 审核员-2]\n', '/ws')
+    expect(config.roles.map(r => r.name)).toEqual(['调研员', '审核员-2'])
+    expect(config.templates[0]?.steps[0]).toMatchObject({ parallel: [{ role: '调研员' }, { role: '审核员-2' }] })
+    expect(() => parseTeamConfig('roles:\n  - name: 调研 员', '/ws')).toThrow('roles[0].name must be 1–32 letters, digits, _ or - (any script)')
+    expect(() => parseTeamConfig(`roles:\n  - name: ${'调'.repeat(33)}`, '/ws')).toThrow('roles[0].name must be')
+  })
+
   it('finds the file at most three levels up and treats a missing one as no configuration, silently', () => {
     const root = workspace()
     mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })

@@ -21,7 +21,8 @@ export const TEAM_CONFIG_FILE = join('.agents', 'acp-team.yml')
 /** Directories searched, the start directory included. */
 export const TEAM_CONFIG_SEARCH_LEVELS = 3
 
-const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
+/** Role names: Unicode letters and digits (any script, e.g. 调研员), `_` and `-`; 1–32 code points. */
+const NAME_PATTERN = /^[\p{L}\p{N}_-]{1,32}$/u
 /** Template params and step ids: the names a `{name}` placeholder can use. */
 const PLACEHOLDER_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
 
@@ -127,7 +128,7 @@ export function parseTeamConfig(text: string, root: string): TeamConfig {
 
 function role(raw: Record<string, unknown>, at: string, root: string): RoleBlueprint {
   const name = str(raw['name'], `${at}.name`, true) as string
-  if (!NAME_PATTERN.test(name)) throw new Error(`${at}.name must match [A-Za-z0-9_-]{1,32}`)
+  if (!NAME_PATTERN.test(name)) throw new Error(`${at}.name must be 1–32 letters, digits, _ or - (any script)`)
   const backend = str(raw['backend'], `${at}.backend`)
   const cwd = str(raw['cwd'], `${at}.cwd`)
   const seeding = str(raw['seeding'], `${at}.seeding`)

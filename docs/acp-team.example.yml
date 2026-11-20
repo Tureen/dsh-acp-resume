@@ -5,7 +5,7 @@
 # first reference and listed by acp_chat_list with a `role` column.
 
 roles:
-  # name: [A-Za-z0-9_-]{1,32}, unique. Address it as `role: reviewer` in
+  # name: 1-32 Unicode letters, digits, _ or - (Chinese such as 审核员 works), unique. Address it as `role: reviewer` in
   # acp_chat_send / acp_chat_close / acp_chat_steer, or from a template step.
   - name: reviewer
     # backend: optional; a configured backend name (omit for the default backend).
