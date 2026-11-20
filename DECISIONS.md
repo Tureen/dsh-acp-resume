@@ -579,3 +579,7 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
 - 原先 `.agents/acp-team.yml` 存在但校验失败时，模型只看到「no usable workspace team config」,会误以为没有这个文件。新增 `readTeamConfig` 返回三种结果:没找到、可用、无效(带文件路径与具体原因)。以 role 或模板名引用时，没找到的报 `no workspace team config (...) found from <目录>`,无效的报 `cannot resolve <role|template> <名>: workspace team config <路径> is invalid: <原因>`,同时仍经 `onWarn` 告警。「找不到文件时视为无配置」的语义不变。
 - `acp_chat_list`(`workflow: true` 且有调用会话时)在输出末尾加一行：可用时为 `workspace roles: <名1>, <名2>; templates: <模板>(<参数>), …`,文件无效时为 `workspace config error: <路径>: <原因>`,没有文件时不加。这一行每次 list 都重新读文件，不告警，也不缓存。
+
+### 修订(2026-11-20,三方审核：未知字段严格校验)
+
+每一层映射(文件顶层、角色、模板、步骤、`merge`、`parallel` 里的对象项)都只接受已知字段，出现未知字段即判整份配置无效，报错写明字段名与允许的字段(如 `roles[0] has unknown field seed; allowed: name, backend, cwd, seeding`)。原因：把 `seeding` 写成 `seed` 时原先静默无播种。顶层允许可选的 `version`,给出时必须为 `1`(真机配置已在用)。同一步骤同时写 `merge` 与 `parallel` 报错(原先 `parallel` 被静默丢弃);merge 步骤的步骤级 `prompt` 也报错，合并指令应写在 `merge.prompt`。

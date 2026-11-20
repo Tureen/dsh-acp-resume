@@ -101,6 +101,21 @@ describe('team config (D27)', () => {
     expect(() => parseTeamConfig(`roles:\n  - name: ${'调'.repeat(33)}`, '/ws')).toThrow('roles[0].name must be')
   })
 
+  it('rejects unknown fields at every level, naming the field and the allowed ones', () => {
+    expect(() => parseTeamConfig('roles:\n  - name: a\n    seed: hi\n', '/ws')).toThrow('roles[0] has unknown field seed; allowed: name, backend, cwd, seeding')
+    expect(() => parseTeamConfig('role:\n  - name: a\n', '/ws')).toThrow('file has unknown field role; allowed: version, roles, templates')
+    expect(() => parseTeamConfig('roles:\n  - name: a\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        parallel: [{ role: a, promt: x }]\n', '/ws')).toThrow('templates[0].steps[0].parallel[0] has unknown field promt')
+    expect(() => parseTeamConfig('roles:\n  - name: a\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        merge: { mode: role, role: a, extra: 1 }\n', '/ws')).toThrow('templates[0].steps[0].merge has unknown field extra')
+    expect(() => parseTeamConfig('version: 2\n', '/ws')).toThrow('version must be 1 when given')
+    expect(parseTeamConfig('version: 1\nroles:\n  - name: a\n', '/ws').roles).toHaveLength(1)
+  })
+
+  it('rejects a step that has both merge and parallel, or a step-level prompt on a merge', () => {
+    const base = 'roles:\n  - name: a\ntemplates:\n  - name: t\n    steps:\n      - id: s\n'
+    expect(() => parseTeamConfig(`${base}        parallel: [a]\n        merge: { mode: return_to_model }\n`, '/ws')).toThrow('templates[0].steps[0] has both merge and parallel; a step is one or the other')
+    expect(() => parseTeamConfig(`${base}        prompt: x\n        merge: { mode: return_to_model }\n`, '/ws')).toThrow('templates[0].steps[0] is a merge step; put its instruction in merge.prompt')
+  })
+
   it('finds the file at most three levels up and treats a missing one as no configuration, silently', () => {
     const root = workspace()
     mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })

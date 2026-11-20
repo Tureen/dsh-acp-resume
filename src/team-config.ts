@@ -146,11 +146,12 @@ export function describeTeamConfig(read: TeamConfigRead): string | undefined {
  */
 export function parseTeamConfig(text: string, root: string): TeamConfig {
   const doc: unknown = parse(text)
-  const top = doc === null || doc === undefined ? {} : record(doc, 'file')
-  const roles = list(top['roles'], 'roles').map((raw, i) => role(record(raw, `roles[${i}]`), `roles[${i}]`, root))
+  const top = doc === null || doc === undefined ? {} : record(doc, 'file', ['version', 'roles', 'templates'])
+  if (top['version'] !== undefined && top['version'] !== 1) throw new Error('version must be 1 when given')
+  const roles = list(top['roles'], 'roles').map((raw, i) => role(record(raw, `roles[${i}]`, ['name', 'backend', 'cwd', 'seeding']), `roles[${i}]`, root))
   unique(roles.map(r => r.name), 'role name')
   const known = new Set(roles.map(r => r.name))
-  const templates = list(top['templates'], 'templates').map((raw, i) => template(record(raw, `templates[${i}]`), `templates[${i}]`, known))
+  const templates = list(top['templates'], 'templates').map((raw, i) => template(record(raw, `templates[${i}]`, ['name', 'description', 'params', 'steps']), `templates[${i}]`, known))
   unique(templates.map(t => t.name), 'template name')
   return { root, roles, templates }
 }
@@ -173,7 +174,7 @@ function template(raw: Record<string, unknown>, at: string, roles: ReadonlySet<s
   const name = str(raw['name'], `${at}.name`, true) as string
   const params = list(raw['params'], `${at}.params`).map((p, i) => placeholderName(str(p, `${at}.params[${i}]`, true) as string, `${at}.params[${i}]`))
   unique(params, `param in ${at}`)
-  const steps = list(raw['steps'], `${at}.steps`).map((s, i) => step(record(s, `${at}.steps[${i}]`), `${at}.steps[${i}]`, roles))
+  const steps = list(raw['steps'], `${at}.steps`).map((s, i) => step(record(s, `${at}.steps[${i}]`, ['id', 'parallel', 'prompt', 'merge']), `${at}.steps[${i}]`, roles))
   if (steps.length === 0) throw new Error(`${at}.steps must not be empty`)
   unique(steps.map(s => s.id), `step id in ${at}`)
   // One namespace for {name} placeholders: a param and a step id may not share a name.
@@ -193,7 +194,10 @@ function step(raw: Record<string, unknown>, at: string, roles: ReadonlySet<strin
     return name
   }
   if (raw['merge'] !== undefined) {
-    const merge = record(raw['merge'], `${at}.merge`)
+    // A merge step is only a merge: a parallel list or a step-level prompt beside it would be dropped silently.
+    if (raw['parallel'] !== undefined) throw new Error(`${at} has both merge and parallel; a step is one or the other`)
+    if (raw['prompt'] !== undefined) throw new Error(`${at} is a merge step; put its instruction in merge.prompt`)
+    const merge = record(raw['merge'], `${at}.merge`, ['mode', 'role', 'prompt'])
     const mode = merge['mode']
     if (mode === 'return_to_model') return { id, merge: { mode } }
     if (mode === 'role') {
@@ -205,7 +209,7 @@ function step(raw: Record<string, unknown>, at: string, roles: ReadonlySet<strin
   const parallel = list(raw['parallel'], `${at}.parallel`).map((ref, i): RoleRef => {
     const where = `${at}.parallel[${i}]`
     if (typeof ref === 'string') return { role: knownRole(ref, where) }
-    const fields = record(ref, where)
+    const fields = record(ref, where, ['role', 'prompt'])
     const prompt = str(fields['prompt'], `${where}.prompt`)
     return { role: knownRole(str(fields['role'], `${where}.role`, true) as string, where), ...(prompt === undefined ? {} : { prompt }) }
   })
@@ -221,8 +225,11 @@ function placeholderName(name: string, at: string): string {
   return name
 }
 
-function record(value: unknown, at: string): Record<string, unknown> {
+/** A mapping with only `allowed` keys: an unknown key (a typo such as `seed` for `seeding`) is an error, not a silent no-op. */
+function record(value: unknown, at: string, allowed: readonly string[]): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${at} must be a mapping`)
+  const unknown = Object.keys(value).filter(key => !allowed.includes(key))
+  if (unknown.length > 0) throw new Error(`${at} has unknown field${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; allowed: ${allowed.join(', ')}`)
   return value as Record<string, unknown>
 }
 
