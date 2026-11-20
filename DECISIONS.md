@@ -639,3 +639,46 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - kiro 额度(等 v3 提供接口，或用户确认可以接受 v2 的代价)。
 - 通用 ACP 后端的 `usage_update`。
 - 被动推送 `account/rateLimits/updated`。
+
+## D29 侧边栏工作流面板(2026-11-20)
+
+### 动机
+
+工作流进度现在只出现在对话流里(D27 的官方进度卡片)。卡片会随对话滚走，看不到跨运行的概览，也没有从一次运行跳到某个角色会话的入口。D29 在侧边栏「ACP 会话」面板里加一个工作流区块：显示正在运行的工作流和最近几次结果，展开后能看到每一步的成员，点成员打开它的会话详情页签(D18)。
+
+### 存储
+
+- 文件：注册表旁的 `workflows/<ownerSessionId>.jsonl`,每个 DSH 会话一个。纪律与 D18 按轮日志相同：只追加、超量裁剪、坏行跳过、写失败只经 `onWarn` 告警，绝不影响工作流执行与结果。会话 id 不是安全文件名时(含路径分隔符等)不写，并告警。
+- 每次运行两行:
+  - `run-start {v:1, kind:'run-start', runId, template, startedAt, jobId?}`
+  - `run-end {v:1, kind:'run-end', runId, at, status, error?, steps}`,`status` 取 `completed` / `failed` / `aborted`;`steps` 为摘要 `[{ id, members: [{ role, chatId?, outcome }] }]`,`outcome` 取 `completed` / `failed` / `cancelled`;`return_to_model` 合并步骤没有成员。
+- **不存角色回答原文**(原文已在各角色 chat 的按轮日志里，靠 chatId 跳转查看);**不存 params**(可能含用户原文)。
+- 读取：按 runId 配对 start 与 end;有 start 而无 end、且当前池实例里也不在运行的，判为 `interrupted`(例如运行中途宿主重启)。返回最近 5 次(新的在前)。读取按文件 `mtimeMs:size` 缓存。
+- 裁剪：文件里的运行数超过 100 时，原子重写为最近 50 次运行(临时文件 + 改名)。
+- **孤儿清理**:purge 一个 chat 后，如果该 chat 的所属会话在注册表里已没有任何 chat,连带删除该会话的 `workflows/` 文件。这样工作流记录不会比它涉及的会话活得更久。
+
+### 运行中状态
+
+- 只在池实例内存里跟踪(与 D15 在途轮同规则),不落盘;池重启后丢失，对应文件里那次运行显示为 `interrupted`。
+- 跟踪器实现 `WorkflowObserver`(D27),记录当前步骤和已开始成员的角色、chatId 与结局;与官方进度记录器、后台 job 的进度行组合使用，互不影响。
+- **runId 共用**:由跟踪器生成，并传给官方进度记录器作为 `tool-workflow/*` 记录的 `runId`。侧栏条目和对话里的进度卡片因此一一对应。
+- 观察者的 `memberEnd` 加可选参数 `chatId`(来自该角色本次发送的结果),发送被拒、没有结果时为空。
+
+### Remote
+
+`acpResume/workflows(ownerSessionId)` → `{ running, recent }`。`running` 为该会话在本池实例中正在运行的工作流(`runId`、`template`、`startedAt`、`jobId?`、`currentStep?`、`steps`);`recent` 为最近 5 次已结束或中断的运行(`runId`、`template`、`startedAt`、`endedAt?`、`status`、`error?`、`steps`)。参数必须是非空字符串。
+
+### 界面(ChatsPanel 内的新区块)
+
+- 位置：活跃会话列表(及其「显示其余 N 个」折叠按钮)之后、已释放分组之前。会话没有任何运行中或最近的工作流时，整个区块不显示。
+- 区头:「工作流 · N 进行中」(没有运行中的时只写「工作流」)。
+- 运行中的行：官方转圈点 + 「模板名 · 当前步骤」+ 逐秒走的时长(复用 D18 修订里的在途时长组件，只在有运行中工作流时挂载)。
+- 最近结束的行(至多 5 条):`completed` 绿点、`failed` 红点、`aborted` 与 `interrupted` 橙点，加模板名与「N 分钟前」。
+- 单击一行在行内展开或收起：逐步列出步骤 id 与成员(角色名 + 短 chatId,带各自结局点);点击成员打开该 chat 的详情页签。展开状态只存在组件里。
+- 数据源：每个会话一个独立的工作流数据源，只在面板挂载时每 5 秒轮询 `acpResume/workflows`,内容没变时快照引用不变(D21);与会话列表的数据源互不影响。
+
+### 不做
+
+- 不在侧栏重跑或取消工作流(取消仍用 `job_kill`)。
+- 不展示角色回答原文(在会话详情页签里看)。
+- 不跨会话展示别的 DSH 会话的工作流(与 D20 的发现面一致)。
