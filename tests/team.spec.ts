@@ -218,7 +218,7 @@ describe('AcpSessionPool roles (D27)', () => {
     expect(pool.listRoster('session-a')).toEqual([])
     rmSync(crash)
     expect(() => { pool.assertRoleSendable('ghost', ctx(root)) }).toThrow(/unknown role ghost; roles defined in .*: reviewer, scout/)
-    expect(() => { pool.assertRoleSendable('reviewer', ctx(tempDir('acp-resume-team-empty-'))) }).toThrow(/no usable workspace team config/)
+    expect(() => { pool.assertRoleSendable('reviewer', ctx(tempDir('acp-resume-team-empty-'))) }).toThrow(/unknown role reviewer: no workspace team config \(\.agents\/acp-team\.yml\) found from /)
     const running = pool.sendByRole('reviewer', 'p', ctx(root))
     await expect(pool.sendByRole('reviewer', 'p2', ctx(root))).rejects.toThrow(/role reviewer is still being set up/)
     expect(() => { pool.assertRoleSendable('reviewer', ctx(root)) }).toThrow(/still being set up/)
@@ -250,6 +250,21 @@ describe('chat tools with roles (D27)', () => {
     expect((await call('list', {})).text).toMatch(new RegExp(`^role reviewer \\| ${chatId} \\| label "reviewer" \\| backend default \\| `))
     expect((await call('close', { role: 'reviewer' })).text).toBe(`role reviewer released (chat ${chatId}) and unbound; its next reference sets up a new chat from the workspace blueprint`)
     expect((await call('list', {})).text).toMatch(new RegExp(`^${chatId} \\| `))
+  })
+
+  it('tells the model what is wrong with an invalid team file instead of implying there is none', async () => {
+    const root = workspace('roles:\n  - name: reviewer\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        parallel: [ghost]\n')
+    const { call } = mount(root)
+    await expect(call('send', { role: 'reviewer', message: 'm' })).rejects.toThrow(/cannot resolve role reviewer: workspace team config .*acp-team\.yml is invalid: templates\[0\]\.steps\[0\]\.parallel\[0\] names unknown role ghost/)
+    expect((await call('list', {})).text).toMatch(/^no persistent chats\nworkspace config error: .*acp-team\.yml: templates\[0\]\.steps\[0\]\.parallel\[0\] names unknown role ghost$/)
+  })
+
+  it('ends the list with the workspace roles and templates, and adds nothing without a team file', async () => {
+    const { call } = mount(workspace())
+    expect((await call('list', {})).text).toBe('no persistent chats\nworkspace roles: reviewer, scout; templates: double-review(target)')
+    const bare = mount(tempDir('acp-resume-team-bare-'))
+    expect((await bare.call('list', {})).text).toBe('no persistent chats')
+    expect((await mount(workspace(), false).call('list', {})).text).toBe('no persistent chats')
   })
 
   it('takes exactly one of chatId and role, and role only with a calling session', async () => {

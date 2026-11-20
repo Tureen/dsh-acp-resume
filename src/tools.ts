@@ -26,6 +26,7 @@ import { freshSessionNotice, type AcpSessionPool, type PoolSendHooks, type PoolS
 import type { PermissionRequestResolver } from './permission-request.js'
 import { bindParams, runWorkflow, type WorkflowObserver, type WorkflowResult } from './workflow-engine.js'
 import { WorkflowRecorder, type RunStopReason } from './workflow-record.js'
+import { describeTeamConfig, readTeamConfig } from './team-config.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -462,7 +463,8 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
     name: `${toolPrefix}list`,
     description: `List persistent ACP chats created by the current DSH session: ${roles === undefined ? '' : 'role (for chats set up for a workspace role), '}chatId, label (if any), backend, state `
       + '(running with elapsed time, idle with a live process, or released), remote session id, last activity, '
-      + `and working directory. Released chats reconnect on their next ${toolPrefix}send.`,
+      + `and working directory. Released chats reconnect on their next ${toolPrefix}send.`
+      + (roles === undefined ? '' : ' A last line names the workspace roles and templates (with their params) defined in .agents/acp-team.yml, or the reason that file is invalid.'),
     parameters: {},
     output: {
       schema: {
@@ -484,10 +486,12 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
         ? pool.listChats()
         : pool.listChats().filter(chat => chat.ownerSessionId === ownerSessionId)
       const now = Date.now()
-      const text = chats.length === 0
+      const rows = chats.length === 0
         ? 'no persistent chats'
         : chats.map(chat => describeChat(chat, now, roles === undefined ? undefined : pool.roleOf(chat.chatId, ownerSessionId))).join('\n')
-      return { text }
+      // D27: name what the workspace offers, so the model need not guess role and template names.
+      const workspace = roles === undefined || exec.agent === undefined ? undefined : describeTeamConfig(readTeamConfig(roles.workspaceDirFor(exec.agent)))
+      return { text: workspace === undefined ? rows : `${rows}\n${workspace}` }
     },
   })
 

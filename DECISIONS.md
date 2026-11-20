@@ -574,3 +574,8 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
 - 后台回执末句改为 `Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.` 原句「end your reply now」会让想并行派发 A/B/C 的模型在发完 A 后就停下。适用于 `acp_chat_send` 与 `acp_workflow`。
 - `acp_workflow` 描述补结果语义：失败角色在步骤里显示为 `{error}`,一步内全部失败才整体失败;运行结束后角色保留会话与记忆，可用 `acp_chat_send role=…` 追问、`acp_chat_close role=…` 重置。删掉进度记录的事件名与 `session_event_read` 读法(那是实现细节，模型不需要),改为「进度以工作流卡片展示给用户，结果经 job_output 取」。
+
+### 修订(2026-11-20,三方审核：配置错误要传给模型，可用角色与模板要能被发现)
+
+- 原先 `.agents/acp-team.yml` 存在但校验失败时，模型只看到「no usable workspace team config」,会误以为没有这个文件。新增 `readTeamConfig` 返回三种结果:没找到、可用、无效(带文件路径与具体原因)。以 role 或模板名引用时，没找到的报 `no workspace team config (...) found from <目录>`,无效的报 `cannot resolve <role|template> <名>: workspace team config <路径> is invalid: <原因>`,同时仍经 `onWarn` 告警。「找不到文件时视为无配置」的语义不变。
+- `acp_chat_list`(`workflow: true` 且有调用会话时)在输出末尾加一行：可用时为 `workspace roles: <名1>, <名2>; templates: <模板>(<参数>), …`,文件无效时为 `workspace config error: <路径>: <原因>`,没有文件时不加。这一行每次 list 都重新读文件，不告警，也不缓存。

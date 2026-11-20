@@ -50,7 +50,7 @@ import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
-import { loadTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type Template } from './team-config.js'
+import { readTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -836,12 +836,23 @@ export class AcpSessionPool {
     return chat
   }
 
+  /**
+   * The caller's workspace team config, or a model-facing error that says
+   * whether the file is missing or what is wrong with it (the warning goes to `onWarn` too).
+   */
+  private teamConfig(what: string, context: RoleCallContext): TeamConfig {
+    const read = readTeamConfig(context.workspaceDir)
+    if (read.kind === 'ok') return read.config
+    if (read.kind === 'none') {
+      throw new Error(`acp-resume: unknown ${what}: no workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
+    }
+    this.opts.onWarn?.(`acp-resume: workspace team config ${read.path} is not usable (${read.error})`)
+    throw new Error(`acp-resume: cannot resolve ${what}: workspace team config ${read.path} is invalid: ${read.error}`)
+  }
+
   /** The workspace template `name` seen from the caller's working directory; throws a model-facing reason when there is none. */
   templateFor(name: string, context: RoleCallContext): Template {
-    const config = loadTeamConfig(context.workspaceDir, this.opts.onWarn)
-    if (config === undefined) {
-      throw new Error(`acp-resume: unknown template ${name}: no usable workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
-    }
+    const config = this.teamConfig(`template ${name}`, context)
     const template = config.templates.find(t => t.name === name)
     if (template === undefined) {
       const names = config.templates.map(t => t.name).join(', ')
@@ -852,10 +863,7 @@ export class AcpSessionPool {
 
   /** The workspace blueprint of `role`, on a configured backend; throws a model-facing reason otherwise. */
   private blueprintFor(role: string, context: RoleCallContext): RoleBlueprint {
-    const config = loadTeamConfig(context.workspaceDir, this.opts.onWarn)
-    if (config === undefined) {
-      throw new Error(`acp-resume: unknown role ${role}: no usable workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
-    }
+    const config = this.teamConfig(`role ${role}`, context)
     const blueprint = config.roles.find(r => r.name === role)
     if (blueprint === undefined) {
       const names = config.roles.map(r => r.name).join(', ')

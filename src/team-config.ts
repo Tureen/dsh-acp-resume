@@ -99,14 +99,43 @@ export function findTeamConfig(start: string): string | undefined {
  * @returns the configuration, or undefined for none (missing or unusable).
  */
 export function loadTeamConfig(start: string, onWarn?: (message: string) => void): TeamConfig | undefined {
+  const read = readTeamConfig(start)
+  if (read.kind === 'invalid') onWarn?.(`acp-resume: workspace team config ${read.path} is not usable (${read.error}); continuing without workspace roles`)
+  return read.kind === 'ok' ? read.config : undefined
+}
+
+/** The outcome of looking up the workspace team file: none found, usable, or found but invalid (with the reason). */
+export type TeamConfigRead =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ok'; readonly path: string; readonly config: TeamConfig }
+  | { readonly kind: 'invalid'; readonly path: string; readonly error: string }
+
+/**
+ * Look up and parse the workspace team file seen from `start`, keeping the
+ * reason an existing file is unusable, so model-facing errors can say what is
+ * wrong instead of implying there is no file. Never throws; never warns.
+ */
+export function readTeamConfig(start: string): TeamConfigRead {
   const path = findTeamConfig(start)
-  if (path === undefined) return undefined
+  if (path === undefined) return { kind: 'none' }
   try {
-    return parseTeamConfig(readFileSync(path, 'utf8'), dirname(dirname(path)))
+    return { kind: 'ok', path, config: parseTeamConfig(readFileSync(path, 'utf8'), dirname(dirname(path))) }
   } catch (error: unknown) {
-    onWarn?.(`acp-resume: workspace team config ${path} is not usable (${error instanceof Error ? error.message : String(error)}); continuing without workspace roles`)
-    return undefined
+    return { kind: 'invalid', path, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/**
+ * One line naming what the workspace offers, for `acp_chat_list`:
+ * `workspace roles: a, b; templates: t1(p1, p2), t2()`, or
+ * `workspace config error: <reason>`; undefined when there is no team file.
+ */
+export function describeTeamConfig(read: TeamConfigRead): string | undefined {
+  if (read.kind === 'none') return undefined
+  if (read.kind === 'invalid') return `workspace config error: ${read.path}: ${read.error}`
+  const roles = read.config.roles.map(r => r.name).join(', ') || '(none)'
+  const templates = read.config.templates.map(t => `${t.name}(${t.params.join(', ')})`).join(', ') || '(none)'
+  return `workspace roles: ${roles}; templates: ${templates}`
 }
 
 /**
