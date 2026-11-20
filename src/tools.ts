@@ -588,7 +588,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
 }
 
 /** Closing line of every background receipt: the model must end its reply, not block on the job (D22). */
-export const NO_WAIT_GUIDANCE = 'Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.'
+export const NO_WAIT_GUIDANCE = 'Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.'
 
 /** Name of the workflow tool (D27); fixed, not under the chat tools' prefix. */
 export const WORKFLOW_TOOL = 'acp_workflow'
@@ -655,9 +655,9 @@ export function chatWorkflowTool(
       + 'Steps run in order: a parallel step sends its prompt to each listed role at once (a role\'s chat is set up on first use), '
       + 'later steps see earlier results, and a merge step either returns everything to you or has one role merge it. '
       + 'Pass the template\'s params; every declared param is required. '
-      + 'Progress records are written to the calling session as structured events '
-      + '(tool-workflow/run-start, agent-start, agent-end, run-end). They carry no searchable text: '
-      + 'session_event_search cannot find them by query; use session_event_read by seq number to inspect them. '
+      + 'A role that failed shows as {error} inside its step; the run only fails when every role in a step failed. '
+      + 'Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset. '
+      + 'Progress is shown to the user as a workflow card; the result comes with job_output. '
       + (jobs === undefined
         ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
         : 'Returns at once with a background job id; you are woken in-session when it finishes, then read the JSON result with job_output without wait. '

@@ -569,3 +569,8 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 ### 修订(2026-11-20,回执明确禁止 wait_agent)
 
 真机验证：模型调 `acp_workflow` 拿到 jobId 后没有结束回复，而是调 `wait_agent`(30 秒、120 秒)等待，工作流要跑几分钟，两次都超时。`acp_workflow` 与 `acp_chat_send` 的后台回执末尾统一追加固定一句:`Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.` 门控层面的拦截见 D22 同日修订。
+
+### 修订(2026-11-20,三方审核：回执与工具描述措辞)
+
+- 后台回执末句改为 `Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.` 原句「end your reply now」会让想并行派发 A/B/C 的模型在发完 A 后就停下。适用于 `acp_chat_send` 与 `acp_workflow`。
+- `acp_workflow` 描述补结果语义：失败角色在步骤里显示为 `{error}`,一步内全部失败才整体失败;运行结束后角色保留会话与记忆，可用 `acp_chat_send role=…` 追问、`acp_chat_close role=…` 重置。删掉进度记录的事件名与 `session_event_read` 读法(那是实现细节，模型不需要),改为「进度以工作流卡片展示给用户，结果经 job_output 取」。

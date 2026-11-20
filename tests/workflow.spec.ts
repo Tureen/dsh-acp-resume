@@ -207,10 +207,12 @@ describe('acp_workflow and steer by role (D27)', () => {
     expect(pool.listChats()).toEqual([])
   })
 
-  it('tells the model in its description where progress records live and how to read them', () => {
+  it('tells the model in its description how partial failures, kept roles, and progress work', () => {
     const description = mount().tools.get('acp_workflow')?.description ?? ''
-    expect(description).toContain('tool-workflow/run-start')
-    expect(description).toContain('session_event_read')
+    expect(description).toContain('A role that failed shows as {error} inside its step; the run only fails when every role in a step failed.')
+    expect(description).toContain('Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset.')
+    expect(description).toContain('Progress is shown to the user as a workflow card; the result comes with job_output.')
+    expect(description).not.toMatch(/tool-workflow\/|session_event_/)
   })
 
   it('routes permission: ask requests of workflow roles (seeding included) to the caller\'s confirmation bridge', async () => {
@@ -353,7 +355,7 @@ describe('workflow progress records (D27, 2026-11-20)', () => {
     const receipt = await tool.execute({ template: 'chain', params: { target: 'X' } }, { signal: new AbortController().signal, agent: { id: 'session-a', session: sink().session } } as unknown as ToolRunContext) as { text: string }
     await done
     expect(receipt.text).toBe('workflow chain started as background job job-1. You are woken in-session when it finishes. '
-      + 'Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.')
+      + 'Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.')
     progress.length = 0
     const direct = sink()
     const nested = sink()
