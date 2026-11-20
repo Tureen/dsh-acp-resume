@@ -563,3 +563,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 ### 修订(2026-11-20,默认关闭)
 
 Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件，按用户要求改为显式开启(opt-in)。只有设了 `workflow: true` 才会有 `acp_workflow` 工具、现有工具的 `role` 参数、工作区 `.agents/acp-team.yml` 的读取、花名册与自动供给;默认状态下五个工具的定义与 D27 之前逐字节相同。已有的 `rosters` 节在关闭后保留在注册表里不被删除，重新开启后照常可用。
+
+### 修订(2026-11-20,回执明确禁止 wait_agent)
+
+真机验证：模型调 `acp_workflow` 拿到 jobId 后没有结束回复，而是调 `wait_agent`(30 秒、120 秒)等待，工作流要跑几分钟，两次都超时。`acp_workflow` 与 `acp_chat_send` 的后台回执末尾统一追加固定一句:`Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.` 门控层面的拦截见 D22 同日修订。

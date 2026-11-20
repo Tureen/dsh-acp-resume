@@ -377,7 +377,7 @@ export function chatSendTool(
       // The tool description carries the rest (ending the turn collects it, job_kill stops it); repeat only what this call decides.
       return {
         text: `message sent to ${what}; the answer runs as background job ${jobId}. `
-          + `You are woken in-session when it finishes. Do not send to this ${target.kind} again until then.`,
+          + `You are woken in-session when it finishes. Do not send to this ${target.kind} again until then. ${NO_WAIT_GUIDANCE}`,
         jobId,
       }
     },
@@ -587,6 +587,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
   return [start, list, close, steer]
 }
 
+/** Closing line of every background receipt: the model must end its reply, not block on the job (D22). */
+export const NO_WAIT_GUIDANCE = 'Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.'
+
 /** Name of the workflow tool (D27); fixed, not under the chat tools' prefix. */
 export const WORKFLOW_TOOL = 'acp_workflow'
 
@@ -686,7 +689,7 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
         },
       })
       return {
-        text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes.`,
+        text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes. ${NO_WAIT_GUIDANCE}`,
         jobId,
       }
     },

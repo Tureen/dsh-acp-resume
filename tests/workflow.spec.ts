@@ -310,6 +310,11 @@ describe('workflow progress records (D27, 2026-11-20)', () => {
       },
     }
     const tool = chatWorkflowTool(pool, { workspaceDirFor: () => root }, jobs as never)
+    const receipt = await tool.execute({ template: 'chain', params: { target: 'X' } }, { signal: new AbortController().signal, agent: { id: 'session-a', session: sink().session } } as unknown as ToolRunContext) as { text: string }
+    await done
+    expect(receipt.text).toBe('workflow chain started as background job job-1. You are woken in-session when it finishes. '
+      + 'Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.')
+    progress.length = 0
     const direct = sink()
     const nested = sink()
     const run = async (session: ReturnType<typeof sink>['session'], parent?: unknown): Promise<void> => {
