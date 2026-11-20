@@ -460,7 +460,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 
 | 层 | 载体 | 内容 | 谁写 |
 |---|---|---|---|
-| 插件层 | Config `workflow`(默认 `true`) | 是否启用角色与工作流功能;`false` 时工具面与 D27 之前逐字节相同 | 用户 |
+| 插件层 | Config `workflow`(默认 `false`;2026-11-20 修订：按用户要求改为 opt-in,原为默认 `true`) | 是否启用角色与工作流功能;`false` 时工具面与 D27 之前逐字节相同 | 用户 |
 | 工作区层 | `<工作区根>/.agents/acp-team.yml` | 角色蓝图(`roles`)与流程模板(`templates`);只是定义，不含任何实例 | 用户手写，插件给示例 `docs/acp-team.example.yml` |
 | 主会话层 | 注册表 `registry.json` 的 `rosters` 节 | 花名册：本会话把哪个角色实例化成了哪个 chat | 插件自动维护 |
 
@@ -559,3 +559,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
   - 借用的是官方事件名，格式变更不由本包控制;D2 升级 DSH peer 时须对照官方 `tool-workflow/src/types.ts` 核对这 4 种记录。
   - 记录留在会话日志里，卸载本插件后，历史会话里的进度卡片仍会显示。
   - 已评估：这 4 种类型在 `KNOWN_SESSION_EVENT_TYPES` 中，旧日志的读取有官方兼容保证。
+
+### 修订(2026-11-20,默认关闭)
+
+Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件，按用户要求改为显式开启(opt-in)。只有设了 `workflow: true` 才会有 `acp_workflow` 工具、现有工具的 `role` 参数、工作区 `.agents/acp-team.yml` 的读取、花名册与自动供给;默认状态下五个工具的定义与 D27 之前逐字节相同。已有的 `rosters` 节在关闭后保留在注册表里不被删除，重新开启后照常可用。

@@ -4,7 +4,7 @@
 
 ## 工作区角色与工作流
 
-在工作区根目录写 `.agents/acp-team.yml`,定义角色蓝图(名称、后端、工作目录、播种消息)和流程模板。模型可以按角色名派发任务：调用 `acp_chat_send` 时传 `role`,本会话首次引用某个角色会自动建会话并发送播种消息，之后直接复用。`acp_workflow` 按模板编排多个角色，如双审核、双路调研：同一步的角色并行执行，后一步能拿到前一步的结果，最后由模型或指定角色合并。示例见 [docs/acp-team.example.yml](acp-team.example.yml)。
+该功能默认关闭，需在插件配置里设 `workflow: true`。在工作区根目录写 `.agents/acp-team.yml`,定义角色蓝图(名称、后端、工作目录、播种消息)和流程模板。模型可以按角色名派发任务：调用 `acp_chat_send` 时传 `role`,本会话首次引用某个角色会自动建会话并发送播种消息，之后直接复用。`acp_workflow` 按模板编排多个角色，如双审核、双路调研：同一步的角色并行执行，后一步能拿到前一步的结果，最后由模型或指定角色合并。示例见 [docs/acp-team.example.yml](acp-team.example.yml)。
 
 ## 安装
 

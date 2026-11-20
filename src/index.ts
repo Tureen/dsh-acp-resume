@@ -154,10 +154,11 @@ export interface Config {
    */
   allowChatJobWait?: boolean
   /**
-   * Workspace roles and workflows (D27, default true): the chat tools accept a
-   * `role` from the workspace `.agents/acp-team.yml` instead of a chatId, and
-   * set up a role's chat on first reference. False keeps the tool definitions
-   * exactly as before D27.
+   * Workspace roles and workflows (D27). Off by default: set true to enable
+   * them. When on, the chat tools accept a `role` from the workspace
+   * `.agents/acp-team.yml` instead of a chatId, a role's chat is set up on
+   * first reference, and `acp_workflow` is registered. Off keeps every tool
+   * definition exactly as before D27 and reads no workspace team file.
    */
   workflow?: boolean
 }
@@ -194,7 +195,7 @@ export const Config: z<Config> = z.object({
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
   allowChatJobWait: z.boolean().default(false),
-  workflow: z.boolean().default(true),
+  workflow: z.boolean().default(false),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */

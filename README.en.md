@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.2.10. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 465 tests.
+Status: 0.2.11. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 465 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -62,7 +62,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         enableChatTools: true        # default true; when false only the one-shot provider is registered
         toolPrefix: acp_chat_        # default acp_chat_; the prefix of the five tool names
         allowChatJobWait: false      # default false; when false, job_output wait:true on a running acp-chat job is rejected (D22), true lifts the block
-        workflow: true               # default true; workspace roles (D27): send/close accept role instead of chatId and set up a role's chat from .agents/acp-team.yml on first reference; false keeps the pre-D27 tool definitions
+        workflow: false              # default false, enable explicitly; workspace roles and workflows (D27): send/close accept role instead of chatId and set up a role's chat from .agents/acp-team.yml on first reference; false keeps the pre-D27 tool definitions
         idleTimeoutMs: 600000        # default 600000; how long idle before the process is released
         disposeEofGraceMs: 6000      # default 6000; how long to wait for the child to wrap up by itself after stdin is closed
         disposeGraceMs: 3000         # default 3000; grace for observing failure/escalation signals, and also the upper bound close waits for an in-flight turn to settle
@@ -299,6 +299,8 @@ Capability is decoupled from mode: the plugin provides the capability (`acp_chat
 **Note**: the plugin inside the preset has no config and uses plugin defaults. To customize the command or backends, see the known risks in D26.
 
 ## Workspace roles (D27)
+
+Off by default: set `workflow: true` in the plugin config to enable the roles and workflows in this section.
 
 Put `.agents/acp-team.yml` in the workspace root (see [docs/acp-team.example.yml](docs/acp-team.example.yml)) with role blueprints: a name, an optional backend, a working directory, and a seeding message. The model can then call `acp_chat_send` (and `acp_chat_close`, `acp_chat_steer`) with `role: reviewer` instead of a chatId. On the first reference in a session, the plugin creates the chat from the blueprint, sends the seeding message, records the chat in the session's roster, and then sends the message; later references reuse that chat. `acp_chat_list` marks these chats with `role <name>`.
 

@@ -379,7 +379,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
   it('registers the inline send without a registry, the job-backed one while it is present, and inline again when it leaves', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-jobs-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, workflow: true })
     cleanups.push(() => fiber.dispose())
     await until(() => sendDescription(ctx) !== undefined, 'tool registration')
     expect(sendDescription(ctx)).toMatch(/await its final answer/)
