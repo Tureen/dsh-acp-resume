@@ -19,6 +19,7 @@ import { ChatDetail, ChatDetailTitle } from './ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, parseChatAddress } from './chat-address.ts'
 import { ChatsSource, type PanelRpc } from './chats-source.ts'
 import { ChatDetailSource } from './detail-source.ts'
+import { WorkflowsSource } from './workflows-source.ts'
 import type { ChatDetailInjected, ChatsPanelInjected, DetailSource } from './face.ts'
 import { en, PANEL_LOCALE, zh, type PanelCopyKey } from './locales.ts'
 
@@ -70,8 +71,23 @@ export function apply(ctx: Context): void {
   ctx.inject(['connection'], (scope) => {
     const source = new ChatsSource(scope.connection.rpc)
     scope.effect(() => () => { source.dispose() }, 'dsh-acp-resume.panel-source')
+    // One workflow source per on-screen session (D29); each polls only while its panel is mounted.
+    const workflowSources = new Map<string, WorkflowsSource>()
+    scope.effect(() => () => {
+      for (const workflows of workflowSources.values()) workflows.dispose()
+      workflowSources.clear()
+    }, 'dsh-acp-resume.workflow-sources')
+    const workflowsFor = (sessionId: string): WorkflowsSource => {
+      let workflows = workflowSources.get(sessionId)
+      if (workflows === undefined) {
+        workflows = new WorkflowsSource(scope.connection.rpc, sessionId)
+        workflowSources.set(sessionId, workflows)
+      }
+      return workflows
+    }
     const injectedFor = (sessionId: string | undefined): ChatsPanelInjected => ({
       hooks: { chats: source },
+      ...(sessionId === undefined ? {} : { workflows: workflowsFor(sessionId) }),
       // The seat is session-scoped: `inject(sessionId)` names the on-screen
       // session, used only for the panel's "this session" filter (D20).
       currentSessionId: sessionId,

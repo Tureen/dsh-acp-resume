@@ -155,8 +155,47 @@ export interface ChatDetailInjected {
 }
 
 /** What the slot registration injects (before the renderer binds `hooks`). */
+/** One step of a workflow run (D29): its members, never their answers. */
+export interface PanelWorkflowStep {
+  readonly id: string
+  readonly members: readonly { readonly role: string; readonly chatId?: string; readonly outcome?: 'completed' | 'failed' | 'cancelled' }[]
+}
+
+/** A workflow running in the host's pool instance. */
+export interface PanelRunningWorkflow {
+  readonly runId: string
+  readonly template: string
+  readonly startedAt: number
+  readonly jobId?: string
+  readonly currentStep?: string
+  readonly steps: readonly PanelWorkflowStep[]
+}
+
+/** A finished (or interrupted) workflow run. */
+export interface PanelWorkflowRun {
+  readonly runId: string
+  readonly template: string
+  readonly startedAt: number
+  readonly endedAt?: number
+  readonly status: 'completed' | 'failed' | 'aborted' | 'interrupted'
+  readonly error?: string
+  readonly steps: readonly PanelWorkflowStep[]
+}
+
+/** One session's workflows as the panel shows them (D29). */
+export interface WorkflowsSnapshot {
+  readonly status: 'loading' | 'ready' | 'error'
+  readonly running: readonly PanelRunningWorkflow[]
+  /** Newest first, at most five. */
+  readonly recent: readonly PanelWorkflowRun[]
+  /** Epoch ms of the fetch: the reference for relative and running times. */
+  readonly fetchedAt?: number
+}
+
 export interface ChatsPanelInjected {
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }
+  /** The viewing session's workflow runs (D29); absent without a session on screen. */
+  readonly workflows?: Observable<WorkflowsSnapshot>
   /** The DSH session viewing the panel (the seat's `inject` sessionId); `undefined` when none is on screen. */
   readonly currentSessionId: string | undefined
   /** Fetch now; the result arrives through `chats`. */

@@ -21,10 +21,11 @@ import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFOR
 import { ChatDetail, ChatDetailTitle, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
 import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
+import { WorkflowsSource } from '../src/client/workflows-source.ts'
 import { chatEqual, chatsEqual, detailSnapshotEqual, listSnapshotEqual } from '../src/client/snapshot-equal.ts'
 import type {
   ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
-  PanelChat, RunningItem, TabInfoHook, TurnItem,
+  PanelChat, RunningItem, TabInfoHook, TurnItem, WorkflowsSnapshot,
 } from '../src/client/face.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
@@ -203,6 +204,79 @@ describe('ChatsPanel', () => {
     await old.refresh()
     await new Promise(r => setTimeout(r, 0))
     expect(old.getSnapshot()).toEqual({ status: 'ready', chats: [chat()], fetchedAt: NOW })
+  })
+
+  describe('workflow block (D29)', () => {
+    const staticWorkflows = (snapshot: WorkflowsSnapshot): Observable<WorkflowsSnapshot> => ({ getSnapshot: () => snapshot, subscribe: () => () => {} })
+    const steps = [{ id: 'independent', members: [{ role: '审核员A', chatId: `chat-${UUID_A}`, outcome: 'completed' as const }, { role: '审核员B', chatId: `chat-${UUID_B}`, outcome: 'failed' as const }] }, { id: 'done', members: [] }]
+    const snapshot: WorkflowsSnapshot = {
+      status: 'ready',
+      fetchedAt: NOW,
+      running: [{ runId: 'run-live', template: 'dual_review', startedAt: NOW - 192_000, currentStep: 'independent', steps: [{ id: 'independent', members: [{ role: '审核员A' }] }] }],
+      recent: [
+        { runId: 'run-ok', template: 'chain', startedAt: NOW - 30 * 60_000, endedAt: NOW - 20 * 60_000, status: 'completed', steps },
+        { runId: 'run-bad', template: 'chain', startedAt: NOW - 3 * 3_600_000, endedAt: NOW - 2 * 3_600_000, status: 'failed', error: 'step independent: every role failed', steps: [] },
+        { runId: 'run-cut', template: 'chain', startedAt: NOW - 3 * 86_400_000, status: 'interrupted', steps: [] },
+      ],
+    }
+
+    it('renders nothing for a session without workflows, and lists running then recent rows with the documented dots', () => {
+      const { container, rerender } = render(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows({ status: 'ready', running: [], recent: [] }) })} />)
+      expect(container.querySelector('[data-workflows]')).toBeNull()
+      rerender(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows(snapshot) })} />)
+      const section = container.querySelector('[data-workflows]') as HTMLElement
+      expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe('工作流 · 1 进行中')
+      const rows = [...section.querySelectorAll('[data-workflow]')] as HTMLElement[]
+      expect(rows.map(r => r.getAttribute('data-workflow'))).toEqual(['run-live', 'run-ok', 'run-bad', 'run-cut'])
+      expect(rows.map(r => r.querySelector('[data-dot]')?.getAttribute('data-dot'))).toEqual(['ongoing', 'done', 'error', 'warning'])
+      expect(rows[0]?.textContent).toBe('dual_review · independent已运行 3分12秒')
+      expect(rows[1]?.textContent).toBe('chain20 分钟前')
+      expect((rows[2]?.querySelector('button') as HTMLElement).getAttribute('title')).toBe('失败: step independent: every role failed')
+      // The block sits after the active chats and before the released group.
+      const order = [...container.querySelectorAll('[data-chat-id], [data-workflows]')].map(el => el.hasAttribute('data-workflows') ? 'workflows' : 'chat')
+      expect(order).toEqual(['chat', 'workflows'])
+    })
+
+    it('expands a row into steps and members, and a member opens its chat detail tab', () => {
+      const info = tabInfo()
+      const { container } = render(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows(snapshot), useTabInfo: info.hook })} />)
+      fireEvent.click(within(container.querySelector('[data-workflow="run-ok"]') as HTMLElement).getByRole('button', { name: '展开工作流 chain' }))
+      const expanded = container.querySelector('[data-workflow="run-ok"] [data-workflow-steps]') as HTMLElement
+      expect(expanded.textContent).toBe('independent审核员A chat-a1b2c3d4审核员B chat-e5f6a7b8done · 交回模型')
+      expect([...expanded.querySelectorAll('[data-member] [data-dot]')].map(d => d.getAttribute('data-dot'))).toEqual(['done', 'error'])
+      fireEvent.click(within(expanded).getByRole('button', { name: '打开 审核员B 的会话' }))
+      expect(info.openResource).toHaveBeenCalledWith(chatAddress(`chat-${UUID_B}`))
+      fireEvent.click(within(container.querySelector('[data-workflow="run-ok"]') as HTMLElement).getByRole('button', { name: '收起工作流 chain' }))
+      expect(container.querySelector('[data-workflow="run-ok"] [data-workflow-steps]')).toBeNull()
+    })
+  })
+
+  it('WorkflowsSource polls acpResume/workflows for its session only while subscribed, keeping the reference for unchanged content', async () => {
+    vi.useFakeTimers()
+    const calls: unknown[] = []
+    let recent: unknown[] = []
+    const rpc: PanelRpc = {
+      call: async (_channel, endpoint, payload) => {
+        calls.push([endpoint, payload])
+        return { ok: true, value: { running: [], recent } }
+      },
+    }
+    const source = new WorkflowsSource(rpc, 'session-x', () => NOW)
+    const stop = source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toEqual([['acpResume/workflows', { args: { ownerSessionId: 'session-x' } }]])
+    const first = source.getSnapshot()
+    expect(first).toEqual({ status: 'ready', running: [], recent: [], fetchedAt: NOW })
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).toBe(first)
+    recent = [{ runId: 'r', template: 't', startedAt: 1, status: 'completed', steps: [] }]
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).not.toBe(first)
+    stop()
+    const count = calls.length
+    await vi.advanceTimersByTimeAsync(3 * POLL_INTERVAL_MS)
+    expect(calls).toHaveLength(count)
+    source.dispose()
   })
 
   it('counts the session chats by state in the header line', () => {

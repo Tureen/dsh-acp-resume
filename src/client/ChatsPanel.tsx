@@ -23,10 +23,10 @@
  * @module dsh-acp-resume/client/ChatsPanel
  */
 
-import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { chatAddress } from './chat-address.ts'
-import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, PanelUsage, SelectorHook, TabInfoHook } from './face.ts'
+import type { ChatsPanelInjected, ChatsSnapshot, Observable, PanelChat, PanelUsage, PanelWorkflowStep, SelectorHook, TabInfoHook, WorkflowsSnapshot } from './face.ts'
 import type { PanelTranslate } from './locales.ts'
 
 /** The panel's props: the injected face with `hooks.chats` bound to `useChats`, plus the locale seat. */
@@ -94,6 +94,16 @@ const styles = {
   controls: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   countNote: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
   usage: { display: 'flex', flexDirection: 'column', gap: 2 },
+  wfSection: { display: 'flex', flexDirection: 'column', gap: 6 },
+  wfHeading: { margin: 0, fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
+  wfRow: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
+  wfHead: { display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer', minWidth: 0 },
+  wfSteps: { display: 'flex', flexDirection: 'column', gap: 4, margin: 0, paddingLeft: 20, listStyle: 'none' },
+  wfStep: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
+  wfStepId: { fontWeight: 600 },
+  wfMeta: { color: 'var(--dsw-alias-label-tertiary)' },
+  wfMember: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+  wfMemberButton: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0, border: 0, background: 'transparent', font: 'inherit', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', textDecoration: 'underline' },
   usageError: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   elapsed: { flex: 'none', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
 } satisfies Record<string, CSSProperties>
@@ -260,6 +270,98 @@ function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | unde
   )
 }
 
+/** Dot of a finished run: green completed, red failed, orange cancelled or interrupted. */
+const RUN_DOT: Readonly<Record<'completed' | 'failed' | 'aborted' | 'interrupted', ChatDotState>> = { completed: 'done', failed: 'error', aborted: 'warning', interrupted: 'warning' }
+/** Dot of a member: by outcome; still running shows the spinner, never started (a finished run) grey. */
+const MEMBER_DOT: Readonly<Record<'completed' | 'failed' | 'cancelled', ChatDotState>> = { completed: 'done', failed: 'error', cancelled: 'warning' }
+const RUN_STATUS_COPY = { completed: 'workflowCompleted', failed: 'workflowFailed', aborted: 'workflowAborted', interrupted: 'workflowInterrupted' } as const
+
+function emptyWorkflows(): Observable<WorkflowsSnapshot> {
+  const snapshot: WorkflowsSnapshot = { status: 'ready', running: [], recent: [] }
+  return { getSnapshot: () => snapshot, subscribe: () => () => {} }
+}
+const NO_WORKFLOWS = emptyWorkflows()
+
+/** The expanded steps of one run: step id, then each member (role and short chat id) opening its chat. */
+function WorkflowSteps({ steps, running, onOpenChat, t }: { readonly steps: readonly PanelWorkflowStep[]; readonly running: boolean; readonly onOpenChat: (chatId: string) => void; readonly t: PanelTranslate }): ReactNode {
+  return (
+    <ul style={styles.wfSteps} data-workflow-steps>
+      {steps.map(step => (
+        <li key={step.id} style={styles.wfStep}>
+          <span style={styles.wfStepId}>{step.id}</span>
+          {step.members.length === 0 ? <span style={styles.wfMeta}> · {t('workflowNoMembers')}</span> : null}
+          {step.members.map((member, index) => {
+            const dot: ChatDotState = member.outcome === undefined ? (running ? 'ongoing' : 'idle') : MEMBER_DOT[member.outcome]
+            const label = member.chatId === undefined ? member.role : `${member.role} ${shortChatId(member.chatId)}`
+            return member.chatId === undefined
+              ? <span key={index} style={styles.wfMember} data-member={member.role}><ChatStateDot state={dot} />{label}</span>
+              : (
+                <button key={index} type="button" style={styles.wfMemberButton} data-member={member.role} aria-label={t('workflowOpenMember', { role: member.role })}
+                  onClick={(event: MouseEvent) => { event.stopPropagation(); onOpenChat(member.chatId as string) }}>
+                  <ChatStateDot state={dot} />{label}
+                </button>
+              )
+          })}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * The panel's workflow block (D29): heading with the running count, running
+ * rows (spinner, `template · step`, live time), then up to five finished
+ * rows (outcome dot, template, relative time). A click toggles a row's steps
+ * and members; a member opens its chat's detail tab. Nothing renders when the
+ * session has no workflow.
+ */
+function WorkflowsSection({ source, onOpenChat, t }: { readonly source: Observable<WorkflowsSnapshot>; readonly onOpenChat: (chatId: string) => void; readonly t: PanelTranslate }): ReactNode {
+  const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
+  if (snapshot.running.length === 0 && snapshot.recent.length === 0) return null
+  const now = snapshot.fetchedAt ?? 0
+  const toggle = (runId: string): void => {
+    setOpen((current) => {
+      const next = new Set(current)
+      if (next.has(runId)) next.delete(runId)
+      else next.add(runId)
+      return next
+    })
+  }
+  const row = (runId: string, template: string, dot: ChatDotState, body: ReactNode, title: string | undefined, steps: readonly PanelWorkflowStep[], running: boolean): ReactNode => {
+    const expanded = open.has(runId)
+    return (
+      <li key={runId} style={styles.wfRow} data-workflow={runId}>
+        <button type="button" style={styles.wfHead} aria-expanded={expanded} title={title}
+          aria-label={t(expanded ? 'workflowCollapse' : 'workflowExpand', { template })} onClick={() => { toggle(runId) }}>
+          <ChatStateDot state={dot} />
+          {body}
+        </button>
+        {expanded ? <WorkflowSteps steps={steps} running={running} onOpenChat={onOpenChat} t={t} /> : null}
+      </li>
+    )
+  }
+  return (
+    <section style={styles.wfSection} data-workflows>
+      <h3 style={styles.wfHeading}>{snapshot.running.length === 0 ? t('workflowsHeading') : t('workflowsRunning', { count: snapshot.running.length })}</h3>
+      <ul style={styles.list}>
+        {snapshot.running.map(run => row(run.runId, run.template, 'ongoing', (
+          <>
+            <span style={styles.name}>{run.currentStep === undefined ? run.template : `${run.template} · ${run.currentStep}`}</span>
+            <LiveElapsed startedAt={run.startedAt} now={now} t={t} />
+          </>
+        ), undefined, run.steps, true))}
+        {snapshot.recent.map(run => row(run.runId, run.template, RUN_DOT[run.status], (
+          <>
+            <span style={styles.name}>{run.template}</span>
+            <span style={styles.elapsed}>{relativeTime(t, run.endedAt ?? run.startedAt, now)}</span>
+          </>
+        ), run.error === undefined ? t(RUN_STATUS_COPY[run.status]) : `${t(RUN_STATUS_COPY[run.status])}: ${run.error}`, run.steps, false))}
+      </ul>
+    </section>
+  )
+}
+
 /**
  * The row's hover text (native `title`): the in-flight message's first line
  * (`当前:…`) or the first-turn title, then state, turn count, and last activity.
@@ -309,7 +411,7 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCa
  * @param props - bound chats hook, commands, and copy.
  * @returns the panel body.
  */
-export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, close, purge, t }: ChatsPanelProps): ReactNode {
+export function ChatsPanel({ useChats, useTabInfo, currentSessionId, workflows, refresh, close, purge, t }: ChatsPanelProps): ReactNode {
   const snapshot = useChats(s => s)
   const { tab } = useTabInfo()
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set())
@@ -396,6 +498,7 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
                   {activeOpen ? t('collapseActive') : t('showRest', { count: activeChats.length - ACTIVE_FOLD_SHOWN })}
                 </Button>
               )}
+              <WorkflowsSection source={workflows ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
               {releasedChats.length === 0 ? null : (
                 <>
                   <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={releasedOpen}
