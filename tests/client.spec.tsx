@@ -37,6 +37,19 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   // Read-only badge and status dot: stand-ins that expose tone/state for assertions.
   Tag: ({ children, tone }: { children?: ReactNode; tone?: string }) => <span data-tag data-tone={tone}>{children}</span>,
   StateDot: ({ state }: { state: string }) => <span data-state-dot data-state={state} aria-hidden="true" />,
+  // Menu stand-in: the anchor, then (while open) a menu of item buttons; a separator renders as <hr>.
+  Menu: ({ open, anchor, items = [], onSelect }: { open: boolean; anchor: ReactNode; items?: readonly { id: string; type?: string; label?: ReactNode; disabled?: boolean; danger?: boolean }[]; onSelect?: (id: string) => void }) => (
+    <>
+      {anchor}
+      {open ? (
+        <div role="menu">
+          {items.map(item => item.type === 'separator'
+            ? <hr key={item.id} data-separator />
+            : <button key={item.id} type="button" role="menuitem" disabled={item.disabled} data-danger={item.danger ? '' : undefined} onClick={() => { onSelect?.(item.id) }}>{item.label}</button>)}
+        </div>
+      ) : null}
+    </>
+  ),
 }))
 
 afterEach(() => {
@@ -929,7 +942,14 @@ function detailProps(source: DetailSource, overrides: Partial<ChatDetailProps> =
   return { injected, info }
 }
 
-describe('ChatDetail (D18)', () => {
+describe('ChatDetail (D18, D30 density)', () => {
+  /** Open the header's "⋯" menu and pick an item. */
+  const pick = (label: string): void => {
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: label }))
+  }
+  const head = (container: HTMLElement, seq: number): HTMLElement => container.querySelector(`[data-seq="${seq}"] [data-turn-head]`) as HTMLElement
+
   it('uses the same five-state dot as the panel: a running entry is ongoing, attention outranks liveness', () => {
     const state = (snapshot: DetailSnapshot): string | null | undefined => {
       const { container, unmount } = render(<ChatDetail {...detailProps(fakeSource(snapshot)).injected} />)
@@ -943,264 +963,210 @@ describe('ChatDetail (D18)', () => {
     expect(state(detailSnapshot({ chat: chat({ active: false }) }))).toBe('released')
   })
 
-  it('shows the chat identity and meta, turns newest first with status tags, fresh badge, and a reconnect event set apart', () => {
+  it('shows one identity line and one meta line; ids, cwd, and state move into the name\'s hover text; no refresh button', () => {
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1)] })))
+    const { container } = render(<ChatDetail {...injected} />)
+    const heading = screen.getByRole('heading', { level: 2 })
+    expect(heading.textContent).toBe('审阅')
+    expect(heading.getAttribute('title')).toBe(`chat-${UUID_A}\ncwd /tmp\n远端 4fb07582-1111-4111-8111-111111111111\n活跃`)
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 轮 · 3 分钟前')
+    // Gone from the body: cwd, remote id, first-turn line, the section's turn count, the refresh button.
+    expect(container.textContent).not.toMatch(/cwd|远端|首轮/)
+    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull()
+    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('轮次记录')
+  })
+
+  it('names the chat like the list (label, then title, then short id) and names the backend only with several', () => {
+    const name = (row: PanelChat): string => {
+      const { unmount } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: row }))).injected} />)
+      const text = screen.getByRole('heading', { level: 2 }).textContent ?? ''
+      unmount()
+      return text
+    }
+    expect(name(chat({ title: '首轮问题' }))).toBe('首轮问题')
+    expect(name(chat())).toBe('chat-a1b2c3d4')
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ turnCount: 4, backend: 'review', backendDisplay: 'review', backendCount: 2 }) }))).injected} />)
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('review · 4 轮 · 3 分钟前')
+  })
+
+  it('lists turns newest first as two borderless lines: question with time and non-completed tags, answer; events as one line on a rail', () => {
     const entries = [turn(1), lostEvent(2), turn(3, { stopReason: 'aborted', freshSession: true, message: '再问一次', output: '' })]
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries })))
     const { container } = render(<ChatDetail {...injected} />)
-    // Zone 1: identity is the heading, with a state dot and the short id beside it.
-    expect((screen.getByRole('heading', { level: 2 })).textContent).toBe('审阅')
-    expect(container.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('idle')
-    expect(screen.getByText('chat-a1b2c3d4')).toBeTruthy()
-    // Zone 2: meta strip, quiet and factual.
-    expect(screen.getByText('活跃')).toBeTruthy()
-    expect(screen.getByText('首轮:记住暗号P')).toBeTruthy()
-    expect(screen.getByText('cwd /tmp')).toBeTruthy()
-    expect(screen.getByText('远端 4fb07582')).toBeTruthy()
-    // Zone 3: turns newest first; events keep their place in the sequence.
     expect([...container.querySelectorAll('li')].map(li => li.getAttribute('data-seq'))).toEqual(['3', '2', '1'])
-    // Stop reason is a status tag, not run-together text; time and seq are demoted.
-    const card3 = container.querySelector('[data-seq="3"]') as HTMLElement
-    expect(within(card3).getByText('已取消').closest('[data-tag]')?.getAttribute('data-tone')).toBe('neutral')
-    expect(within(card3).getByText('新会话').closest('[data-tag]')?.getAttribute('data-tone')).toBe('info')
-    expect(within(card3).getByText('#3')).toBeTruthy()
-    expect(within(card3).getByText('9 分钟前')).toBeTruthy()
-    const card1 = container.querySelector('[data-seq="1"]') as HTMLElement
-    expect(within(card1).getByText('已完成').closest('[data-tag]')?.getAttribute('data-tone')).toBe('success')
-    // Collapsed Q/A previews carry labelled first lines.
-    expect(within(card1).getByText('问题1')).toBeTruthy()
-    expect(within(card1).getByText('回答1')).toBeTruthy()
-    expect(within(card3).getByText('(无回答文本)')).toBeTruthy()
-    // The reconnect event is an event card with a "connection" tag, visually set
-    // apart from turns: no expand control, no Q/A structure.
+    const row3 = container.querySelector('[data-seq="3"]') as HTMLElement
+    expect(within(row3).getByText('已取消').closest('[data-tag]')?.getAttribute('data-tone')).toBe('neutral')
+    expect(within(row3).getByText('新会话').closest('[data-tag]')?.getAttribute('data-tone')).toBe('info')
+    expect(within(row3).getByText('9 分钟前')).toBeTruthy()
+    expect(row3.querySelector('[data-answer]')?.textContent).toBe('(无回答文本)')
+    // The seq moved into the hover text; no Q/A labels, no border around the row.
+    expect(row3.textContent).not.toContain('#3')
+    expect(head(container, 3).getAttribute('title')).toBe('#3')
+    expect(row3.style.border).toBe('')
+    expect(row3.style.borderBottom).toMatch(/1px solid/)
+    const row1 = container.querySelector('[data-seq="1"]') as HTMLElement
+    expect(row1.querySelector('[data-tag]')).toBeNull()
+    expect(row1.querySelector('[data-question]')?.textContent).toBe('问题1')
+    expect(row1.querySelector('[data-answer]')?.textContent).toBe('回答1')
+    expect(within(row1).queryByText(/^[问答]$/)).toBeNull()
     const event = container.querySelector('[data-event="session-lost"]') as HTMLElement
-    expect(within(event).queryByRole('button')).toBeNull()
-    expect(within(event).queryByText('问')).toBeNull()
-    expect(within(event).getByText('连接').closest('[data-tag]')?.getAttribute('data-tone')).toBe('warning')
-    expect(within(event).getByText('远端会话已丢失,已新开会话')).toBeTruthy()
-    expect(within(event).getByText('5 分钟前')).toBeTruthy()
-    // An event sits in a distinct left-rail container, not the turn-card style.
-    expect((event.getAttribute('style') ?? '')).toMatch(/border-left/)
+    expect(event.querySelector('[data-tag]')).toBeNull()
+    expect(event.textContent).toBe('远端会话已丢失,已新开会话5 分钟前')
+    expect(event.style.borderLeft).toMatch(/3px solid/)
   })
 
-  it('puts a running message above history and expands its full text locally', async () => {
-    const running: RunningItem = { kind: 'running', startedAt: NOW - 90_000, message: `第一行\n${'长文本'.repeat(80)}` }
+  it('puts a running entry on top with a spinner, its first line, and a live timer; the meta line switches to running', async () => {
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: `第一行\n${'长文本'.repeat(80)}` }
     const source = fakeSource(detailSnapshot({ entries: [running, turn(1)] }))
-    const { injected } = detailProps(source)
-    const { container } = render(<ChatDetail {...injected} />)
-    const cards = [...container.querySelectorAll('li')]
-    expect(cards[0]?.hasAttribute('data-running')).toBe(true)
-    expect(within(cards[0] as HTMLElement).getByText('进行中')).toBeTruthy()
-    expect(within(cards[0] as HTMLElement).getByText('已运行 1分30秒')).toBeTruthy()
-    expect(within(cards[0] as HTMLElement).getByText('第一行')).toBeTruthy()
-    await act(async () => { fireEvent.click(within(cards[0] as HTMLElement).getByRole('button', { name: '展开进行中的消息' })) })
-    expect((cards[0] as HTMLElement).querySelector('[data-running-full]')?.textContent).toBe(running.message)
+    const { container } = render(<ChatDetail {...detailProps(source).injected} />)
+    const top = container.querySelector('li') as HTMLElement
+    expect(top.hasAttribute('data-running')).toBe(true)
+    expect(top.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('ongoing')
+    expect(within(top).getByText('第一行')).toBeTruthy()
+    expect(within(top).getByText('已运行 1分20秒')).toBeTruthy()
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分20秒')
+    await act(async () => { fireEvent.click(within(top).getByRole('button', { name: '展开进行中的消息' })) })
+    expect(top.querySelector('[data-running-full]')?.textContent).toBe(running.message)
     expect(source.loadEntry).not.toHaveBeenCalled()
+  })
+
+  it('ticks the running time each second, and runs no timer without a turn in flight', () => {
+    vi.useFakeTimers({ now: NOW })
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: 'm' }
+    const { container, unmount } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [running] }))).injected} />)
+    act(() => { vi.advanceTimersByTime(3_000) })
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分23秒')
+    unmount()
+    render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(1)] }))).injected} />)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('shows a reconnect failure with the unsent message', () => {
     const failed: EventItem = { seq: 1, kind: 'event', event: 'reconnect-failed', at: NOW - 60_000 * 2, message: '继续', error: 'process exited' }
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [failed] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    const event = container.querySelector('[data-event="reconnect-failed"]') as HTMLElement
-    expect(within(event).getByText('连接')).toBeTruthy()
-    expect(within(event).getByText('重连失败:process exited · 未能发送:继续')).toBeTruthy()
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [failed] }))).injected} />)
+    expect((container.querySelector('[data-event="reconnect-failed"]') as HTMLElement).textContent).toBe('重连失败:process exited · 未能发送:继续2 分钟前')
   })
 
-  it('shows a placeholder for an empty log, and none while loading', () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot()))
-    const { unmount } = render(<ChatDetail {...injected} />)
-    expect(screen.getByText('暂无轮次记录(此前的轮次没有被记录)。')).toBeTruthy()
+  it('shows one grey line for an empty log, and none while loading', () => {
+    const { unmount } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot())).injected} />)
+    expect(screen.getByText('暂无轮次记录')).toBeTruthy()
     unmount()
-    const loading = detailProps(fakeSource({ status: 'loading', entries: [], total: 0 }))
-    render(<ChatDetail {...loading.injected} />)
-    expect(screen.queryByText('暂无轮次记录(此前的轮次没有被记录)。')).toBeNull()
+    render(<ChatDetail {...detailProps(fakeSource({ status: 'loading', entries: [], total: 0 })).injected} />)
+    expect(screen.queryByText('暂无轮次记录')).toBeNull()
     expect(screen.getByText('正在读取…')).toBeTruthy()
   })
 
-  it('the primary expand entry is a bottom button on the reading line, which toggles to a collapse button in place', async () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    const foot = within(card).getByRole('button', { name: '展开第 1 条' })
-    // It is the bottom-of-card button (not the header row), carrying the hint text.
-    expect(foot.getAttribute('data-turn-foot')).toBe('')
-    expect(foot.textContent).toContain('展开查看全文')
-    expect(foot.getAttribute('aria-expanded')).toBe('false')
-    await act(async () => { fireEvent.click(foot) })
-    // Same place becomes a collapse button once open.
-    const collapse = within(card).getByRole('button', { name: '收起第 1 条' })
-    expect(collapse.getAttribute('data-turn-foot')).toBe('')
-    expect(collapse.textContent).toBe('收起')
-    expect(collapse.getAttribute('aria-expanded')).toBe('true')
-    await act(async () => { fireEvent.click(collapse) })
-    expect(within(card).getByRole('button', { name: '展开第 1 条' }).getAttribute('aria-expanded')).toBe('false')
+  it('marks a cut turn with "full text · N lines" at the end of the answer line, and a fully shown one with nothing', () => {
+    const entries = [turn(1, { message: '一\n二\n三', messageMore: true }), turn(2, { message: '就一行', output: '也一行' })]
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
+    expect(container.querySelector('[data-seq="1"] [data-full-hint]')?.textContent).toBe('全文 · 3 行')
+    expect(container.querySelector('[data-seq="2"] [data-full-hint]')).toBeNull()
   })
 
-  it('shows a line count on the expand button for a multi-line body', () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: '一\n二\n三', messageMore: true })] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByRole('button', { name: '展开第 1 条' }).textContent).toBe('展开查看全文 · 共 3 行')
+  it('toggles a turn from its whole row (click or Enter), and the open turn ends with a collapse button', async () => {
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] }))).injected} />)
+    const row = head(container, 1)
+    expect(row.getAttribute('role')).toBe('button')
+    expect(row.getAttribute('tabindex')).toBe('0')
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => { fireEvent.click(row) })
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-seq="1"] [data-full-hint]')).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '收起第 1 条' })) })
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => { fireEvent.keyDown(row, { key: 'Enter' }) })
+    expect(row.getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('the turn header row toggles the turn and carries aria-expanded; there is no corner chevron', async () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    const head = card.querySelector('[data-turn-head]') as HTMLElement
-    expect(head.getAttribute('role')).toBe('button')
-    expect(head.getAttribute('aria-expanded')).toBe('false')
-    expect(head.getAttribute('tabindex')).toBe('0')
-    // The corner chevron is gone entirely: the header row is clickable, no angle marker.
-    expect(card.querySelector('[data-chevron]')).toBeNull()
-    expect(card.textContent).not.toContain('▾')
-    expect(within(head).queryByRole('button')).toBeNull()
-    await act(async () => { fireEvent.click(head) })
-    expect(head.getAttribute('aria-expanded')).toBe('true')
-    expect(container.querySelector('[data-seq="1"] [data-full="message"]')).not.toBeNull()
-    // Keyboard reaches the row.
-    await act(async () => { fireEvent.keyDown(head, { key: 'Enter' }) })
-    expect(head.getAttribute('aria-expanded')).toBe('false')
-    // The row's only clickability cue is its pointer cursor and a hover tint.
-    expect(head.style.cursor).toBe('pointer')
-    expect(head.style.background).toBe('')
-    fireEvent.mouseEnter(head)
-    expect(head.style.background).not.toBe('')
-    fireEvent.mouseLeave(head)
-    expect(head.style.background).toBe('')
+  it('keeps at most one turn open: opening another closes the first', async () => {
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(1), turn(2)] }))).injected} />)
+    await act(async () => { fireEvent.click(head(container, 1)) })
+    expect(container.querySelectorAll('[data-open]')).toHaveLength(1)
+    await act(async () => { fireEvent.click(head(container, 2)) })
+    expect([...container.querySelectorAll('[data-open]')].map(li => li.getAttribute('data-seq'))).toEqual(['2'])
   })
 
-  it('a fully-shown turn offers no expand button; its header still toggles', async () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: '就一行', output: '也一行' })] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    expect(within(card).queryByRole('button', { name: /^展开第 1 条$/ })).toBeNull()
-    expect(card.querySelector('[data-turn-foot]')).toBeNull()
-    // The header still responds (it opens the same full regions, harmless when short).
-    await act(async () => { fireEvent.click(card.querySelector('[data-turn-head]') as HTMLElement) })
-    expect(container.querySelector('[data-seq="1"] [data-full="message"]')).not.toBeNull()
-    // Open state offers the collapse button at the tail.
-    expect(within(card).getByRole('button', { name: '收起第 1 条' }).textContent).toBe('收起')
-  })
-
-  it('previews show the first non-empty line, not a raw character slice of a multi-line message', () => {
-    const multi = turn(1, { message: '\n  首行问题  \n第二行不该出现\n第三行', output: '首行回答\n第二行回答' })
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [multi] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    expect(within(card).getByText('首行问题')).toBeTruthy()
-    expect(within(card).queryByText(/第二行不该出现/)).toBeNull()
-    expect(within(card).getByText('首行回答')).toBeTruthy()
-    // A multi-line body is expandable even when the first line is short.
-    expect(within(card).getByRole('button', { name: '展开第 1 条' })).toBeTruthy()
-  })
-
-  it('expands a turn on click: full text fetched once when the preview is cut, no fetch when it is complete', async () => {
-    const cut = turn(1, { message: '问…', output: '答…', messageMore: true, outputMore: true })
-    const whole = turn(2)
-    const source = fakeSource(detailSnapshot({ entries: [cut, whole] }))
-    const { injected } = detailProps(source)
-    const { container } = render(<ChatDetail {...injected} />)
+  it('fetches the full text once when the preview is cut, and never when it is complete', async () => {
+    const source = fakeSource(detailSnapshot({ entries: [turn(1, { message: '问…', output: '答…', messageMore: true, outputMore: true }), turn(2)] }))
+    const { container } = render(<ChatDetail {...detailProps(source).injected} />)
     expect(container.querySelector('[data-full]')).toBeNull()
-
-    // The cut turn has a bottom expand button; the whole turn is opened from its header row.
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 1 条' })) })
+    await act(async () => { fireEvent.click(head(container, 1)) })
     expect(source.loadEntry).toHaveBeenCalledWith(1)
-    // The full text sits in labelled, scrollable regions that keep line breaks.
     expect(container.querySelector('[data-seq="1"] [data-full="message"]')?.textContent).toBe('完整问题1')
     expect(container.querySelector('[data-seq="1"] [data-full="output"]')?.textContent).toBe('完整回答1')
-
-    // Collapse, expand again: no second fetch.
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '收起第 1 条' })) })
-    expect(container.querySelector('[data-seq="1"] [data-full]')).toBeNull()
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 1 条' })) })
+    await act(async () => { fireEvent.click(head(container, 1)) })
+    await act(async () => { fireEvent.click(head(container, 1)) })
     expect(source.loadEntry).toHaveBeenCalledTimes(1)
-
-    // A turn whose preview is complete shows its text without asking the host (opened from the header row).
-    await act(async () => { fireEvent.click(container.querySelector('[data-seq="2"] [data-turn-head]') as HTMLElement) })
+    await act(async () => { fireEvent.click(head(container, 2)) })
     expect(source.loadEntry).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[data-seq="2"] [data-full="message"]')?.textContent).toBe('问题2')
   })
 
-  it('keeps expansion independent per turn; the diagnostic hides behind its own toggle', async () => {
-    const failed = turn(2, { stopReason: 'error', diagnostic: 'stage: prompt' })
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1), failed] })))
-    const { container } = render(<ChatDetail {...injected} />)
-    await act(async () => { fireEvent.click(container.querySelector('[data-seq="2"] [data-turn-head]') as HTMLElement) })
-    expect(container.querySelector('[data-seq="2"] [data-full]')).not.toBeNull()
-    expect(container.querySelector('[data-seq="1"] [data-full]')).toBeNull()
-    // The diagnostic is collapsed by default, behind a toggle.
+  it('hides the diagnostic behind its own toggle, and tags an error turn', async () => {
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(2, { stopReason: 'error', diagnostic: 'stage: prompt' })] }))).injected} />)
+    expect(within(container.querySelector('[data-seq="2"]') as HTMLElement).getByText('出错').closest('[data-tag]')?.getAttribute('data-tone')).toBe('danger')
+    await act(async () => { fireEvent.click(head(container, 2)) })
     expect(container.querySelector('[data-diagnostic]')).toBeNull()
-    const diagToggle = screen.getByRole('button', { name: '查看诊断' })
-    fireEvent.click(diagToggle)
+    fireEvent.click(screen.getByRole('button', { name: '查看诊断' }))
     expect(container.querySelector('[data-diagnostic]')?.textContent).toBe('stage: prompt')
     fireEvent.click(screen.getByRole('button', { name: '隐藏诊断' }))
     expect(container.querySelector('[data-diagnostic]')).toBeNull()
-    // The error turn carries a danger status tag.
-    const card2 = container.querySelector('[data-seq="2"]') as HTMLElement
-    expect(within(card2).getByText('出错').closest('[data-tag]')?.getAttribute('data-tone')).toBe('danger')
   })
 
   it('shows the failure when the full text cannot be read, keeping the preview', async () => {
-    const cut = turn(1, { message: '问…', messageMore: true })
-    const source = fakeSource(detailSnapshot({ entries: [cut] }), async () => { throw new Error('acp-resume/unknown-turn: trimmed') })
-    const { injected } = detailProps(source)
-    const { container } = render(<ChatDetail {...injected} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '展开第 1 条' })) })
+    const source = fakeSource(detailSnapshot({ entries: [turn(1, { message: '问…', messageMore: true })] }), async () => { throw new Error('acp-resume/unknown-turn: trimmed') })
+    const { container } = render(<ChatDetail {...detailProps(source).injected} />)
+    await act(async () => { fireEvent.click(head(container, 1)) })
     expect(screen.getByRole('alert').textContent).toBe('读取全文失败:acp-resume/unknown-turn: trimmed')
-    // The preview text is the fallback shown in the full region when the fetch failed.
     expect(container.querySelector('[data-full="message"]')?.textContent).toBe('问…')
   })
 
   it('offers older entries when the log holds more than is shown', () => {
     const source = fakeSource(detailSnapshot({ entries: [turn(5), turn(6)], total: 6 }))
-    const { injected } = detailProps(source)
-    render(<ChatDetail {...injected} />)
+    render(<ChatDetail {...detailProps(source).injected} />)
     expect(screen.getByText('显示最近 2 / 共 6 条')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '加载更早的记录' }))
     expect(source.loadMore).toHaveBeenCalledTimes(1)
   })
 
   it('shows no load-more when everything is shown', () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1)], total: 1 })))
-    render(<ChatDetail {...injected} />)
+    render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(1)], total: 1 }))).injected} />)
     expect(screen.queryByRole('button', { name: '加载更早的记录' })).toBeNull()
   })
 
-  it('refreshes from the header, and shows a load error above the kept data', () => {
-    const source = fakeSource(detailSnapshot({ status: 'error', error: 'HTTP 502', entries: [turn(1)] }))
-    const { injected } = detailProps(source)
-    render(<ChatDetail {...injected} />)
+  it('shows a load error above the kept data', () => {
+    render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ status: 'error', error: 'HTTP 502', entries: [turn(1)] }))).injected} />)
     expect(screen.getByRole('alert').textContent).toBe('读取失败:HTTP 502')
     expect(screen.getByText('问题1')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    expect(source.refresh).toHaveBeenCalledTimes(1)
   })
 
-  it('releases from the detail page, and a released chat has nothing to release', async () => {
+  it('offers release, a separator, and delete in the ⋯ menu; release acts at once while idle and is disabled once released', async () => {
     const source = fakeSource(detailSnapshot())
     const { injected } = detailProps(source)
     const { unmount } = render(<ChatDetail {...injected} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    const menu = screen.getByRole('menu')
+    expect([...menu.children].map(el => el.hasAttribute('data-separator') ? '—' : el.textContent)).toEqual(['释放进程', '—', '删除记录…'])
+    expect(within(menu).getByRole('menuitem', { name: '删除记录…' }).hasAttribute('data-danger')).toBe(true)
+    await act(async () => { fireEvent.click(within(menu).getByRole('menuitem', { name: '释放进程' })) })
     expect(injected.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
     expect(source.refresh).toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
     unmount()
-    const released = detailProps(fakeSource(detailSnapshot({ chat: chat({ active: false }) })))
-    render(<ChatDetail {...released.injected} />)
-    expect((screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(/已释放\(下次发送自动重连\)/)).toBeTruthy()
+    render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ active: false }) }))).injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    expect((screen.getByRole('menuitem', { name: '释放进程' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('asks before releasing from the detail page while a turn is in flight; confirm releases without closing the tab', async () => {
-    const running = { kind: 'running' as const, message: '长任务', startedAt: NOW - 5_000 }
-    const source = fakeSource(detailSnapshot({ entries: [running] }))
-    const { injected, info } = detailProps(source)
+  it('asks before releasing while a turn is in flight; confirm releases without closing the tab', async () => {
+    const { injected, info } = detailProps(fakeSource(detailSnapshot({ entries: [{ kind: 'running', message: '长任务', startedAt: NOW - 5_000 }] })))
     render(<ChatDetail {...injected} />)
-    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    pick('释放进程')
     const dialog = screen.getByRole('dialog', { name: '释放 chat-a1b2c3d4?' })
     expect(within(dialog).getByText('将中止正在运行的本轮任务并释放进程(历史记录保留,后续仍可重连)。')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
     expect(injected.close).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    pick('释放进程')
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '释放' })) })
     expect(injected.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
     expect(injected.purge).not.toHaveBeenCalled()
@@ -1208,15 +1174,12 @@ describe('ChatDetail (D18)', () => {
   })
 
   it('asks before deleting; cancel deletes nothing; confirming purges and closes the tab', async () => {
-    const source = fakeSource(detailSnapshot())
-    const { injected, info } = detailProps(source)
+    const { injected, info } = detailProps(fakeSource(detailSnapshot()))
     render(<ChatDetail {...injected} />)
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    pick('删除记录…')
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
     expect(injected.purge).not.toHaveBeenCalled()
-    expect(info.closeTab).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    pick('删除记录…')
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
     expect(injected.purge).toHaveBeenCalledWith(`chat-${UUID_A}`)
     expect(info.closeTab).toHaveBeenCalledTimes(1)
@@ -1225,7 +1188,7 @@ describe('ChatDetail (D18)', () => {
   it('a failed delete keeps the tab open and shows the failure', async () => {
     const { injected, info } = detailProps(fakeSource(detailSnapshot()), { purge: vi.fn(async () => { throw new Error('acp-resume/unknown-chat: x') }) })
     render(<ChatDetail {...injected} />)
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    pick('删除记录…')
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
     expect(screen.getByRole('alert').textContent).toBe('操作失败:acp-resume/unknown-chat: x')
     expect(info.closeTab).not.toHaveBeenCalled()
@@ -1244,21 +1207,21 @@ describe('ChatDetail (D18)', () => {
     const b = fakeSource(detailSnapshot({ chat: chat({ chatId: `chat-${UUID_B}`, label: '乙' }), entries: [turn(1, { message: '乙问' })] }))
     const first = detailProps(a, { sourceFor: id => (id === `chat-${UUID_A}` ? a : b) })
     const second = detailProps(b, { sourceFor: id => (id === `chat-${UUID_A}` ? a : b) }, tabInfo(chatAddress(`chat-${UUID_B}`)))
-    render(<><ChatDetail {...first.injected} /><ChatDetail {...second.injected} /></>)
+    const { container } = render(<><ChatDetail {...first.injected} /><ChatDetail {...second.injected} /></>)
     expect(screen.getByText('乙')).toBeTruthy()
-    await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: '展开第 1 条' })[0] as HTMLElement) })
+    await act(async () => { fireEvent.click(head(container, 1)) })
     expect(a.loadEntry).toHaveBeenCalledTimes(1)
     expect(b.loadEntry).not.toHaveBeenCalled()
   })
 
   it('renders in English too', () => {
-    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { messageMore: true })] })), { t: translator(en) })
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: 'a\nb', messageMore: true })] })), { t: translator(en) })
     const { container } = render(<ChatDetail {...injected} />)
     expect(screen.getByText('Turn history')).toBeTruthy()
-    const card = container.querySelector('[data-seq="1"]') as HTMLElement
-    expect(within(card).getByText('completed')).toBeTruthy()
-    expect(within(card).getByText('9 min ago')).toBeTruthy()
-    expect((card.querySelector('[data-turn-foot]') as HTMLElement).textContent).toBe('Expand full text')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 turns · 3 min ago')
+    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByText('9 min ago')).toBeTruthy()
+    expect(container.querySelector('[data-full-hint]')?.textContent).toBe('full text · 2 lines')
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
   })
 
   it('an address that names no chat shows a notice instead of throwing', () => {

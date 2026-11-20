@@ -1,31 +1,33 @@
 /**
- * The chat detail tab body (D18, PANEL-DESIGN §2.6). Three zones with their
- * own visual weight: a header (the chat's identity — a state dot and its label
- * or short id — as the one primary line, with the refresh/release/delete
- * controls; release asks first while a turn is in flight, delete always), a quiet meta strip (state, turn count, cwd, remote id, first-turn
- * title) that recedes behind the header, and the turn history as one card per
- * entry, newest first, spaced apart. Each turn card shows the question and
- * answer as the subject (first non-empty line as a preview) with seq, stop
- * reason, and time demoted to a meta row. Expanding sits on the reading line:
- * the primary control is a full-width button at the card's tail ("expand full
- * text · N lines", becoming "collapse" once open), and the whole header row is
- * also clickable (a pointer cursor and a hover tint are its only cue — there is
- * no corner chevron). Expanding reveals the full message and answer in
- * scrollable regions that keep their line breaks, and the diagnostic sits
- * behind its own toggle. Reconnect events are set apart from turns by a
- * tinted left rail and a "connection" tag. The full text is fetched on demand
- * when a preview is cut; expansion and fetched text live in component state
- * only. Pure props: data arrives through a per-chat {@link DetailSource},
- * commands through injected callbacks, copy through `t`. Styling uses only
+ * The chat detail tab body (D18, PANEL-DESIGN §2.6; D30 density pass). One
+ * header line: the state dot, the chat's name (label, else first-turn title,
+ * else short id — as in the list), and a "⋯" menu with "release process" and
+ * "delete record…" (release asks first while a turn is in flight; delete
+ * always asks and closes the tab). One quiet meta line under it:
+ * `backend · N turns · last active` (the backend only with several
+ * backends), replaced while a turn runs by `backend · running 1m20s`, ticking
+ * each second. The full chatId, cwd, remote session id, and state sit in the
+ * name's hover text. The history is a borderless list, newest first, rows
+ * split by a divider: a running entry on top (spinner, the sent message's
+ * first line, expandable), then turns as two lines each — question (primary
+ * colour, relative time at the end, a stop-reason tag when not completed, a
+ * fresh-session tag) and answer (secondary colour, "full text · N lines" when
+ * cut) — and reconnect events as one line on a warning rail. A click on a turn
+ * toggles it, and only one turn is open at a time; an open turn shows the full
+ * message and answer in scrollable regions, the diagnostic behind its own
+ * toggle, and a collapse button. The full text is fetched on demand when a
+ * preview is cut; expansion and fetched text live in component state only.
+ * Pure props: data arrives through a per-chat {@link DetailSource}, commands
+ * through injected callbacks, copy through `t`. Styling uses only
  * `--dsw-alias-*` variables and ui-primitives components.
  * @module dsh-acp-resume/client/ChatDetail
  */
 
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
-import { Button, Modal, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { parseChatAddress } from './chat-address.ts'
-import { ChatStateDot, chatDotState, relativeTime, shortChatId, elapsedTime } from './ChatsPanel.tsx'
-import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, RunningItem, TabInfoHook, TurnItem } from './face.ts'
+import { ChatStateDot, chatDotState, LiveElapsed, relativeTime, shortChatId } from './ChatsPanel.tsx'
+import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, PanelChat, RunningItem, TabInfoHook, TurnItem } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
 
 /** The detail body's props: the injected face plus the framework's tab-info hook and the locale seat. */
@@ -34,56 +36,39 @@ export type ChatDetailProps = ChatDetailInjected & {
   readonly t: PanelTranslate
 }
 
-const styles = {
-  root: { display: 'flex', flexDirection: 'column', gap: 16, padding: 16, height: '100%', overflowY: 'auto', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-1)' },
+const ROW_DIVIDER = '1px solid var(--dsw-alias-border-l3)'
 
-  // Zone 1: header. The identity line is the single primary element.
+const styles = {
+  root: { display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflowY: 'auto', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-1)' },
+
+  // Header: the identity line, with the actions menu at its end.
   header: { display: 'flex', alignItems: 'center', gap: 8 },
   identity: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 },
   heading: { minWidth: 0, margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  headingId: { flex: 'none', fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
-
-  // Zone 2: meta strip. One or two quiet lines, clearly secondary.
-  metaStrip: { display: 'flex', flexDirection: 'column', gap: 4 },
-  metaRow: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
-  metaSep: { color: 'var(--dsw-alias-border-l3)' },
-  metaTitle: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  meta: { display: 'flex', alignItems: 'center', gap: 6, margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
 
   error: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   notice: { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-secondary)' },
-
-  // Zone 3: turn history.
-  sectionHead: { display: 'flex', alignItems: 'baseline', gap: 8, margin: 0 },
+  empty: { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-tertiary)' },
   subheading: { margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   sectionCount: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
-  list: { display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' },
 
-  turn: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
-  // Clickable header row; its pointer cursor and hover tint are the only
-  // clickability cue (no corner chevron — the bottom button is the primary one).
-  turnTop: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px', transition: 'background 100ms ease' },
-  turnTopHover: { display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px', transition: 'background 100ms ease', background: 'var(--dsw-alias-interactive-bg-hover)' },
-  turnTags: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
-  turnSeq: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)' },
-  turnTime: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
-
-  qa: { display: 'flex', flexDirection: 'column', gap: 6 },
-  qaBlock: { display: 'flex', flexDirection: 'column', gap: 2 },
-  qaLabel: { fontSize: 11, fontWeight: 600, color: 'var(--dsw-alias-label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' },
-  qaPreview: { margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  qaAnswerPreview: { margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  // The primary expand/collapse entry: a full-width button at the reading tail.
-  expandButton: { alignSelf: 'stretch', marginTop: 2, padding: '6px 8px', border: '1px solid var(--dsw-alias-border-l4)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: 12, fontWeight: 500, textAlign: 'center' },
+  // History: a borderless list, rows split by a divider.
+  list: { display: 'flex', flexDirection: 'column', margin: 0, padding: 0, listStyle: 'none' },
+  row: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0', borderBottom: ROW_DIVIDER },
+  rowHead: { display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px' },
+  line: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
+  question: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  answer: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  aside: { flex: 'none', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
 
   full: { margin: 0, maxHeight: 320, overflow: 'auto', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.6, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l4)' },
-  diagToggle: { alignSelf: 'flex-start', padding: 0, border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: 11 },
+  linkButton: { alignSelf: 'flex-start', padding: 0, border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: 11 },
   diag: { margin: 0, padding: 8, borderRadius: 6, fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)', color: 'var(--dsw-alias-state-error-primary)' },
 
-  // Reconnect event: set apart from turns by a tinted left rail.
-  event: { display: 'flex', flexDirection: 'column', gap: 4, margin: 0, padding: '8px 10px', borderRadius: 8, borderLeft: '3px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-layer-2)' },
-  eventTop: { display: 'flex', alignItems: 'center', gap: 6 },
-  eventTime: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
-  eventText: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' },
+  // Reconnect event: one line on a warning rail.
+  event: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderLeft: '3px solid var(--dsw-alias-state-warn-primary)', borderBottom: ROW_DIVIDER },
+  eventText: { flex: 1, minWidth: 0, margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' },
 
   loadMoreWrap: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' },
   centered: { display: 'flex', flexDirection: 'column', gap: 8, padding: '32px 8px', textAlign: 'center', alignItems: 'center' },
@@ -93,12 +78,12 @@ function failure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Non-empty line count of a body, for the expand button's hint (0 when blank). */
+/** Non-empty line count of a body (0 when blank). */
 function countLines(text: string): number {
   return text.split('\n').filter(line => line.trim() !== '').length
 }
 
-/** First non-empty line, trimmed and cut to `max` characters with an ellipsis. */
+/** First non-empty line, trimmed and cut to `max` characters with an ellipsis; `clipped` when anything is not shown. */
 function firstLine(text: string, max = 100): { text: string; clipped: boolean } {
   const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
   const chars = Array.from(line)
@@ -107,16 +92,38 @@ function firstLine(text: string, max = 100): { text: string; clipped: boolean } 
   return { text: line, clipped: multiline }
 }
 
-/** The stop reason's localized label and the tag tone that carries its status meaning. */
+/** The stop reason's localized label and tag tone, for a turn that did not end `completed`. */
 function stopTag(stopReason: string): { key: PanelCopyKey; tone: TagTone } | undefined {
   switch (stopReason) {
-    case 'completed': return { key: 'stopCompleted', tone: 'success' }
     case 'aborted': return { key: 'stopAborted', tone: 'neutral' }
     case 'error': return { key: 'stopError', tone: 'danger' }
     case 'max-tokens': return { key: 'stopMaxTokens', tone: 'warning' }
     case 'refusal': return { key: 'stopRefusal', tone: 'warning' }
     default: return undefined
   }
+}
+
+/** The chat's display name: label, else first-turn title, else short id (as the list row). */
+function chatName(chat: PanelChat | undefined, chatId: string): string {
+  return chat?.label ?? chat?.title ?? shortChatId(chatId)
+}
+
+/** The name's hover text: full chat id, cwd, full remote session id, and state. */
+function identityHint(t: PanelTranslate, chat: PanelChat | undefined, chatId: string): string {
+  if (chat === undefined) return chatId
+  return [chatId, t('cwd', { cwd: chat.cwd }), t('remote', { id: chat.remoteSessionId }), chat.active ? t('active') : t('released')].join('\n')
+}
+
+/** Toggle on click, Enter, or Space: the row-as-button contract. */
+function pressable(onPress: () => void) {
+  return {
+    role: 'button',
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (event: { key: string; preventDefault(): void }) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPress() }
+    },
+  } as const
 }
 
 type FullState = { readonly status: 'loading' } | { readonly status: 'ready'; readonly entry: FullEntry } | { readonly status: 'error'; readonly message: string }
@@ -130,116 +137,74 @@ interface TurnRowProps {
   readonly t: PanelTranslate
 }
 
-function TurnCard({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNode {
+function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNode {
   const [diagOpen, setDiagOpen] = useState(false)
-  const [headHover, setHeadHover] = useState(false)
   const fullEntry = full?.status === 'ready' && full.entry.kind === 'turn' ? full.entry : undefined
   const message = fullEntry?.message ?? item.message
   const output = fullEntry?.output ?? item.output
-  const tag = stopTag(item.stopReason)
-  const questionPreview = firstLine(item.message)
-  const answerPreview = item.output === '' ? { text: t('noAnswer'), clipped: false } : firstLine(item.output)
-  // A turn is expandable when the collapsed previews do not already show
-  // everything: either line is clipped, the host flagged more, or there is no
-  // answer text to preview. A fully-shown turn has nothing behind an expand.
-  const expandable = questionPreview.clipped || answerPreview.clipped || item.messageMore || item.outputMore || item.output === ''
-  // Line count of the longer body, for the bottom button's hint.
-  const bodyLines = Math.max(countLines(message), countLines(output))
+  const tag = item.stopReason === 'completed' ? undefined : stopTag(item.stopReason)
+  const question = firstLine(item.message)
+  const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : firstLine(item.output)
+  // "Full text · N lines" only when the two lines do not already show everything.
+  const truncated = question.clipped || answer.clipped || item.messageMore || item.outputMore
+  const lines = Math.max(countLines(message), countLines(output))
   const toggle = (): void => { onToggle(item) }
   return (
-    <li style={styles.turn} data-seq={item.seq} data-open={open ? '' : undefined}>
-      {/* The whole header row toggles the turn; the chevron is a visual cue only. */}
-      <div
-        style={headHover ? styles.turnTopHover : styles.turnTop}
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        aria-label={t('turnToggle', { seq: item.seq })}
-        data-turn-head=""
-        onClick={toggle}
-        onMouseEnter={() => { setHeadHover(true) }}
-        onMouseLeave={() => { setHeadHover(false) }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() }
-        }}
-      >
-        <div style={styles.turnTags}>
-          <span style={styles.turnSeq}>#{item.seq}</span>
-          {tag === undefined ? <Tag tone="neutral">{item.stopReason}</Tag> : <Tag tone={tag.tone}>{t(tag.key)}</Tag>}
+    <li style={styles.row} data-seq={item.seq} data-open={open ? '' : undefined}>
+      <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t('turnToggle', { seq: item.seq })}
+        title={`#${item.seq}`} data-turn-head="">
+        <div style={styles.line}>
+          <p style={styles.question} data-question>{question.text}</p>
+          {tag === undefined
+            ? (item.stopReason === 'completed' ? null : <Tag tone="neutral">{item.stopReason}</Tag>)
+            : <Tag tone={tag.tone}>{t(tag.key)}</Tag>}
           {item.freshSession ? <Tag tone="info">{t('freshBadge')}</Tag> : null}
-          <span style={styles.turnTime}>{relativeTime(t, item.at, now)}</span>
+          <span style={styles.aside}>{relativeTime(t, item.at, now)}</span>
+        </div>
+        <div style={styles.line}>
+          <p style={styles.answer} data-answer>{answer.text}</p>
+          {truncated && !open ? <span style={styles.aside} data-full-hint>{t('fullLines', { lines: Math.max(lines, 1) })}</span> : null}
         </div>
       </div>
       {open ? (
-        <div style={styles.qa}>
-          <div style={styles.qaBlock}>
-            <span style={styles.qaLabel}>{t('question')}</span>
-            <pre style={styles.full} data-full="message">{message}</pre>
-          </div>
-          <div style={styles.qaBlock}>
-            <span style={styles.qaLabel}>{t('answer')}</span>
-            <pre style={styles.full} data-full="output">{output === '' ? t('noAnswer') : output}</pre>
-          </div>
+        <>
+          <pre style={styles.full} data-full="message">{message}</pre>
+          <pre style={styles.full} data-full="output">{output === '' ? t('noAnswer') : output}</pre>
           {full?.status === 'loading' ? <p style={styles.notice}>{t('loadingFull')}</p> : null}
           {full?.status === 'error' ? <p role="alert" style={styles.error}>{t('fullFailed', { message: full.message })}</p> : null}
           {item.diagnostic === undefined ? null : (
             <>
-              <button type="button" style={styles.diagToggle} aria-expanded={diagOpen}
+              <button type="button" style={styles.linkButton} aria-expanded={diagOpen}
                 onClick={() => { setDiagOpen(v => !v) }}>{t(diagOpen ? 'hideDiagnostic' : 'showDiagnostic')}</button>
               {diagOpen ? <p style={styles.diag} data-diagnostic>{item.diagnostic}</p> : null}
             </>
           )}
-          {/* Collapse at the reading tail: the natural place after reading the full text. */}
-          <button type="button" style={styles.expandButton} aria-expanded data-turn-foot=""
-            aria-label={t('turnCollapse', { seq: item.seq })} onClick={toggle}>{t('collapseFull')}</button>
-        </div>
-      ) : (
-        <div style={styles.qa}>
-          <div style={styles.qaBlock}>
-            <span style={styles.qaLabel}>{t('question')}</span>
-            <p style={styles.qaPreview}>{questionPreview.text}</p>
-          </div>
-          <div style={styles.qaBlock}>
-            <span style={styles.qaLabel}>{t('answer')}</span>
-            <p style={styles.qaAnswerPreview}>{answerPreview.text}</p>
-          </div>
-          {/* The primary expand entry: a real button on the reading-line end. */}
-          {expandable ? (
-            <button type="button" style={styles.expandButton} aria-expanded={false} data-turn-foot=""
-              aria-label={t('turnExpand', { seq: item.seq })} onClick={toggle}>
-              {bodyLines > 1 ? t('expandFullLines', { lines: bodyLines }) : t('expandFull')}
-            </button>
-          ) : null}
-        </div>
-      )}
+          <button type="button" style={styles.linkButton} aria-label={t('turnCollapse', { seq: item.seq })} onClick={toggle}>{t('collapseFull')}</button>
+        </>
+      ) : null}
     </li>
   )
 }
 
-function RunningCard({ item, now, t }: { readonly item: RunningItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+function RunningRow({ item, now, t }: { readonly item: RunningItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const [open, setOpen] = useState(false)
   const preview = firstLine(item.message)
-  const expandable = preview.clipped
+  const toggle = (): void => { if (preview.clipped) setOpen(value => !value) }
   return (
-    <li style={styles.turn} data-running>
-      <div style={styles.turnTags}>
-        <Tag tone="info">{t('running')}</Tag>
-        <span style={styles.turnTime}>{elapsedTime(t, item.startedAt, now)}</span>
-      </div>
-      <div style={styles.qa}>
-        <div style={styles.qaBlock}>
-          <span style={styles.qaLabel}>{t('runningMessage')}</span>
-          {open ? <pre style={styles.full} data-running-full>{item.message}</pre> : <p style={styles.qaPreview}>{preview.text}</p>}
+    <li style={styles.row} data-running>
+      <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}>
+        <div style={styles.line}>
+          <ChatStateDot state="ongoing" />
+          <p style={styles.question}>{preview.text}</p>
+          <LiveElapsed startedAt={item.startedAt} now={now} t={t} />
         </div>
-        {expandable ? <button type="button" style={styles.expandButton} aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
-          {t(open ? 'runningCollapse' : 'runningExpand')}
-        </button> : null}
       </div>
+      {open ? <pre style={styles.full} data-running-full>{item.message}</pre> : null}
     </li>
   )
 }
 
-function EventCard({ item, now, t }: { readonly item: EventItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+function EventRow({ item, now, t }: { readonly item: EventItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const text = item.event === 'session-lost'
     ? t('eventSessionLost')
     : item.event === 'session-reset-after-errors'
@@ -247,12 +212,37 @@ function EventCard({ item, now, t }: { readonly item: EventItem; readonly now: n
       : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: item.message })}`}`
   return (
     <li style={styles.event} data-seq={item.seq} data-event={item.event}>
-      <div style={styles.eventTop}>
-        <Tag tone="warning">{t('eventBadge')}</Tag>
-        <span style={styles.eventTime}>{relativeTime(t, item.at, now)}</span>
-      </div>
       <p style={styles.eventText}>{text}</p>
+      <span style={styles.aside}>{relativeTime(t, item.at, now)}</span>
     </li>
+  )
+}
+
+/** The header's "⋯" menu: release the process, then (after a separator) delete the record. */
+function ActionsMenu({ canRelease, disabled, onRelease, onDelete, t }: {
+  readonly canRelease: boolean
+  readonly disabled: boolean
+  readonly onRelease: () => void
+  readonly onDelete: () => void
+  readonly t: PanelTranslate
+}): ReactNode {
+  const [open, setOpen] = useState(false)
+  const items: MenuEntry[] = [
+    { id: 'release', label: t('releaseProcess'), disabled: !canRelease },
+    { type: 'separator', id: 'sep' },
+    { id: 'delete', label: t('deleteRecord'), danger: true },
+  ]
+  return (
+    <Menu open={open} onClose={() => { setOpen(false) }} align="end" items={items}
+      onSelect={(id) => {
+        setOpen(false)
+        if (id === 'release') onRelease()
+        else if (id === 'delete') onDelete()
+      }}
+      anchor={(
+        <Button size="sm" variant="ghost" disabled={disabled} aria-label={t('moreActions')} aria-haspopup="menu" aria-expanded={open}
+          onClick={() => { setOpen(value => !value) }}>⋯</Button>
+      )} />
   )
 }
 
@@ -267,7 +257,8 @@ interface ViewProps {
 
 function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps): ReactNode {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set())
+  // One open turn at a time.
+  const [openSeq, setOpenSeq] = useState<number | undefined>(undefined)
   const [fulls, setFulls] = useState<Readonly<Record<number, FullState>>>({})
   const [pending, setPending] = useState(false)
   const [confirming, setConfirming] = useState<'delete' | 'release' | undefined>(undefined)
@@ -287,13 +278,8 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
   }
 
   const toggle = (item: TurnItem): void => {
-    const opening = !expanded.has(item.seq)
-    setExpanded((current) => {
-      const next = new Set(current)
-      if (opening) next.add(item.seq)
-      else next.delete(item.seq)
-      return next
-    })
+    const opening = openSeq !== item.seq
+    setOpenSeq(opening ? item.seq : undefined)
     if (!opening || fulls[item.seq] !== undefined || (!item.messageMore && !item.outputMore)) return
     setFulls(current => ({ ...current, [item.seq]: { status: 'loading' } }))
     source.loadEntry(item.seq).then(
@@ -315,57 +301,45 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
   const now = snapshot.fetchedAt ?? 0
   const running = snapshot.entries.find((item): item is RunningItem => item.kind === 'running')
   const newestFirst = snapshot.entries.filter((item): item is TurnItem | EventItem => item.kind !== 'running').reverse()
+  const inFlightSince = running?.startedAt ?? chat?.inFlight?.startedAt
+  const backend = chat !== undefined && (chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? (chat.backendDisplay ?? chat.backend) : undefined
   const turns = chat?.turnCount === undefined ? t('noValue') : String(chat.turnCount)
-  const sep = <span style={styles.metaSep} aria-hidden="true">·</span>
   return (
     <section style={styles.root} aria-label={t('viewDetail', { chatId: short })} data-chat-id={chatId}>
       <div style={styles.header}>
         <div style={styles.identity}>
           {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
-          <h2 style={styles.heading} title={chatId}>{chat?.label ?? short}</h2>
-          {chat?.label === undefined ? null : <span style={styles.headingId}>{short}</span>}
+          <h2 style={styles.heading} title={identityHint(t, chat, chatId)}>{chatName(chat, chatId)}</h2>
         </div>
-        <Button size="sm" variant="ghost" onClick={() => { void source.refresh() }}>{t('refreshDetail')}</Button>
-        <Button size="sm" variant="ghost" disabled={pending || chat?.active !== true} aria-label={t('releaseLabel', { chatId: short })}
-          onClick={() => {
+        <ActionsMenu t={t} disabled={pending || chat === undefined} canRelease={chat?.active === true}
+          onRelease={() => {
             // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
-            if (chat?.inFlight === undefined && running === undefined) run(close)
+            if (inFlightSince === undefined) run(close)
             else setConfirming('release')
-          }}>{t('release')}</Button>
-        <Button size="sm" variant="ghost" disabled={pending || chat === undefined} aria-label={t('deleteLabel', { chatId: short })}
-          onClick={() => { setConfirming('delete') }}>{t('delete')}</Button>
+          }}
+          onDelete={() => { setConfirming('delete') }} />
       </div>
+      {chat === undefined
+        ? (snapshot.status === 'loading' ? <p style={styles.notice}>{t('loading')}</p> : null)
+        : (
+          <p style={styles.meta} data-meta>
+            {inFlightSince === undefined
+              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), relativeTime(t, chat.lastActive, now)].join(' · ')
+              : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" /></>}
+          </p>
+        )}
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}
       {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
-      {chat === undefined
-        ? (snapshot.status === 'loading' ? <p style={styles.notice}>{t('loading')}</p> : null)
-        : (
-          <div style={styles.metaStrip}>
-            <p style={styles.metaRow}>
-              <span>{chat.active ? t('active') : t('released')}</span>{sep}
-              <span>{t('turns', { count: turns })}</span>{sep}
-              <span>{relativeTime(t, chat.lastActive, now)}</span>
-            </p>
-            <p style={styles.metaRow}>
-              <span>{t('cwd', { cwd: chat.cwd })}</span>{sep}
-              <span>{t('remote', { id: chat.remoteSessionId.slice(0, 8) })}</span>
-            </p>
-            {chat.title === undefined ? null : <p style={styles.metaTitle} title={chat.title}>{t('chatTitle', { title: chat.title })}</p>}
-          </div>
-        )}
-      <div style={styles.sectionHead}>
-        <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
-        {snapshot.entries.length === 0 ? null : <span style={styles.sectionCount}>{t('turns', { count: String(snapshot.total) })}</span>}
-      </div>
-      {snapshot.status !== 'loading' && running === undefined && newestFirst.length === 0 ? <p style={styles.notice}>{t('noTurns')}</p> : null}
+      <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
+      {snapshot.status !== 'loading' && running === undefined && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
       {running === undefined && newestFirst.length === 0 ? null : (
         <ul style={styles.list}>
-          {running === undefined ? null : <RunningCard item={running} now={now} t={t} />}
+          {running === undefined ? null : <RunningRow item={running} now={now} t={t} />}
           {newestFirst.map(item => item.kind === 'event'
-            ? <EventCard key={item.seq} item={item} now={now} t={t} />
-            : <TurnCard key={item.seq} item={item} now={now} open={expanded.has(item.seq)} full={fulls[item.seq]} onToggle={toggle} t={t} />)}
+            ? <EventRow key={item.seq} item={item} now={now} t={t} />
+            : <TurnRow key={item.seq} item={item} now={now} open={openSeq === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />)}
         </ul>
       )}
       {snapshot.total > newestFirst.length ? (

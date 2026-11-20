@@ -203,7 +203,13 @@ export function elapsedTime(t: PanelTranslate, startedAt: number, now: number): 
  * is running, and only this span re-renders on each tick. The base is the
  * snapshot's `fetchedAt` (host time) plus local time passed since mount.
  */
-function LiveElapsed({ startedAt, now, t }: { readonly startedAt: number; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+export function LiveElapsed({ startedAt, now, t, label = 'runningFor' }: {
+  readonly startedAt: number
+  readonly now: number
+  readonly t: PanelTranslate
+  /** Copy key taking `{duration}`; `runningFor` (`已运行 …`) by default. */
+  readonly label?: 'runningFor' | 'inFlightFor'
+}): ReactNode {
   const [drift, setDrift] = useState(0)
   useEffect(() => {
     const base = Date.now()
@@ -211,7 +217,7 @@ function LiveElapsed({ startedAt, now, t }: { readonly startedAt: number; readon
     const timer = setInterval(() => { setDrift(Date.now() - base) }, 1000)
     return () => { clearInterval(timer) }
   }, [now, startedAt])
-  return <span style={styles.elapsed} data-elapsed>{elapsedTime(t, startedAt, now + drift)}</span>
+  return <span style={styles.elapsed} data-elapsed>{t(label, { duration: formatDuration(t, now + drift - startedAt) })}</span>
 }
 
 function failure(error: unknown): string {
