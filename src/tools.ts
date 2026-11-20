@@ -602,21 +602,46 @@ export const WORKFLOW_TOOL = 'acp_workflow'
 const RUN_STOP_REASON: Readonly<Record<WorkflowResult['status'], RunStopReason>> = { completed: 'completed', failed: 'error', aborted: 'cancelled' }
 
 /**
- * A run's observer: progress records in the calling session for a model-direct
- * call (no `parent`, as the official workflow tool), plus the job's progress
- * line per step. Returns the recorder to finish, if any.
+ * A run's observer, combining three independent sinks: the pool's D29 tracker
+ * (panel; it mints the run id), the official progress records in the calling
+ * session for a model-direct call (no `parent`, as the official workflow
+ * tool), and the job's progress line per step. `finish` closes the tracker and
+ * the records with the run's result.
  */
-function workflowObserver(name: string, exec: { readonly parent?: unknown; readonly agent?: Agent }, onWarn: ((message: string) => void) | undefined, progress?: (line: string) => void): { observer: WorkflowObserver; recorder: WorkflowRecorder | undefined } {
-  const recorder = exec.parent === undefined && exec.agent !== undefined ? new WorkflowRecorder(exec.agent.session, onWarn) : undefined
+function workflowObserver(
+  pool: AcpSessionPool,
+  name: string,
+  exec: { readonly parent?: unknown; readonly agent?: Agent },
+  ownerSessionId: string,
+  onWarn: ((message: string) => void) | undefined,
+  job?: { readonly id: string; updateProgress(line: string): void },
+): { observer: WorkflowObserver; finish: (result: WorkflowResult) => void } {
+  const tracker = pool.trackWorkflow(ownerSessionId, name, job?.id)
+  const recorder = exec.parent === undefined && exec.agent !== undefined ? new WorkflowRecorder(exec.agent.session, onWarn, tracker.runId) : undefined
   recorder?.start(name)
+  // The tracker's member seq is the engine's handle; the recorder keeps its own, mapped here.
+  const recorderSeq = new Map<number, number>()
+  const tracked = tracker.observer
   return {
-    recorder,
     observer: {
-      stepStart: (id) => { progress?.(id) },
-      ...(recorder === undefined ? {} : {
-        memberStart: (role: string, stepId: string) => recorder.memberStart(role, stepId),
-        memberEnd: (seq: number, outcome: Parameters<WorkflowRecorder['memberEnd']>[1]) => { recorder.memberEnd(seq, outcome) },
-      }),
+      stepStart: (id) => {
+        tracked.stepStart?.(id)
+        job?.updateProgress(id)
+      },
+      memberStart: (role, stepId) => {
+        const seq = tracked.memberStart?.(role, stepId) ?? 0
+        if (recorder !== undefined) recorderSeq.set(seq, recorder.memberStart(role, stepId))
+        return seq
+      },
+      memberEnd: (seq, outcome, chatId) => {
+        tracked.memberEnd?.(seq, outcome, chatId)
+        const mapped = recorderSeq.get(seq)
+        if (mapped !== undefined) recorder?.memberEnd(mapped, outcome)
+      },
+    },
+    finish: (result) => {
+      tracker.finish(result)
+      recorder?.finish(RUN_STOP_REASON[result.status])
     },
   }
 }
@@ -678,9 +703,9 @@ export function chatWorkflowTool(
       const { context, template, params } = prepare(args, exec.agent)
       const permissionResolver = permissionResolverFor?.(exec.agent)
       if (jobs === undefined) {
-        const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn)
+        const { observer, finish } = workflowObserver(pool, template.name, exec, context.ownerSessionId, roles.onWarn)
         const result = await runWorkflow(pool, template, params, context, exec.signal, observer, permissionResolver)
-        recorder?.finish(RUN_STOP_REASON[result.status])
+        finish(result)
         if (result.status !== 'completed') throw new Error(`workflow ${template.name} ${result.status}: ${result.error ?? ''}\n${workflowText(result)}`)
         return { text: workflowText(result) }
       }
@@ -691,10 +716,10 @@ export function chatWorkflowTool(
         toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
         ...(exec.agent === undefined ? {} : { owner: exec.agent.id }),
         run: (job) => {
-          const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn, (line) => { job.updateProgress(line) })
+          const { observer, finish } = workflowObserver(pool, template.name, exec, context.ownerSessionId, roles.onWarn, job)
           return {
             done: runWorkflow(pool, template, params, context, controller.signal, observer, permissionResolver).then((result): JobOutcome => {
-              recorder?.finish(RUN_STOP_REASON[result.status])
+              finish(result)
               job.append(workflowText(result))
               if (result.status === 'completed') return { status: 'completed' }
               return { status: result.status === 'aborted' ? 'killed' : 'failed', detail: result.error ?? result.status }

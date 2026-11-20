@@ -52,6 +52,47 @@ import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
 import { readTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
+import { WorkflowLog, type WorkflowRunRecord, type WorkflowStepSummary } from './workflow-log.js'
+import type { WorkflowObserver, WorkflowResult } from './workflow-engine.js'
+import type { MemberOutcome } from './workflow-record.js'
+
+/** A workflow running in this pool instance (D29), as the panel sees it; memory only. */
+export interface RunningWorkflow {
+  readonly runId: string
+  readonly template: string
+  readonly startedAt: number
+  readonly jobId?: string
+  /** The step whose sends are going out; absent before the first step starts. */
+  readonly currentStep?: string
+  readonly steps: readonly WorkflowStepSummary[]
+}
+
+/** One session's workflows for the panel: running (memory) and the newest finished ones (file). */
+export interface SessionWorkflows {
+  readonly running: readonly RunningWorkflow[]
+  readonly recent: readonly WorkflowRunRecord[]
+}
+
+/** The pool's handle on one tracked run: its id, the observer to pass the engine, and how to close it. */
+export interface WorkflowTracker {
+  readonly runId: string
+  readonly observer: WorkflowObserver
+  /** Record the run's end (file) and drop it from the running set. Idempotent. */
+  finish(result: WorkflowResult): void
+}
+
+interface TrackedRun {
+  runId: string
+  template: string
+  startedAt: number
+  jobId: string | undefined
+  currentStep: string | undefined
+  steps: { id: string; members: { role: string; chatId?: string; outcome?: MemberOutcome }[] }[]
+}
+
+function summarize(run: TrackedRun): WorkflowStepSummary[] {
+  return run.steps.map(step => ({ id: step.id, members: step.members.map(m => ({ ...m })) }))
+}
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -418,6 +459,10 @@ export class AcpSessionPool {
   /** Role provisioning in progress, keyed by owner and role: the D27 single-flight claim. */
   private readonly provisioning = new Map<string, Promise<PooledChatInfo>>()
   private readonly turnLog: TurnLog
+  /** D29 run log, one file per owner session. */
+  private readonly workflowLog: WorkflowLog
+  /** D29 runs in progress by owner session; memory only. */
+  private readonly runningWorkflows = new Map<string, Map<string, TrackedRun>>()
   private disposed = false
 
   constructor(private readonly opts: PoolOptions) {
@@ -429,6 +474,7 @@ export class AcpSessionPool {
     this.registry = new ChatRegistry(opts.registryPath, opts.onWarn)
     this.roster = new Roster(this.registry)
     this.turnLog = new TurnLog(join(dirname(opts.registryPath), 'turns'), opts.onWarn)
+    this.workflowLog = new WorkflowLog(join(dirname(opts.registryPath), 'workflows'), opts.onWarn)
   }
 
   /** Registry rows (durable chats, live or released). */
@@ -717,10 +763,86 @@ export class AcpSessionPool {
     } catch (error: unknown) {
       throw new Error(`acp-resume: releasing chat ${chatId} failed; its record is kept: ${toError(error).message}`, { cause: error })
     }
+    const owner = this.registry.get(chatId)?.ownerSessionId
     this.registry.remove(chatId)
     this.roster.removeChat(chatId)
     this.consecutiveErrorTurns.delete(chatId)
     this.turnLog.remove(chatId)
+    // D29: once a session has no chat left, its workflow log has nothing to point to.
+    if (owner !== undefined && owner !== '' && !this.registry.all().some(e => e.ownerSessionId === owner)) this.workflowLog.remove(owner)
+  }
+
+  // ---- D29 workflows ----------------------------------------------------
+
+  /**
+   * Start tracking one workflow run for the session: writes its `run-start`
+   * line, keeps it in the running set, and returns the observer that records
+   * the current step and each member's role, chat, and outcome. The run id is
+   * minted here so the official progress card can share it.
+   */
+  trackWorkflow(ownerSessionId: string, template: string, jobId?: string): WorkflowTracker {
+    const run: TrackedRun = { runId: randomUUID(), template, startedAt: Date.now(), jobId, currentStep: undefined, steps: [] }
+    let runs = this.runningWorkflows.get(ownerSessionId)
+    if (runs === undefined) {
+      runs = new Map()
+      this.runningWorkflows.set(ownerSessionId, runs)
+    }
+    runs.set(run.runId, run)
+    this.workflowLog.appendRunStart(ownerSessionId, run.runId, template, run.startedAt, jobId)
+    const stepFor = (id: string): TrackedRun['steps'][number] => {
+      let step = run.steps.find(s => s.id === id)
+      if (step === undefined) {
+        step = { id, members: [] }
+        run.steps.push(step)
+      }
+      return step
+    }
+    const members = new Map<number, { role: string; chatId?: string; outcome?: MemberOutcome }>()
+    let seq = 0
+    let finished = false
+    return {
+      runId: run.runId,
+      observer: {
+        stepStart: (id) => {
+          run.currentStep = id
+          stepFor(id)
+        },
+        memberStart: (role, stepId) => {
+          seq += 1
+          const member: { role: string; chatId?: string; outcome?: MemberOutcome } = { role }
+          stepFor(stepId).members.push(member)
+          members.set(seq, member)
+          return seq
+        },
+        memberEnd: (memberSeq, outcome, chatId) => {
+          const member = members.get(memberSeq)
+          if (member === undefined) return
+          member.outcome = outcome
+          if (chatId !== undefined) member.chatId = chatId
+        },
+      },
+      finish: (result) => {
+        if (finished) return
+        finished = true
+        runs.delete(run.runId)
+        if (runs.size === 0) this.runningWorkflows.delete(ownerSessionId)
+        this.workflowLog.appendRunEnd(ownerSessionId, run.runId, Date.now(), result.status, summarize(run), result.error)
+      },
+    }
+  }
+
+  /** The session's running workflows (this pool instance) and its newest finished ones (file). */
+  listWorkflows(ownerSessionId: string): SessionWorkflows {
+    const runs = [...(this.runningWorkflows.get(ownerSessionId)?.values() ?? [])]
+    const running: RunningWorkflow[] = runs.map(run => ({
+      runId: run.runId,
+      template: run.template,
+      startedAt: run.startedAt,
+      ...(run.jobId === undefined ? {} : { jobId: run.jobId }),
+      ...(run.currentStep === undefined ? {} : { currentStep: run.currentStep }),
+      steps: summarize(run),
+    }))
+    return { running, recent: this.workflowLog.readRecent(ownerSessionId, new Set(runs.map(r => r.runId))) }
   }
 
   // ---- D27 roles --------------------------------------------------------

@@ -86,11 +86,11 @@ async function rejectionCode(promise: Promise<unknown>): Promise<string | undefi
 }
 
 describe('AcpResumePanelService', () => {
-  it('registers under acpResume with the six Remote markers the Gateway discovers', async () => {
+  it('registers under acpResume with the seven Remote markers the Gateway discovers', async () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['close', 'list', 'purge', 'turn', 'turns', 'usage'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['close', 'list', 'purge', 'turn', 'turns', 'usage', 'workflows'])
   })
 
   it('list reflects started chats, then title and turnCount after a completed turn', async () => {

@@ -27,15 +27,15 @@ export function roleChildId(role: string): string {
 }
 
 export class WorkflowRecorder {
-  private readonly runId = randomUUID()
   private seq = 0
   private disabled = false
 
   /**
    * @param session - the calling session; its `append` is used as {@link RecordSink}.
    * @param onWarn - receives one message when an append fails.
+   * @param runId - the run id to record under; the D29 tracker passes its own so the panel entry and the card match.
    */
-  constructor(private readonly session: unknown, private readonly onWarn?: (message: string) => void) {}
+  constructor(private readonly session: unknown, private readonly onWarn?: (message: string) => void, private readonly runId: string = randomUUID()) {}
 
   /** Open the run record; returns the run id. */
   start(name: string): string {

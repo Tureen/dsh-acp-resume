@@ -29,7 +29,8 @@ export interface WorkflowObserver {
   stepStart?(stepId: string): void
   /** A role member is about to be sent to; returns its member seq. */
   memberStart?(role: string, stepId: string): number
-  memberEnd?(seq: number, outcome: MemberOutcome): void
+  /** A role member settled; `chatId` is the chat that answered, when the send produced a result. */
+  memberEnd?(seq: number, outcome: MemberOutcome, chatId?: string): void
 }
 
 /** What the engine needs from the pool. */
@@ -184,7 +185,7 @@ function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: R
       result = await pool.sendByRole(role, prompt, context, signal, hooks)
       return result
     } finally {
-      if (seq !== undefined) contained(() => { observer.memberEnd?.(seq, outcomeOf(result, signal)) })
+      if (seq !== undefined) contained(() => { observer.memberEnd?.(seq, outcomeOf(result, signal), result?.chatId) })
     }
   }
 }
