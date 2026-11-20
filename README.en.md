@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.3.4. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 489 tests.
+Status: 0.3.5. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 500 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -331,6 +331,8 @@ templates:
       - id: merge
         merge: { mode: role, role: editor, prompt: "Merge these reviews of {target}." }
 ```
+
+The "ACP chats" side panel has a workflow block (D29). Running workflows show a spinner, `template · current step`, and a live timer; the last 5 finished runs show their outcome (green completed, red failed, orange cancelled or interrupted) and how long ago. Click a row to expand its steps and members; click a member to open its chat detail. Records live in `workflows/<session id>.jsonl` next to the registry and hold only step and member summaries, no role answers and no call params; a run cut short by a host restart shows as interrupted.
 
 Call: `acp_workflow({ template: "dual_review", params: { target: "src/pool.ts", dimensions: "concurrency and leaks" } })`. See [docs/acp-team.example.yml](docs/acp-team.example.yml) for a full example.
 
