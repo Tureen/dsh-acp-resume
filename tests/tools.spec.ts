@@ -441,6 +441,14 @@ describe('Codex backend wiring (D25)', () => {
     return { ctx, registryPath }
   }
 
+  it('registers acp_backend_usage only when a Codex backend is configured (D28)', async () => {
+    const { ctx } = await mount({ backends: codexBackends() })
+    await until(() => stubTools(ctx).registered.has('acp_backend_usage'), 'usage tool registration')
+    const usage = stubTools(ctx).registered.get('acp_backend_usage') as Definition
+    expect(usage.isConcurrencySafe?.({})).toBe(true)
+    expect(usage.description).toMatch(/read-only/)
+  })
+
   it('lists both the default ACP backend and the Codex backend in acp_chat_start', async () => {
     const { ctx } = await mount({ backends: codexBackends({ description: 'Codex 评审' }) })
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition

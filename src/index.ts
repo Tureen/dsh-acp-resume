@@ -29,7 +29,8 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { chatSendTool, chatStaticTools, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { UsageService } from './usage.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
@@ -330,6 +331,7 @@ export function apply(ctx: Context, config: Config): void {
   // reload re-registers the tools without killing chat processes. It is built
   // on the first tools arrival, so a host without a tools service touches no registry file.
   let pool: AcpSessionPool | undefined
+  let usage: UsageService | undefined
   // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled
   // and every live chat process released; the registry file survives (D14).
   ctx.effect(() => () => pool?.disposeAll())
@@ -348,6 +350,9 @@ export function apply(ctx: Context, config: Config): void {
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })), roles)
     scope.effect(() => scope.tools.register(start))
     scope.effect(() => scope.tools.register(steer))
+    // D28: one usage cache for the tool and the panel; the tool exists only when a Codex backend is configured.
+    usage ??= new UsageService(chatPool)
+    if (chatPool.backendList().some(b => b.protocol === 'codex')) scope.effect(() => scope.tools.register(chatUsageTool(usage as UsageService)))
     // Send follows the job registry, as the official bash tool does: the inline
     // variant registers now unless a registry is already composed, the
     // job-backed variant replaces it while `ctx.jobs` is present, and the inline
@@ -380,6 +385,6 @@ export function apply(ctx: Context, config: Config): void {
     })
     // The panel Remote service (D15) shares the pool's arrival point and the
     // tools scope's lifetime: it is unregistered with that scope.
-    new AcpResumePanelService(scope, pool)
+    new AcpResumePanelService(scope, pool, usage)
   })
 }

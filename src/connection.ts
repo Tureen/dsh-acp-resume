@@ -129,6 +129,16 @@ export interface AcpConnection {
    * @throws {AcpSteerUnsupportedError} the agent answered `-32601 Method not found`.
    */
   steer(message: string): Promise<AcpSteerResult>
+  /**
+   * Codex connections only (D28): the read-only `account/read` reply, raw.
+   * Absent on ACP connections.
+   */
+  readonly readAccount?: () => Promise<unknown>
+  /**
+   * Codex connections only (D28): the read-only `account/rateLimits/read`
+   * reply (`excludeResetCreditDetails: true`), raw. Absent on ACP connections.
+   */
+  readonly readRateLimits?: () => Promise<unknown>
   /** Observe the process outcome for failure classification (bounded by the spec grace). */
   observeOutcome(signal?: AbortSignal): Promise<SubprocessOutcome | undefined>
   /** Best-effort `session/cancel` notification for the remote session. */

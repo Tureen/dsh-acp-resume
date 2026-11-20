@@ -28,6 +28,9 @@
  * - `MOCK_CANCEL_FILE`   — every `turn/interrupt` appends `interrupt <threadId> <turnId>`.
  * - `MOCK_REQUEST_FILE`  — every `thread/*` and `turn/start` request appends its JSON params (one line).
  * - `MOCK_CRASH_ON_INITIALIZE` — exit(1) on `initialize`.
+ * - `account/read` / `account/rateLimits/read` (D28): `MOCK_CODEX_PLAN` (default `prolite`),
+ *   `MOCK_CODEX_PRIMARY_PERCENT` (12, 300-min window) / `MOCK_CODEX_SECONDARY_PERCENT` (83, 10080-min window),
+ *   `MOCK_CODEX_RATE_LIMITS_FAIL=1` fails the rate-limit read; both reads are logged to `MOCK_REQUEST_FILE`.
  *
  * @module dsh-acp-resume/tests/mock-codex-server
  */
@@ -156,6 +159,22 @@ const handle = (id: unknown, method: string, params: Json): void => {
     case 'initialize':
       if (env['MOCK_CRASH_ON_INITIALIZE'] === '1') process.exit(1)
       return reply(id, { userAgent: 'mock-codex/0.0.0' })
+    case 'account/read':
+      log(env['MOCK_REQUEST_FILE'], `account/read ${JSON.stringify(params)}`)
+      return reply(id, { account: { type: 'chatgpt', email: null, planType: env['MOCK_CODEX_PLAN'] ?? 'prolite', workspaceName: null }, userId: null, requiresOpenaiAuth: false })
+    case 'account/rateLimits/read':
+      log(env['MOCK_REQUEST_FILE'], `account/rateLimits/read ${JSON.stringify(params)}`)
+      if (env['MOCK_CODEX_RATE_LIMITS_FAIL'] === '1') return fail(id, -32603, 'usage backend unavailable')
+      return reply(id, {
+        ordinaryUsageAllowed: true,
+        rateLimits: {
+          limitId: 'codex', limitName: null, normalModelSlug: null,
+          primary: { usedPercent: Number(env['MOCK_CODEX_PRIMARY_PERCENT'] ?? '12'), windowDurationMins: 300, resetsAt: 1_800_000_300 },
+          secondary: { usedPercent: Number(env['MOCK_CODEX_SECONDARY_PERCENT'] ?? '83'), windowDurationMins: 10080, resetsAt: 1_800_600_000 },
+          credits: null, individualLimit: null, spendControlReached: null, planType: 'prolite', rateLimitReachedType: null,
+        },
+        rateLimitsByLimitId: null, rateLimitResetCredits: null, accountId: null, rateLimitUpsell: null,
+      })
     case 'model/list':
       return reply(id, { data: [{ id: 'mock-model', model: 'mock-model', hidden: false }, { id: 'mock-model-hidden', model: 'mock-model-hidden', hidden: true }] })
     case 'thread/start': {

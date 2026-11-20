@@ -27,6 +27,7 @@ import type { PermissionRequestResolver } from './permission-request.js'
 import { bindParams, runWorkflow, type WorkflowObserver, type WorkflowResult } from './workflow-engine.js'
 import { WorkflowRecorder, type RunStopReason } from './workflow-record.js'
 import { describeTeamConfig, readTeamConfig } from './team-config.js'
+import type { UsageService } from './usage.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -706,6 +707,42 @@ export function chatWorkflowTool(
         text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes. ${NO_WAIT_GUIDANCE}`,
         jobId,
       }
+    },
+  })
+}
+
+/** Name of the backend usage tool (D28); fixed, not under the chat tools' prefix. */
+export const USAGE_TOOL = 'acp_backend_usage'
+
+/**
+ * The `acp_backend_usage` tool (D28): read-only quota of the configured
+ * backends. Codex backends report plan and the most-used window; ACP backends
+ * report `unsupported`. Results are cached (5 minutes); `refresh` forces a new read.
+ * @param usage - the plugin's usage service.
+ */
+export function chatUsageTool(usage: UsageService): ToolDefinitionOf {
+  return defineTool({
+    name: USAGE_TOOL,
+    description: 'Show the quota usage of the configured ACP backends, read-only and free to call. '
+      + 'Codex backends report their plan and the most-used limit window: usedPercent (may exceed 100), windowMins, and resetsAt (unix seconds). '
+      + 'Other backends report status unsupported. Results are cached for 5 minutes (fetchedAt says when they were read); pass refresh to read again. '
+      + 'Use it before dispatching large work to a backend, or when a backend starts failing.',
+    parameters: {
+      backend: { type: 'string', description: 'One backend name (as acp_chat_start takes it); omit for all backends.' },
+      refresh: { type: 'boolean', description: 'Skip the cache and read now (default false).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      exec.signal.throwIfAborted()
+      const result = await usage.read({
+        ...(args.backend === undefined || args.backend === '' ? {} : { backend: args.backend }),
+        ...(args.refresh === true ? { refresh: true } : {}),
+      })
+      return { text: JSON.stringify(result, undefined, 2) }
     },
   })
 }

@@ -40,6 +40,19 @@ export interface PanelChat {
   readonly backendCount?: number
 }
 
+/** One backend's quota as the host reports it (D28; structural twin of the host `BackendUsage`). */
+export interface PanelUsage {
+  readonly backend: string
+  readonly protocol: 'codex' | 'acp'
+  readonly status: 'ok' | 'unsupported' | 'error'
+  readonly plan?: string
+  readonly usedPercent?: number
+  readonly windowMins?: number
+  readonly resetsAt?: number
+  readonly fetchedAt: number
+  readonly error?: string
+}
+
 /** The panel's published view of the pool. */
 export interface ChatsSnapshot {
   /** `loading` until the first answer; `error` keeps the last good rows. */
@@ -50,6 +63,8 @@ export interface ChatsSnapshot {
   readonly error?: string
   /** Epoch milliseconds the rows were fetched at: the reference for relative times. */
   readonly fetchedAt?: number
+  /** Backend quotas (D28), fetched apart from the rows; absent until the first answer or with an older host. */
+  readonly usage?: readonly PanelUsage[]
 }
 
 /** Structural twin of the official `ObservableSnapshot`. */

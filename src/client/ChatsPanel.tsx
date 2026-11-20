@@ -26,7 +26,7 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { chatAddress } from './chat-address.ts'
-import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, SelectorHook, TabInfoHook } from './face.ts'
+import type { ChatsPanelInjected, ChatsSnapshot, PanelChat, PanelUsage, SelectorHook, TabInfoHook } from './face.ts'
 import type { PanelTranslate } from './locales.ts'
 
 /** The panel's props: the injected face with `hooks.chats` bound to `useChats`, plus the locale seat. */
@@ -93,6 +93,8 @@ const styles = {
   groupToggle: { alignSelf: 'flex-start' },
   controls: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   countNote: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
+  usage: { display: 'flex', flexDirection: 'column', gap: 2 },
+  usageError: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   elapsed: { flex: 'none', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
 } satisfies Record<string, CSSProperties>
 
@@ -226,6 +228,38 @@ interface ChatCardProps {
   readonly t: PanelTranslate
 }
 
+/** A usage window's length in words: `周` for 7 days, else hours or minutes. */
+function windowLabel(t: PanelTranslate, mins: number): string {
+  if (mins === 10_080) return t('usageWeek')
+  return mins % 60 === 0 ? t('usageHours', { hours: mins / 60 }) : t('usageMinutes', { minutes: mins })
+}
+
+/**
+ * The header's backend usage lines (D28): `codex · prolite · 83%` per backend
+ * read `ok`, `codex · 额度读取失败` per `error`; `unsupported` backends are not
+ * shown. The hover text names the window and its reset time, or the failure.
+ */
+function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | undefined; readonly t: PanelTranslate }): ReactNode {
+  const shown = (usage ?? []).filter(u => u.status !== 'unsupported')
+  if (shown.length === 0) return null
+  return (
+    <div style={styles.usage} data-usage>
+      {shown.map((u) => {
+        const text = u.status === 'error'
+          ? [u.backend, t('usageFailed')].join(' · ')
+          : [u.backend, ...(u.plan === undefined ? [] : [u.plan]), ...(u.usedPercent === undefined ? [] : [`${Math.round(u.usedPercent)}%`])].join(' · ')
+        const hint = u.status === 'error'
+          ? u.error ?? ''
+          : [
+              ...(u.usedPercent === undefined || u.windowMins === undefined ? [] : [t('usageWindow', { window: windowLabel(t, u.windowMins), percent: Math.round(u.usedPercent) })]),
+              ...(u.resetsAt === undefined ? [] : [t('usageResets', { time: new Date(u.resetsAt * 1000).toLocaleString() })]),
+            ].join(' · ')
+        return <p key={u.backend} style={u.status === 'error' ? styles.usageError : styles.countNote} data-usage-backend={u.backend} title={hint}>{text}</p>
+      })}
+    </div>
+  )
+}
+
 /**
  * The row's hover text (native `title`): the in-flight message's first line
  * (`当前:…`) or the first-turn title, then state, turn count, and last activity.
@@ -335,6 +369,7 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, refresh, cl
           <Button size="sm" variant="ghost" onClick={() => { refresh() }}>{t('refresh')}</Button>
         </div>
       </div>
+      <UsageLines usage={snapshot.usage} t={t} />
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}

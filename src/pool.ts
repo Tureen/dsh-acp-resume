@@ -40,6 +40,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
@@ -940,6 +941,48 @@ export class AcpSessionPool {
 
   private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
     return this.backendFor(entry).specBase
+  }
+
+  /** Every configured backend with its wire protocol (D28), default first. */
+  backendList(): readonly { readonly name: string; readonly protocol: 'acp' | 'codex' }[] {
+    return [...this.backends.values()]
+      .map(b => ({ name: b.name, protocol: b.protocol === 'codex' ? 'codex' as const : 'acp' as const }))
+      .sort((a, b) => (a.name === DEFAULT_BACKEND ? -1 : b.name === DEFAULT_BACKEND ? 1 : 0))
+  }
+
+  /**
+   * Run `read` against a Codex connection of `backend` (D28): a live pooled
+   * one when any chat of that backend has a live process (borrowed, not
+   * claimed: the reads are read-only and may run beside a turn), else a
+   * temporary `app-server` opened in usage mode (initialize only, no thread)
+   * in the user's home directory and disposed afterwards. The temporary
+   * process never joins the pool or the registry.
+   * @throws when the backend is unknown or not a Codex backend, or the read fails.
+   */
+  async withCodexUsage<T>(backend: string, read: (conn: AcpConnection) => Promise<T>): Promise<T> {
+    this.assertLive()
+    const spec = this.backends.get(backend)
+    if (spec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
+    if (spec.protocol !== 'codex' || spec.codex === undefined) throw new Error(`acp-resume: backend ${backend} is not a Codex backend`)
+    for (const chat of this.live.values()) {
+      const entry = this.registry.get(chat.chatId)
+      if (entry === undefined || this.backendName(entry) !== backend) continue
+      if (chat.closing !== undefined || chat.conn.processSettled || chat.conn.readRateLimits === undefined) continue
+      return read(chat.conn)
+    }
+    const codex = spec.codex
+    const conn = await openCodexConnection({
+      ...spec.specBase,
+      cwd: homedir(),
+      codexModel: codex.model,
+      ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
+      ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
+    }, { mode: 'usage' })
+    try {
+      return await read(conn)
+    } finally {
+      await this.disposeQuietly(conn)
+    }
   }
 
   /** Open a connection with the backend's wire protocol (D25); ACP is the default. */

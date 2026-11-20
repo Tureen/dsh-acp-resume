@@ -150,7 +150,14 @@ interface TurnState {
  * @param open - fresh thread or resume of a saved thread id.
  * @param signal - optional cancellation for the startup window.
  */
-export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpMode, signal?: AbortSignal): Promise<AcpConnection> {
+/**
+ * How to open a Codex connection: the ACP modes (new / load a thread), or
+ * `usage` (D28): `initialize` only, no thread, for the read-only account reads.
+ * A `usage` connection has an empty `remoteSessionId` and must not prompt.
+ */
+export type CodexOpenMode = OpenAcpMode | { readonly mode: 'usage' }
+
+export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpenMode, signal?: AbortSignal): Promise<AcpConnection> {
   if (signal?.aborted) throw new Error('subagent request was aborted before the Codex child started')
   const id = brandString<SessionId>(randomUUID())
 
@@ -379,7 +386,9 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
       (async (): Promise<void> => {
         await request('initialize', { clientInfo: { name: 'dsh-acp-resume', version: '0.1.0' } })
         notify('initialized')
-        if (open.mode === 'new') {
+        if (open.mode === 'usage') {
+          remoteThreadId = ''
+        } else if (open.mode === 'new') {
           startupStage = 'new-session'
           const reply = asRecord(await request('thread/start', { cwd: spec.cwd, ...threadParams, ephemeral: false }))
           const threadId = str(asRecord(reply?.['thread'])?.['id'])
@@ -440,6 +449,9 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: OpenAcpM
     observeOutcome,
     notifyCancel: requestCancel,
     dispose,
+    // D28 read-only allowlist: exactly these two account methods, never a generic request.
+    readAccount: () => request('account/read', {}),
+    readRateLimits: () => request('account/rateLimits/read', { excludeResetCreditDetails: true }),
     async steer(message: string): Promise<AcpSteerResult> {
       const expectedTurnId = turn?.turnId
       if (expectedTurnId === undefined) throw new Error('acp-resume: no Codex turn is in flight to steer')

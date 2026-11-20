@@ -168,6 +168,43 @@ describe('ChatsPanel', () => {
     expect([...container.querySelectorAll('[data-chat-id]')].map(el => el.getAttribute('data-chat-id'))).toEqual(['chat-run', 'chat-new', 'chat-old'])
   })
 
+  it('shows one header usage line per ok or failed backend, none for unsupported ones (D28)', () => {
+    const usage = [
+      { backend: 'default', protocol: 'acp' as const, status: 'unsupported' as const, fetchedAt: NOW },
+      { backend: 'codex', protocol: 'codex' as const, status: 'ok' as const, plan: 'prolite', usedPercent: 83.4, windowMins: 10080, resetsAt: 1_800_600_000, fetchedAt: NOW },
+      { backend: 'codex2', protocol: 'codex' as const, status: 'error' as const, error: 'usage read timed out after 15000 ms', fetchedAt: NOW },
+    ]
+    const { container, rerender } = render(<ChatsPanel {...props({ ...ready([chat()]), usage })} />)
+    const lines = [...container.querySelectorAll('[data-usage-backend]')] as HTMLElement[]
+    expect(lines.map(l => l.textContent)).toEqual(['codex · prolite · 83%', 'codex2 · 额度读取失败'])
+    expect(lines[0]?.getAttribute('title')).toMatch(/^周窗口已用 83% · .+ 重置$/)
+    expect(lines[1]?.getAttribute('title')).toBe('usage read timed out after 15000 ms')
+    rerender(<ChatsPanel {...props({ ...ready([chat()]), usage: [usage[0]!] })} />)
+    expect(container.querySelector('[data-usage]')).toBeNull()
+    rerender(<ChatsPanel {...props(ready([chat()]))} />)
+    expect(container.querySelector('[data-usage]')).toBeNull()
+  })
+
+  it('merges backend usage into the snapshot without holding up the rows or counting as a poll (D28)', async () => {
+    let answerUsage!: (value: PanelRpcResult) => void
+    const rpc: PanelRpc = {
+      call: async (_channel, endpoint) => endpoint === 'acpResume/usage'
+        ? new Promise((resolve) => { answerUsage = resolve })
+        : { ok: true, value: [chat()] },
+    }
+    const source = new ChatsSource(rpc, () => NOW)
+    await source.refresh()
+    expect(source.getSnapshot()).toEqual({ status: 'ready', chats: [chat()], fetchedAt: NOW })
+    const usage = [{ backend: 'codex', protocol: 'codex', status: 'ok', usedPercent: 5, fetchedAt: NOW }]
+    answerUsage({ ok: true, value: usage })
+    await vi.waitFor(() => { expect(source.getSnapshot().usage).toEqual(usage) })
+    // An older host without the method: the rows are unaffected.
+    const old = new ChatsSource({ call: async (_c, endpoint) => endpoint === 'acpResume/usage' ? { ok: false, error: { code: 'gateway/not-found', message: 'no method' } } : { ok: true, value: [chat()] } }, () => NOW)
+    await old.refresh()
+    await new Promise(r => setTimeout(r, 0))
+    expect(old.getSnapshot()).toEqual({ status: 'ready', chats: [chat()], fetchedAt: NOW })
+  })
+
   it('counts the session chats by state in the header line', () => {
     render(<ChatsPanel {...props(ready([
       chat({ chatId: 'chat-run', inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 } }),
@@ -427,15 +464,22 @@ describe('display helpers', () => {
 })
 
 /** Mock carrier: answers `acpResume/list` from `rows`, records every call. */
-function mockRpc(rows: () => unknown = () => []): PanelRpc & { calls: [string, string, unknown][] } {
+/** A fake carrier. Usage calls (D28) are kept apart in `usageCalls` so the list/command call log stays exact. */
+function mockRpc(rows: () => unknown = () => [], usage: () => PanelRpcResult = () => ({ ok: true, value: [] })): PanelRpc & { calls: [string, string, unknown][]; usageCalls: number } {
   const calls: [string, string, unknown][] = []
-  return {
+  const rpc = {
     calls,
+    usageCalls: 0,
     call: vi.fn(async (channel: string, endpoint: string, payload: unknown): Promise<PanelRpcResult> => {
+      if (endpoint === 'acpResume/usage') {
+        rpc.usageCalls += 1
+        return usage()
+      }
       calls.push([channel, endpoint, payload])
       return endpoint === 'acpResume/list' ? { ok: true, value: rows() } : { ok: true, value: null }
     }),
   }
+  return rpc
 }
 
 const listCalls = (rpc: { calls: [string, string, unknown][] }): number => rpc.calls.filter(c => c[1] === 'acpResume/list').length
@@ -450,7 +494,7 @@ describe('ChatsSource', () => {
     const stopB = source.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(rpc.calls).toEqual([['/api', 'acpResume/list', { args: {} }]])
-    expect(source.getSnapshot()).toEqual({ status: 'ready', chats: [chat()], fetchedAt: NOW })
+    expect(source.getSnapshot()).toEqual({ status: 'ready', chats: [chat()], fetchedAt: NOW, usage: [] })
     const before = source.getSnapshot()
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBe(2)
@@ -548,6 +592,7 @@ describe('ChatsSource', () => {
     let failList = false
     const rpc: PanelRpc = {
       call: vi.fn(async (_channel: string, endpoint: string): Promise<PanelRpcResult> => {
+        if (endpoint === 'acpResume/usage') return { ok: true, value: [] }
         if (endpoint === 'acpResume/purge') return { ok: false, error: { code: 'acp-resume/unknown-chat', message: 'acp-resume: unknown chat x' } }
         if (failList) throw new Error('transport failure for /api/acpResume/list: HTTP 502')
         return { ok: true, value: [chat()] }
@@ -559,13 +604,14 @@ describe('ChatsSource', () => {
     await expect(source.purge('x')).rejects.toThrow('acp-resume/unknown-chat: acp-resume: unknown chat x')
     await vi.waitFor(() => { expect(source.getSnapshot().status).toBe('error') })
     expect(source.getSnapshot()).toEqual({
-      status: 'error', chats: [chat()], fetchedAt: NOW, error: 'transport failure for /api/acpResume/list: HTTP 502',
+      status: 'error', chats: [chat()], fetchedAt: NOW, error: 'transport failure for /api/acpResume/list: HTTP 502', usage: [],
     })
   })
 
   it('drops an answer older than the latest refresh, and everything after dispose', async () => {
     const answers: ((value: PanelRpcResult) => void)[] = []
-    const rpc: PanelRpc = { call: () => new Promise((resolve) => { answers.push(resolve) }) }
+    // Usage (D28) answers at once; only list answers are held.
+    const rpc: PanelRpc = { call: async (_channel, endpoint) => endpoint === 'acpResume/usage' ? { ok: true, value: [] } : new Promise((resolve) => { answers.push(resolve) }) }
     const source = new ChatsSource(rpc, () => NOW)
     const first = source.refresh()
     const second = source.refresh()

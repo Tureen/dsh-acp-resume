@@ -9,7 +9,7 @@
  * @module dsh-acp-resume/client/chats-source
  */
 
-import type { ChatsSnapshot, Observable, PanelChat } from './face.ts'
+import type { ChatsSnapshot, Observable, PanelChat, PanelUsage } from './face.ts'
 import { listSnapshotEqual } from './snapshot-equal.ts'
 
 /** Fast poll period while the panel is open and recently changing (§2.4). */
@@ -30,7 +30,7 @@ export interface PanelRpc {
 }
 
 /** Host method names under the `acpResume` namespace (wire `purge`, not `remove`; §3.6.0 #2). */
-export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn'
+export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage'
 
 /**
  * Call one host panel method; carrier throws and `ok: false` both reject.
@@ -106,20 +106,49 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     }
   }
 
-  /** Fetch the list now and publish it. Never rejects; a failure is published as `error`. */
+  /** Last usage answer (D28); kept across list refreshes. */
+  private usage: readonly PanelUsage[] | undefined
+  /** A usage request is in flight; another refresh does not start a second one. */
+  private usagePending = false
+
+  /** Fetch the list now and publish it, and the backend usage beside it. Never rejects; a list failure is published as `error`. */
   async refresh(): Promise<void> {
     if (this.disposed) return
+    // Usage never holds up the rows: it is fetched on its own and merged when it lands.
+    void this.refreshUsage()
     const id = ++this.latest
     try {
       const value = await callPanel(this.rpc, 'list', {})
       if (!Array.isArray(value)) throw new Error('acpResume/list returned no list')
       if (this.stale(id)) return
       const chats = [...value as PanelChat[]].sort((a, b) => b.lastActive - a.lastActive)
-      this.publish({ status: 'ready', chats, fetchedAt: this.now() })
+      this.publish({ status: 'ready', chats, fetchedAt: this.now(), ...this.usageField() })
     } catch (error: unknown) {
       if (this.stale(id)) return
       const { chats, fetchedAt } = this.snapshot
-      this.publish({ status: 'error', chats, error: message(error), ...(fetchedAt === undefined ? {} : { fetchedAt }) })
+      this.publish({ status: 'error', chats, error: message(error), ...(fetchedAt === undefined ? {} : { fetchedAt }), ...this.usageField() })
+    }
+  }
+
+  private usageField(): { readonly usage?: readonly PanelUsage[] } {
+    return this.usage === undefined ? {} : { usage: this.usage }
+  }
+
+  /** Fetch backend usage (D28). A failure (e.g. an older host without the method) keeps the last answer. */
+  private async refreshUsage(): Promise<void> {
+    if (this.usagePending) return
+    this.usagePending = true
+    try {
+      const value = await callPanel(this.rpc, 'usage', {})
+      if (this.disposed || !Array.isArray(value)) return
+      this.usage = value as PanelUsage[]
+      // Merge into the current rows without counting as a poll (the list poll drives the backoff).
+      const next: ChatsSnapshot = { ...this.snapshot, usage: this.usage }
+      if (this.snapshot.status === 'loading' || listSnapshotEqual(this.snapshot, next)) return
+      this.snapshot = next
+      for (const listener of [...this.listeners]) listener()
+    } catch { /* usage is optional: the rows stay as they are */ } finally {
+      this.usagePending = false
     }
   }
 
