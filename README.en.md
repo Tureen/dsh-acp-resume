@@ -2,9 +2,19 @@
 
 [简体中文](README.md)
 
-With this plugin, you can delegate a task to an external subagent in DeepSeek Harness (DSH), then ask that same agent a follow-up. A persistent chat pool keeps agent processes alive between turns and saves each remote session ID. If a process exits or the pool releases it after a period of inactivity, the next message attempts to resume the session with its context intact.
+## Why this plugin exists
 
-**kiro-cli** is the default backend. **Antigravity (agy)** and **Codex** are also supported. You can work through a change with one reviewer or ask several roles to review it independently and combine their findings. For one-shot delegation, the plugin provides its own `acp-resume` provider alongside the official `acp` provider.
+### Resume · Keep a subagent’s working context
+
+The official ACP backend in DeepSeek Harness (DSH) starts a fresh session for each assignment, so even a follow-up on a reviewer’s second finding requires you to explain the context again. Resume keeps the same subagent session, so you can say “dig into the second finding” and the reviewer can pick up with the code, evidence, and reasoning it already has. The plugin runs alongside the official backend and uses a persistent pool to reuse processes and save remote session IDs, so the next message can attempt to resume the session after a process exits or times out while idle.
+
+### ACP Dispatcher · Coordinate several subagents from one conversation
+
+The plugin makes ACP tools available in every mode, and ACP Dispatcher is an optional preset for delegation. In that mode, the main agent breaks down work, assigns it, and collects results in one conversation, while individual ACP sessions carry out the work because the main agent has no shell or file tools. You can have kiro write code while Codex reasons through edge cases, ask two engines to independently verify a conclusion, or delegate a long-running task and follow its progress in the same window.
+
+### ACP Workflow · Turn repeatable collaboration into a template
+
+If every review calls for two independent reviewers and an editor to combine their findings, define those roles and the workflow template in your workspace’s `.agents/acp-team.yml`. With workflows enabled, a single `acp_workflow` call runs the steps in the declared order, dispatches the designated roles in parallel, and merges their results as specified. Reuse the template for each review and the engine follows the same sequence without relying on the model to remember and dispatch every step.
 
 ## Installation
 
