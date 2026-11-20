@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:0.3.1。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 466 例全绿。
+状态:0.3.2。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 469 例全绿。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -59,7 +59,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
         env: {}                      # 叠加到清洗后父环境之上的变量(如子 agent 自己的 key)
         enableChatTools: true        # 默认 true;false 时只注册 one-shot provider
         toolPrefix: acp_chat_        # 默认 acp_chat_;五个工具名的前缀
-        allowChatJobWait: false      # 默认 false;false 时拒绝对运行中 acp-chat 任务的 job_output wait:true(D22),true 则放开
+        allowChatJobWait: false      # 默认 false;false 时有运行中 acp-chat 任务就拒绝 job_output wait:true 与 wait_agent(D22),true 则放开
         workflow: false              # 默认 false,需显式开启;工作区角色与工作流(D27):send/close 可用 role 代替 chatId,首次引用按 .agents/acp-team.yml 自动建会话;false 时工具定义与 D27 前一致
         idleTimeoutMs: 600000        # 默认 600000;空闲多久释放进程
         disposeEofGraceMs: 6000      # 默认 6000;关 stdin 后等子进程自行收尾的时间
@@ -104,7 +104,7 @@ DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-s
 
 `model` / `effort` 同样对两条路径生效,是 **spawn 级**选择(作用于该子进程启动的会话)。两者缺省时不拼对应旗标,保持 kiro 的 `auto`(服务器按任务动态选模型,`effort` 不可控);设了就把模型/档位钉死。**生效语义**:只对下次启动的进程生效——已在运行的会话进程不受影响,正在续聊的会话要等它空闲释放、下次 `acp_chat_send` 重连(新进程)时才应用新模型。与 `--agent-engine` 一样,指纹校验也忽略 `--model` / `--effort`(理由见 D19):`auto` 本就在会话内按任务换模型,换个钉死的模型不构成"换了一个 agent",旧会话照旧可续。
 
-`allowChatJobWait`(D22):一轮对话常跑十几分钟,模型用 `job_output` 的 `wait: true` 硬等会顶满宿主 600 秒上限,期间用户新消息排队。默认在工具派发前拒绝对**运行中**的 acp-chat 任务的 wait,并告诉模型等完成通知;任务已结算、其他种类任务(如 bash)不受影响。设 `true` 关闭该拦截。
+`allowChatJobWait`(D22):一轮对话常跑十几分钟,模型用 `job_output` 的 `wait: true` 硬等会顶满宿主 600 秒上限,期间用户新消息排队。默认在工具派发前拒绝对**运行中**的 acp-chat 任务的 wait,并告诉模型等完成通知;有运行中的 acp-chat 任务(含 `acp_workflow`)时，`wait_agent` 也会被拒绝。任务已结算、其他种类任务(如 bash)不受影响。设 `true` 关闭该拦截。
 
 `backends` 可选命名表可让不同 chat 绑定不同 ACP agent；顶层 command/args 等字段始终代表默认后端。配置多个后端时，`acp_chat_start` 可选 `backend` 参数；名称和 description 应使用中性说明，不应标“推荐”或优先级。
 

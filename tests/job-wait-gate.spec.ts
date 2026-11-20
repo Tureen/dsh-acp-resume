@@ -28,7 +28,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
-import { decideJobWait, waitDeniedReason } from '../src/job-wait-gate.ts'
+import { decideJobWait, WAIT_AGENT_DENIED_REASON, waitDeniedReason } from '../src/job-wait-gate.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -160,6 +160,34 @@ describe('decideJobWait', () => {
     job.settle()
   })
 
+  it('denies wait_agent while the calling session has a running acp-chat job, whatever its arguments', async () => {
+    const ctx = await jobsHost()
+    const agent = await liveAgent(ctx, 'session-a')
+    const job = startJob(ctx, 'acp-chat', agent)
+    for (const args of [{ timeout_ms: 30000 }, {}, null]) {
+      expect(decideJobWait(ctx.jobs, outputCall(agent, args, 'wait_agent'))).toEqual({ kind: 'deny', reason: WAIT_AGENT_DENIED_REASON })
+    }
+    expect(WAIT_AGENT_DENIED_REASON).toBe('You have a running acp-chat job; end your reply instead of waiting — the completion notification will wake you.')
+    job.settle()
+  })
+
+  it('allows wait_agent with no running acp-chat job: none, settled, other kinds, another session\'s, or no agent', async () => {
+    const ctx = await jobsHost()
+    const agent = await liveAgent(ctx, 'session-a')
+    const other = await liveAgent(ctx, 'session-b')
+    expect(decideJobWait(ctx.jobs, outputCall(agent, {}, 'wait_agent'))).toBeUndefined()
+    const chat = startJob(ctx, 'acp-chat', agent)
+    chat.settle()
+    await ctx.jobs.wait(chat.id, 5000, agent.id)
+    const bash = startJob(ctx, 'bash', agent)
+    const foreign = startJob(ctx, 'acp-chat', other)
+    expect(decideJobWait(ctx.jobs, outputCall(agent, {}, 'wait_agent'))).toBeUndefined()
+    expect(decideJobWait(ctx.jobs, outputCall(undefined, {}, 'wait_agent'))).toBeUndefined()
+    expect(decideJobWait(ctx.jobs, outputCall(other, {}, 'wait_agent'))?.kind).toBe('deny')
+    bash.settle()
+    foreign.settle()
+  })
+
   it('allows other tools, a missing agent, and malformed arguments', async () => {
     const ctx = await jobsHost()
     const agent = await liveAgent(ctx, 'session-a')
@@ -244,6 +272,14 @@ describe('apply: allowChatJobWait switch', () => {
   it('registers no listener when allowChatJobWait is true', async () => {
     const { ctx, agent, job } = await mounted({ allowChatJobWait: true })
     expect((await dispatch(ctx, outputCall(agent, { job_id: job.id, wait: true }))).kind).toBe('allow')
+    expect((await dispatch(ctx, outputCall(agent, {}, 'wait_agent'))).kind).toBe('allow')
+    job.settle()
+  })
+
+  it('denies wait_agent through the host dispatch by default while a chat job runs', async () => {
+    const { ctx, agent, job } = await mounted({})
+    const decision = await dispatch(ctx, outputCall(agent, { timeout_ms: 120000 }, 'wait_agent'))
+    expect(decision).toMatchObject({ kind: 'deny', reason: WAIT_AGENT_DENIED_REASON })
     job.settle()
   })
 

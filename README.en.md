@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.3.1. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 466 tests.
+Status: 0.3.2. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 469 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -61,7 +61,7 @@ There are two ways to mount the plugin, pick one (see "Install and upgrade" belo
         env: {}                      # variables layered on top of the sanitized parent environment (e.g. the child agent's own key)
         enableChatTools: true        # default true; when false only the one-shot provider is registered
         toolPrefix: acp_chat_        # default acp_chat_; the prefix of the five tool names
-        allowChatJobWait: false      # default false; when false, job_output wait:true on a running acp-chat job is rejected (D22), true lifts the block
+        allowChatJobWait: false      # default false; when false, job_output wait:true and wait_agent are rejected while an acp-chat job runs (D22), true lifts the block
         workflow: false              # default false, enable explicitly; workspace roles and workflows (D27): send/close accept role instead of chatId and set up a role's chat from .agents/acp-team.yml on first reference; false keeps the pre-D27 tool definitions
         idleTimeoutMs: 600000        # default 600000; how long idle before the process is released
         disposeEofGraceMs: 6000      # default 6000; how long to wait for the child to wrap up by itself after stdin is closed
@@ -106,7 +106,7 @@ These recipes are **top-level overrides** for a profile whose bundle is already 
 
 `model` / `effort` also apply to both paths and are **spawn-level** choices (they act on the session the child process starts). When either is unset, its flag is not appended, which keeps kiro's `auto` (the server picks the model per task dynamically, and `effort` is not under your control); when set, the model/level is pinned. **Effective semantics**: they only apply to the next process that starts. A session process that is already running is not affected, and a session you are continuing has to wait until it is released when idle and reconnected by the next `acp_chat_send` (a new process) before the new model is applied. Like `--agent-engine`, the fingerprint check also ignores `--model` / `--effort` (reason in D19): `auto` already switches models per task within a session, so pinning a different model does not make it "a different agent", and old sessions stay continuable.
 
-`allowChatJobWait` (D22): one conversation turn often runs for ten-odd minutes, and a model hard-waiting with `job_output`'s `wait: true` hits the host's 600-second ceiling, during which the user's new messages queue up. By default, a wait on a **running** acp-chat job is rejected before the tool is dispatched, and the model is told to wait for the completion notification; jobs that have already settled and jobs of other kinds (such as bash) are not affected. Set `true` to turn this block off.
+`allowChatJobWait` (D22): one conversation turn often runs for ten-odd minutes, and a model hard-waiting with `job_output`'s `wait: true` hits the host's 600-second ceiling, during which the user's new messages queue up. By default, a wait on a **running** acp-chat job is rejected before the tool is dispatched, and the model is told to wait for the completion notification. While an acp-chat job (including `acp_workflow`) is running, `wait_agent` is rejected too. Jobs that have already settled and jobs of other kinds (such as bash) are not affected. Set `true` to turn this block off.
 
 `backends` is an optional named table that lets different chats bind to different ACP agents; top-level command/args settings remain the default backend. With multiple backends, `acp_chat_start` accepts an optional `backend` parameter. Names and descriptions are neutral, never recommendations or priority labels.
 

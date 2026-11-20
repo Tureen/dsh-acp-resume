@@ -305,6 +305,8 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 
 修订(2026-11-18,send 回执精简):后台模式 `acp_chat_send` 的成功回执只保留三件事:jobId、完成时会在会话内唤醒、在此之前不要再发给这个 chat。「结束本轮即算收集」「通知后用不带 wait 的 job_output 读」「用 job_kill 停止」只留在工具说明里，不再每轮重复。D22 门的拒绝文案不变。
 
+修订(2026-11-20,拦截面扩展到 `wait_agent`):真机验证发现，模型拿到 `acp_workflow` 的 jobId 后调 `wait_agent`(30 秒、120 秒)等待，工作流要跑几分钟，两次都超时;原门只拦 `job_output` 的 `wait: true`。现在调用方会话有运行中的 `acp-chat` job 时(chat 轮与 `acp_workflow` 运行都用这个种类),门也拒绝 `wait_agent`。`wait_agent` 没有 wait 参数，调用本身就是阻塞等待，所以不看参数。判定用 `jobs.list(<调用方>)`,只看 `kind === 'acp-chat'` 且 `status === 'running'`;`list` 抛错、没有调用方、只有已结算或其他种类的 job 时放行。拒绝文案:`You have a running acp-chat job; end your reply instead of waiting — the completion notification will wake you.` 代价：这段时间里模型对真正的子代理调用 `wait_agent` 也会被拒，只能等通知唤醒;为避免卡住用户输入，接受这一代价。`allowChatJobWait: true` 时不注册监听器，两种拦截都不生效。
+
 开关:`allowChatJobWait`(默认 `false`,即默认禁止)。设 `true` 时不注册监听器,恢复 `wait` 硬等。无 jobs 服务时本就不注册(与 send 变体的条件化一致)。
 
 后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: Waiting on job acp-chat-` 开头(文案重构后));测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
