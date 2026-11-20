@@ -6,7 +6,7 @@ A resumable ACP subagent backend for DeepSeek Harness (DSH): a sibling of the of
 
 DeepSeek Harness 的**可续聊 ACP 子代理后端**:官方 `@deepseek-ai/dsh-subagent-acp` 的独立兄弟包。在完整保留官方一次性(one-shot)委派行为的基础上,新增**持久会话池**——进程保活、远端会话号落盘、进程死后经 `session/load` 重连,让模型可以与同一个外部 ACP agent 持续多轮协作。用的是标准 ACP 方法，提供对 kiro-cli 与 agy / Antigravity 的一等私有协议定制，并把 Codex 作为第三个一等后端接入其私有 app-server 协议；其他 ACP agent 走通用兼容路径。通过 Config 的 `command` 可指向其他 ACP agent,`agentEngine: none` 可关闭对 `--agent-engine`(kiro 的引擎旗标)的追加,以适配不认该旗标的 agent。
 
-状态:0.3.3。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 478 例全绿。
+状态:0.3.4。连接原语、会话池、五个工具、持久会话面板与接线均已实现,支持 kiro / agy / Codex 三个一等后端(多后端),并自带可选的 ACP Dispatcher 模式(纯派工,见下文「ACP Dispatcher 模式」);`pnpm test` 489 例全绿。
 
 **已知限制与后续计划**:完整的真机 kiro-cli 冒烟剧本(建会话 → 两轮 → 杀进程 → 重连记得上文 → 空闲释放 → 再连)尚未全部走完,其间行为由 mock 服务器覆盖；agy 的协议直连、多轮与 SIGKILL 后 `session/load` 已实测；Codex 后端目前只经 mock 验证,真机探针待做。Other 通用 ACP 后端仍需按其能力自行验证。进度见 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
 
@@ -295,6 +295,14 @@ dsh plugin --profile <name> add dsh-acp-resume
 能力与模式解耦:插件提供能力(`acp_chat_*` 在所有模式可用),preset 提供组合选择(Dispatcher 是"只能派工"的可选约束)。
 
 **注意**:preset 内的插件不带 config,用插件默认值;需要自定义命令或后端时,见 D26 已知风险。
+
+## 后端额度(D28)
+
+配置了 Codex 后端时，插件会多注册一个只读工具 `acp_backend_usage {backend?, refresh?}`,返回各后端的额度：套餐、最紧的那个限额窗口的已用百分比(可超过 100)、窗口长度和重置时间。侧栏「ACP 会话」面板头部也会每个 Codex 后端显示一行，如 `codex · prolite · 83%`,悬停可看窗口和重置时间。
+
+- 只调用 Codex `app-server` 的两个只读方法(`account/read`、`account/rateLimits/read`),不消耗额度。有活跃的 Codex 会话时借用它的连接，没有时临时起一个 `codex app-server` 读完即关。
+- 结果缓存 5 分钟(失败缓存 1 分钟),过期后先返回旧值再在后台刷新;`refresh: true` 强制重读。
+- kiro 等 ACP 后端暂不支持，显示为 `unsupported`,面板不显示。
 
 ## 工作区角色(D27)
 

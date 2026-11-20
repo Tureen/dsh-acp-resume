@@ -8,7 +8,7 @@ Install with `dsh plugin --profile <name> add dsh-acp-resume` (requires DSH `>=0
 
 Note: the design documents linked below (DESIGN.md, DECISIONS.md, IMPLEMENTATION-PLAN.md, PANEL-DESIGN.md) are written in Chinese.
 
-Status: 0.3.3. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 478 tests.
+Status: 0.3.4. Connection primitives, the session pool, five tools, the persistent chats panel, and wiring are implemented. Three first-class backends (kiro / agy / Codex, multi-backend) are supported, along with an optional ACP Dispatcher mode (dispatch only, see "ACP Dispatcher mode" below); `pnpm test` passes all 489 tests.
 
 **Known limitations and next steps**: the full real-machine kiro-cli smoke script (create a session → two turns → kill the process → reconnect and recall the context → idle release → reconnect again) has not been fully run yet, and that behavior is covered by mock-server tests. agy protocol probing, multi-turn use, and `session/load` after SIGKILL have been verified. The Codex backend has only been verified against a mock; a real-machine probe is pending. Generic Other ACP backends still require verification against their own capabilities. Progress is tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
@@ -297,6 +297,14 @@ Pick **ACP Dispatcher** in the mode menu of a new session. After enabling the bu
 Capability is decoupled from mode: the plugin provides the capability (`acp_chat_*` works in every mode), and the preset provides a choice of combination (the Dispatcher is an optional "dispatch only" constraint).
 
 **Note**: the plugin inside the preset has no config and uses plugin defaults. To customize the command or backends, see the known risks in D26.
+
+## Backend quota (D28)
+
+When a Codex backend is configured, the plugin also registers a read-only tool, `acp_backend_usage {backend?, refresh?}`, which returns each backend's quota: plan, the used percent of the tightest limit window (it may exceed 100), the window length, and the reset time. The header of the "ACP chats" side panel also shows one line per Codex backend, such as `codex · prolite · 83%`; hover for the window and reset time.
+
+- Only two read-only Codex `app-server` methods are called (`account/read`, `account/rateLimits/read`); reading costs no quota. A live Codex chat's connection is borrowed when there is one; otherwise a temporary `codex app-server` is started and closed after the read.
+- Results are cached for 5 minutes (failures for 1 minute). An expired entry is returned at once while it refreshes in the background; `refresh: true` forces a new read.
+- kiro and other ACP backends are not supported yet; they report `unsupported` and the panel hides them.
 
 ## Workspace roles (D27)
 
