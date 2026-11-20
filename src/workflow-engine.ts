@@ -19,6 +19,7 @@
 import type { PoolSendResult, RoleCallContext } from './pool.js'
 import type { Step, Template } from './team-config.js'
 import type { MemberOutcome } from './workflow-record.js'
+import type { PermissionRequestResolver } from './permission-request.js'
 
 /**
  * Optional run observer (progress records, job progress). Called around every
@@ -33,7 +34,7 @@ export interface WorkflowObserver {
 
 /** What the engine needs from the pool. */
 export interface WorkflowPool {
-  sendByRole(role: string, message: string, context: RoleCallContext, signal?: AbortSignal): Promise<PoolSendResult>
+  sendByRole(role: string, message: string, context: RoleCallContext, signal?: AbortSignal, hooks?: { readonly permissionResolver?: PermissionRequestResolver }): Promise<PoolSendResult>
 }
 
 /** One role's outcome in a parallel step: its answer, or why it has none. */
@@ -132,6 +133,7 @@ function message(error: unknown): string {
  * @param context - the calling session and its working directory.
  * @param signal - cancels every in-flight send.
  * @param observer - optional progress observer.
+ * @param permissionResolver - the caller's confirmation bridge under `permission: ask`, given to every role send (seeding included); absent fails closed.
  */
 export async function runWorkflow(
   pool: WorkflowPool,
@@ -140,8 +142,9 @@ export async function runWorkflow(
   context: RoleCallContext,
   signal: AbortSignal,
   observer: WorkflowObserver = {},
+  permissionResolver?: PermissionRequestResolver,
 ): Promise<WorkflowResult> {
-  const send = observedSend(pool, observer, context, signal)
+  const send = observedSend(pool, observer, context, signal, permissionResolver)
   const done: StepResult[] = []
   const stop = (status: 'failed' | 'aborted', error: string): WorkflowResult => ({ template: template.name, status, error, steps: done })
   for (const step of template.steps) {
@@ -172,12 +175,13 @@ function outcomeOf(result: PoolSendResult | undefined, signal: AbortSignal): Mem
 }
 
 /** Wrap each role send in the observer's member start and end. */
-function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: RoleCallContext, signal: AbortSignal): StepSend {
+function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: RoleCallContext, signal: AbortSignal, permissionResolver: PermissionRequestResolver | undefined): StepSend {
+  const hooks = permissionResolver === undefined ? {} : { permissionResolver }
   return async (role, stepId, prompt) => {
     const seq = contained(() => observer.memberStart?.(role, stepId))
     let result: PoolSendResult | undefined
     try {
-      result = await pool.sendByRole(role, prompt, context, signal)
+      result = await pool.sendByRole(role, prompt, context, signal, hooks)
       return result
     } finally {
       if (seq !== undefined) contained(() => { observer.memberEnd?.(seq, outcomeOf(result, signal)) })

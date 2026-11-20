@@ -635,8 +635,14 @@ function workflowText(result: WorkflowResult): string {
  * @param pool - the pool the roles run on.
  * @param roles - workspace role access; the tool exists only with roles.
  * @param jobs - the job registry, when the host composes one.
+ * @param permissionResolverFor - binds one call's user-confirmation bridge for `permission: ask` backends.
  */
-export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?: ChatJobsFace): ToolDefinitionOf {
+export function chatWorkflowTool(
+  pool: AcpSessionPool,
+  roles: RoleSupport,
+  jobs?: ChatJobsFace,
+  permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
+): ToolDefinitionOf {
   const prepare = (args: { readonly template: string; readonly params?: unknown }, agent: Agent | undefined) => {
     if (agent === undefined) throw new Error('acp_workflow needs a calling DSH session (rosters are per session)')
     const context: RoleCallContext = { ownerSessionId: agent.id, workspaceDir: roles.workspaceDirFor(agent) }
@@ -665,9 +671,10 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
     async execute(args, exec) {
       exec.signal.throwIfAborted()
       const { context, template, params } = prepare(args, exec.agent)
+      const permissionResolver = permissionResolverFor?.(exec.agent)
       if (jobs === undefined) {
         const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn)
-        const result = await runWorkflow(pool, template, params, context, exec.signal, observer)
+        const result = await runWorkflow(pool, template, params, context, exec.signal, observer, permissionResolver)
         recorder?.finish(RUN_STOP_REASON[result.status])
         if (result.status !== 'completed') throw new Error(`workflow ${template.name} ${result.status}: ${result.error ?? ''}\n${workflowText(result)}`)
         return { text: workflowText(result) }
@@ -681,7 +688,7 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
         run: (job) => {
           const { observer, recorder } = workflowObserver(template.name, exec, roles.onWarn, (line) => { job.updateProgress(line) })
           return {
-            done: runWorkflow(pool, template, params, context, controller.signal, observer).then((result): JobOutcome => {
+            done: runWorkflow(pool, template, params, context, controller.signal, observer, permissionResolver).then((result): JobOutcome => {
               recorder?.finish(RUN_STOP_REASON[result.status])
               job.append(workflowText(result))
               if (result.status === 'completed') return { status: 'completed' }
@@ -708,11 +715,20 @@ export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?
  * @param toolPrefix - name prefix for all five tools.
  * @param jobs - the job registry; when given, send is the job-backed variant.
  * @param roles - workspace role access (D27): adds `role` parameters and the `acp_workflow` tool; absent keeps the pre-D27 definitions.
+ * @param permissionResolverFor - binds one call's user-confirmation bridge for `permission: ask` backends.
  */
-export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace, roles?: RoleSupport): void {
+export function registerChatTools(
+  ctx: Context,
+  tools: ToolsRegistryFace,
+  pool: AcpSessionPool,
+  toolPrefix: string,
+  jobs?: ChatJobsFace,
+  roles?: RoleSupport,
+  permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
+): void {
   const [start, list, close, steer] = chatStaticTools(pool, toolPrefix, [], roles)
-  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs)]
-  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, undefined, roles), list, close, steer, ...workflow]) {
+  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs, permissionResolverFor)]
+  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, permissionResolverFor, roles), list, close, steer, ...workflow]) {
     ctx.effect(() => tools.register(definition))
   }
 }

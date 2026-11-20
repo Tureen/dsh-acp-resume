@@ -213,6 +213,28 @@ describe('acp_workflow and steer by role (D27)', () => {
     expect(description).toContain('session_event_read')
   })
 
+  it('routes permission: ask requests of workflow roles (seeding included) to the caller\'s confirmation bridge', async () => {
+    const root = tempDir('acp-resume-wf-ask-')
+    mkdirSync(join(root, '.agents'))
+    writeFileSync(join(root, '.agents', 'acp-team.yml'), 'roles:\n  - name: asker\n    seeding: hello\ntemplates:\n  - name: one\n    steps:\n      - id: s\n        parallel: [asker]\n        prompt: go\n')
+    const pool = new AcpSessionPool({
+      specBase: { command: process.execPath, args: [mockServer], permission: 'ask', env: { MOCK_PERMISSION: '1', MOCK_TEXT: 'approved answer' }, disposeEofGraceMs: 500, disposeGraceMs: 500, spawn: nodeSpawn },
+      registryPath: join(root, 'registry.json'),
+      idleTimeoutMs: 600_000,
+    })
+    pools.push(pool)
+    const asked: string[] = []
+    const allow = async (request: { toolCall: { title?: string | null } }) => {
+      asked.push(request.toolCall.title ?? '')
+      return { outcome: { outcome: 'selected' as const, optionId: 'yes' } }
+    }
+    const one = pool.templateFor('one', { ownerSessionId: 'session-a', workspaceDir: root })
+    const result = await runWorkflow(pool, one, {}, { ownerSessionId: 'session-a', workspaceDir: root }, new AbortController().signal, {}, allow as never)
+    expect(result).toMatchObject({ status: 'completed', steps: [{ id: 's', results: { asker: 'approved answer' } }] })
+    // One question for the seeding turn, one for the step's turn.
+    expect(asked).toEqual(['mock side effect', 'mock side effect'])
+  })
+
   it('is not registered with the workflow feature off', () => {
     expect(mount({}, false).tools.has('acp_workflow')).toBe(false)
     expect(mount().tools.has('acp_workflow')).toBe(true)

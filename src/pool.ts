@@ -769,16 +769,17 @@ export class AcpSessionPool {
     if (this.provisioning.has(roleKey(role, context.ownerSessionId))) throw roleInFlight(role)
     const existing = this.resolveRole(role, context.ownerSessionId)
     if (existing !== undefined) return { ...await this.send(existing, message, signal, hooks), role, provisioned: false }
-    const chat = await this.provision(role, context, signal)
+    // The seeding turn gets the same confirmation bridge as the message: under `permission: ask` it may ask too.
+    const chat = await this.provision(role, context, signal, hooks.permissionResolver)
     return { ...await this.send(chat.chatId, message, signal, hooks), role, provisioned: true }
   }
 
   /** The role's chat for this session, provisioning it from the blueprint when it has none. */
-  async startForRole(role: string, context: RoleCallContext, signal?: AbortSignal): Promise<PooledChatInfo> {
+  async startForRole(role: string, context: RoleCallContext, signal?: AbortSignal, permissionResolver?: PermissionRequestResolver): Promise<PooledChatInfo> {
     this.assertLive()
     const existing = this.resolveRole(role, context.ownerSessionId)
     if (existing !== undefined) return this.chatInfo(existing) as PooledChatInfo
-    return this.provision(role, context, signal)
+    return this.provision(role, context, signal, permissionResolver)
   }
 
   /**
@@ -797,11 +798,11 @@ export class AcpSessionPool {
   }
 
   /** Single-flight provisioning: one start + seeding + roster entry per session and role at a time. */
-  private async provision(role: string, context: RoleCallContext, signal: AbortSignal | undefined): Promise<PooledChatInfo> {
+  private async provision(role: string, context: RoleCallContext, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
     const key = roleKey(role, context.ownerSessionId)
     if (this.provisioning.has(key)) throw roleInFlight(role)
     const blueprint = this.blueprintFor(role, context)
-    const pending = this.provisionFromBlueprint(blueprint, context.ownerSessionId, signal)
+    const pending = this.provisionFromBlueprint(blueprint, context.ownerSessionId, signal, permissionResolver)
     this.provisioning.set(key, pending)
     try {
       return await pending
@@ -810,7 +811,7 @@ export class AcpSessionPool {
     }
   }
 
-  private async provisionFromBlueprint(blueprint: RoleBlueprint, ownerSessionId: string, signal: AbortSignal | undefined): Promise<PooledChatInfo> {
+  private async provisionFromBlueprint(blueprint: RoleBlueprint, ownerSessionId: string, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
     const backend = blueprint.backend ?? DEFAULT_BACKEND
     const chat = await this.start(blueprint.cwd, signal, { label: blueprint.name, ownerSessionId, backend })
     const discard = async (reason: string, cause?: unknown): Promise<never> => {
@@ -821,7 +822,7 @@ export class AcpSessionPool {
     if (blueprint.seeding !== undefined) {
       let seeded: PoolSendResult
       try {
-        seeded = await this.send(chat.chatId, blueprint.seeding, signal)
+        seeded = await this.send(chat.chatId, blueprint.seeding, signal, permissionResolver === undefined ? {} : { permissionResolver })
       } catch (error: unknown) {
         return discard(`its seeding turn failed: ${toError(error).message}`, error)
       }

@@ -353,7 +353,7 @@ export function apply(ctx: Context, config: Config): void {
     // job-backed variant replaces it while `ctx.jobs` is present, and the inline
     // one returns when the registry unloads while the tools scope stays.
     // The workflow tool (D27) follows the job registry exactly as send does.
-    const jobTools = (jobs?: ChatJobsFace) => [sendTool(jobs), ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs)])]
+    const jobTools = (jobs?: ChatJobsFace) => [sendTool(jobs), ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
     const registerAll = (definitions: ReturnType<typeof jobTools>): (() => void) => {
       const revokers = definitions.map(definition => scope.tools.register(definition))
       return () => { for (const revoke of revokers) revoke() }
