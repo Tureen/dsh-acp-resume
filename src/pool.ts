@@ -783,17 +783,21 @@ export class AcpSessionPool {
   }
 
   /**
-   * Release a role's chat and unbind the role in the session's roster, so the
-   * next reference provisions it from the current blueprint. `purge` also
-   * deletes the chat record. Returns the released chatId.
+   * Unbind the role in the session's roster, then release its chat, so the
+   * next reference (even one arriving during the release) provisions it from
+   * the current blueprint. `purge` also deletes the chat record. A failed
+   * release leaves the role unbound and the chat record kept. Returns the released chatId.
    */
   async releaseRole(role: string, ownerSessionId: string, purge: boolean): Promise<string> {
     if (this.provisioning.has(roleKey(role, ownerSessionId))) throw roleInFlight(role)
     const chatId = this.resolveRole(role, ownerSessionId)
     if (chatId === undefined) throw new Error(`acp-resume: role ${role} has no chat in this session`)
+    // Unbind first, synchronously: a send for the role arriving during the release
+    // then provisions a new chat instead of reconnecting the one being released,
+    // which would leave a live process that no roster entry points to.
+    this.roster.remove(role, ownerSessionId)
     if (purge) await this.remove(chatId)
     else await this.close(chatId)
-    this.roster.remove(role, ownerSessionId)
     return chatId
   }
 

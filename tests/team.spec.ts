@@ -199,6 +199,20 @@ describe('AcpSessionPool roles (D27)', () => {
     expect(rebuilt.chatId).not.toBe(first.chatId)
   })
 
+  it('unbinds before releasing: a send for the role during the release gets a new chat, never the released one', async () => {
+    const root = workspace()
+    const { pool } = makePool()
+    const first = await pool.sendByRole('scout', 'p1', ctx(root))
+    const releasing = pool.releaseRole('scout', 'session-a', false)
+    const during = pool.sendByRole('scout', 'p2', ctx(root))
+    await releasing
+    const second = await during
+    expect(second).toMatchObject({ provisioned: true })
+    expect(second.chatId).not.toBe(first.chatId)
+    expect(pool.chatInfo(first.chatId)?.active).toBe(false)
+    expect(pool.listRoster('session-a').map(e => e.chatId)).toEqual([second.chatId])
+  })
+
   it('purging a role chat drops its roster entry', async () => {
     const root = workspace()
     const { pool } = makePool()
