@@ -300,7 +300,7 @@ Capability is decoupled from mode: the plugin provides the capability (`acp_chat
 
 ## Backend quota (D28)
 
-When a Codex backend is configured, the plugin also registers a read-only tool, `acp_backend_usage {backend?, refresh?}`, which returns each backend's quota: plan, the used percent of the tightest limit window (it may exceed 100), the window length, and the reset time. The header of the "ACP chats" side panel also shows one line per Codex backend, such as `codex · prolite · 83%`; hover for the window and reset time.
+When a Codex backend is configured, the plugin also registers a read-only tool, `acp_backend_usage {backend?, refresh?}`, which returns each backend's quota: plan, the used percent of the tightest limit window (it may exceed 100), the window length, and the reset time. The header of the "ACP chats" side panel also shows one line per Codex backend, such as `codex · prolite · 17% left` (the percent remaining); hover for the window and reset time.
 
 - Only two read-only Codex `app-server` methods are called (`account/read`, `account/rateLimits/read`); reading costs no quota. A live Codex chat's connection is borrowed when there is one; otherwise a temporary `codex app-server` is started and closed after the read.
 - Results are cached for 5 minutes (failures for 1 minute). An expired entry is returned at once while it refreshes in the background; `refresh: true` forces a new read.

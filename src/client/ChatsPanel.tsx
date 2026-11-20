@@ -245,7 +245,7 @@ function windowLabel(t: PanelTranslate, mins: number): string {
 }
 
 /**
- * The header's backend usage lines (D28): `codex · prolite · 83%` per backend
+ * The header's backend usage lines (D28): `codex · prolite · 剩 17%` per backend
  * read `ok`, `codex · 额度读取失败` per `error`; `unsupported` backends are not
  * shown. The hover text names the window and its reset time, or the failure.
  */
@@ -257,7 +257,7 @@ function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | unde
       {shown.map((u) => {
         const text = u.status === 'error'
           ? [u.backend, t('usageFailed')].join(' · ')
-          : [u.backend, ...(u.plan === undefined ? [] : [u.plan]), ...(u.usedPercent === undefined ? [] : [`${Math.round(u.usedPercent)}%`])].join(' · ')
+          : [u.backend, ...(u.plan === undefined ? [] : [u.plan]), ...(u.usedPercent === undefined ? [] : [t('usageRemaining', { percent: u.remainingPercent ?? Math.max(0, Math.round(100 - u.usedPercent)) })])].join(' · ')
         const hint = u.status === 'error'
           ? u.error ?? ''
           : [

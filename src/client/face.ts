@@ -47,6 +47,7 @@ export interface PanelUsage {
   readonly status: 'ok' | 'unsupported' | 'error'
   readonly plan?: string
   readonly usedPercent?: number
+  readonly remainingPercent?: number
   readonly windowMins?: number
   readonly resetsAt?: number
   readonly fetchedAt: number

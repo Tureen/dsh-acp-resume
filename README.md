@@ -298,7 +298,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ## 后端额度(D28)
 
-配置了 Codex 后端时，插件会多注册一个只读工具 `acp_backend_usage {backend?, refresh?}`,返回各后端的额度：套餐、最紧的那个限额窗口的已用百分比(可超过 100)、窗口长度和重置时间。侧栏「ACP 会话」面板头部也会每个 Codex 后端显示一行，如 `codex · prolite · 83%`,悬停可看窗口和重置时间。
+配置了 Codex 后端时，插件会多注册一个只读工具 `acp_backend_usage {backend?, refresh?}`,返回各后端的额度：套餐、最紧的那个限额窗口的已用百分比(可超过 100)、窗口长度和重置时间。侧栏「ACP 会话」面板头部也会每个 Codex 后端显示一行，如 `codex · prolite · 剩 17%`(剩余百分比),悬停可看窗口和重置时间。
 
 - 只调用 Codex `app-server` 的两个只读方法(`account/read`、`account/rateLimits/read`),不消耗额度。有活跃的 Codex 会话时借用它的连接，没有时临时起一个 `codex app-server` 读完即关。
 - 结果缓存 5 分钟(失败缓存 1 分钟),过期后先返回旧值再在后台刷新;`refresh: true` 强制重读。

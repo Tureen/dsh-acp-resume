@@ -51,8 +51,8 @@ const LIMITS = (primary: number, secondary: number) => ({
 
 describe('toBackendUsage (D28)', () => {
   it('reports the plan and the most-used window, uncapped', () => {
-    expect(toBackendUsage('codex', ACCOUNT, LIMITS(12, 83), 5)).toEqual({ backend: 'codex', protocol: 'codex', status: 'ok', plan: 'prolite', usedPercent: 83, windowMins: 10080, resetsAt: 1_800_600_000, fetchedAt: 5 })
-    expect(toBackendUsage('codex', ACCOUNT, LIMITS(120, 40), 5)).toMatchObject({ usedPercent: 120, windowMins: 300, resetsAt: 1_800_000_300 })
+    expect(toBackendUsage('codex', ACCOUNT, LIMITS(12, 83), 5)).toEqual({ backend: 'codex', protocol: 'codex', status: 'ok', plan: 'prolite', usedPercent: 83, remainingPercent: 17, windowMins: 10080, resetsAt: 1_800_600_000, fetchedAt: 5 })
+    expect(toBackendUsage('codex', ACCOUNT, LIMITS(120, 40), 5)).toMatchObject({ usedPercent: 120, remainingPercent: 0, windowMins: 300, resetsAt: 1_800_000_300 })
     // Tie: the longer window.
     expect(toBackendUsage('codex', ACCOUNT, LIMITS(50, 50), 5)).toMatchObject({ windowMins: 10080 })
   })

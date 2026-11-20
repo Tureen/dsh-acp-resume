@@ -177,7 +177,7 @@ describe('ChatsPanel', () => {
     ]
     const { container, rerender } = render(<ChatsPanel {...props({ ...ready([chat()]), usage })} />)
     const lines = [...container.querySelectorAll('[data-usage-backend]')] as HTMLElement[]
-    expect(lines.map(l => l.textContent)).toEqual(['codex · prolite · 83%', 'codex2 · 额度读取失败'])
+    expect(lines.map(l => l.textContent)).toEqual(['codex · prolite · 剩 17%', 'codex2 · 额度读取失败'])
     expect(lines[0]?.getAttribute('title')).toMatch(/^周窗口已用 83% · .+ 重置$/)
     expect(lines[1]?.getAttribute('title')).toBe('usage read timed out after 15000 ms')
     rerender(<ChatsPanel {...props({ ...ready([chat()]), usage: [usage[0]!] })} />)

@@ -24,6 +24,8 @@ export interface BackendUsage {
   readonly plan?: string
   /** Percent used of the most-used window; not capped (may exceed 100). */
   readonly usedPercent?: number
+  /** What is left of that window: `100 - usedPercent`, rounded, never below 0. */
+  readonly remainingPercent?: number
   /** That window's length in minutes (e.g. 10080 for a week). */
   readonly windowMins?: number
   /** When that window resets, unix seconds. */
@@ -80,11 +82,16 @@ export function toBackendUsage(backend: string, account: unknown, rateLimits: un
     protocol: 'codex',
     status: 'ok',
     ...(plan === undefined ? {} : { plan }),
-    ...(binding === undefined ? {} : { usedPercent: binding.usedPercent }),
+    ...(binding === undefined ? {} : { usedPercent: binding.usedPercent, remainingPercent: remainingOf(binding.usedPercent) }),
     ...(binding?.windowMins === undefined ? {} : { windowMins: binding.windowMins }),
     ...(binding?.resetsAt === undefined ? {} : { resetsAt: binding.resetsAt }),
     fetchedAt,
   }
+}
+
+/** Percent left of a window: rounded, and 0 once usage passes 100. */
+export function remainingOf(usedPercent: number): number {
+  return Math.max(0, Math.round(100 - usedPercent))
 }
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
