@@ -1,6 +1,6 @@
 # dsh-acp-resume
 
-**版本 0.3.7 · 回归基线 501 例** · [English](README.en.md)
+[English](README.en.md)
 
 让 DeepSeek Harness（DSH）能把任务交给外部子代理，并在下一轮接着问。插件用持久会话池保留进程和远端会话号。进程退出或空闲释放后，再次发送会尝试恢复原会话，子代理可以沿用之前的上下文。
 
