@@ -318,10 +318,19 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
 }
 
 describe('apply (plugin wiring)', () => {
-  it('registers the provider under the default name and the five prefixed tools', async () => {
+  it('registers the provider under the default name, the five prefixed tools, and acp_workflow (workflow on by default)', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_' })
+    cleanups.push(() => fiber.dispose())
+    await until(() => stubTools(ctx).registered.size === 6, 'tool registration')
+    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_workflow', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
+  })
+
+  it('does not register acp_workflow with workflow: false', async () => {
+    const ctx = await host()
+    const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', workflow: false })
     cleanups.push(() => fiber.dispose())
     await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
     expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
@@ -398,7 +407,7 @@ describe('apply (plugin wiring)', () => {
       registryPath: join(dir, 'registry.json'),
       env: { MOCK_FLUSH_ON_EOF: flushed },
     })
-    await until(() => stubTools(ctx).registered.size === 5, 'tool registration')
+    await until(() => stubTools(ctx).registered.size === 6, 'tool registration')
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
     const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
     const { chatId } = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string }

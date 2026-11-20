@@ -29,7 +29,7 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { chatSendTool, chatStaticTools, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { chatSendTool, chatStaticTools, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
@@ -351,7 +351,13 @@ export function apply(ctx: Context, config: Config): void {
     // variant registers now unless a registry is already composed, the
     // job-backed variant replaces it while `ctx.jobs` is present, and the inline
     // one returns when the registry unloads while the tools scope stays.
-    let inlineSend = scope.get('jobs') === undefined ? scope.tools.register(sendTool()) : undefined
+    // The workflow tool (D27) follows the job registry exactly as send does.
+    const jobTools = (jobs?: ChatJobsFace) => [sendTool(jobs), ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs)])]
+    const registerAll = (definitions: ReturnType<typeof jobTools>): (() => void) => {
+      const revokers = definitions.map(definition => scope.tools.register(definition))
+      return () => { for (const revoke of revokers) revoke() }
+    }
+    let inlineSend = scope.get('jobs') === undefined ? registerAll(jobTools()) : undefined
     scope.effect(() => () => {
       inlineSend?.()
       inlineSend = undefined
@@ -361,14 +367,14 @@ export function apply(ctx: Context, config: Config): void {
     scope.inject(['jobs'], (jobsScope) => {
       inlineSend?.()
       inlineSend = undefined
-      const unregister = scope.tools.register(sendTool(jobsScope.jobs))
+      const unregister = registerAll(jobTools(jobsScope.jobs))
       // D22: refuse blocking waits on running chat jobs; collection goes through the completion notice.
       if (!resolved.allowChatJobWait) {
         jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
       }
       jobsScope.effect(() => () => {
         unregister()
-        if (scope.fiber.state === FIBER_ACTIVE) inlineSend = scope.tools.register(sendTool())
+        if (scope.fiber.state === FIBER_ACTIVE) inlineSend = registerAll(jobTools())
       })
     })
     // The panel Remote service (D15) shares the pool's arrival point and the

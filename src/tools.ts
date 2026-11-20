@@ -24,6 +24,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpSteerUnsupportedError } from './connection.js'
 import { freshSessionNotice, type AcpSessionPool, type PoolSendHooks, type PoolSendResult, type PooledChatInfo, type RoleCallContext } from './pool.js'
 import type { PermissionRequestResolver } from './permission-request.js'
+import { bindParams, runWorkflow, type WorkflowResult } from './workflow-engine.js'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -217,6 +218,26 @@ function sendParameters(toolPrefix: string, roles: RoleSupport | undefined) {
  * narrower at runtime (no `role`, `chatId` required), which the body handles.
  */
 type SendParameters = {
+  readonly chatId: { readonly type: 'string'; readonly description: string }
+  readonly role: { readonly type: 'string'; readonly description: string }
+  readonly message: { readonly type: 'string'; readonly required: true; readonly description: string }
+}
+
+/** Steer parameters; with roles, `chatId` becomes optional and `role` is added (exactly one of them per call). */
+function steerParameters(toolPrefix: string, roles: RoleSupport | undefined): SteerParameters {
+  const message = { type: 'string', required: true, description: 'The instruction to add to the running turn.' } as const
+  if (roles === undefined) {
+    return { chatId: { type: 'string', required: true, description: `The chatId of a chat with a turn in flight (from ${toolPrefix}start).` }, message } as unknown as SteerParameters
+  }
+  return {
+    chatId: { type: 'string', description: `The chatId of a chat with a turn in flight (from ${toolPrefix}start); omit when passing role.` },
+    role: { type: 'string', description: 'A workspace role of this session whose turn is in flight, instead of chatId.' },
+    message,
+  }
+}
+
+/** The steer body's parameter shape; the role-less schema is narrower at runtime. */
+type SteerParameters = {
   readonly chatId: { readonly type: 'string'; readonly description: string }
   readonly role: { readonly type: 'string'; readonly description: string }
   readonly message: { readonly type: 'string'; readonly required: true; readonly description: string }
@@ -515,19 +536,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       + 'The agent takes the queued message in at its next tool or message boundary; it does not interrupt the current step. '
       + `To stop the turn immediately use job_kill (when the send ran as a job) or ${toolPrefix}close instead. `
       + `Only works while a turn is in flight (after ${toolPrefix}send, before it finishes); otherwise use ${toolPrefix}send. `
-      + 'Requires a backend that supports mid-turn steering; if this backend does not, the tool fails and says so.',
-    parameters: {
-      chatId: {
-        type: 'string',
-        required: true,
-        description: `The chatId of a chat with a turn in flight (from ${toolPrefix}start).`,
-      },
-      message: {
-        type: 'string',
-        required: true,
-        description: 'The instruction to add to the running turn.',
-      },
-    },
+      + 'Requires a backend that supports mid-turn steering; if this backend does not, the tool fails and says so.'
+      + (roles === undefined ? '' : ' Pass role instead of chatId to steer the running turn of a workspace role in this session.'),
+    parameters: steerParameters(toolPrefix, roles),
     output: {
       schema: {
         type: 'object',
@@ -544,10 +555,14 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
     isConcurrencySafe: () => true,
     async execute(args, exec) {
       exec.signal.throwIfAborted()
-      if (!pool.knows(args.chatId)) throw unknownChat(args.chatId)
+      const target = targetOf(args, exec.agent, roles)
+      // A role steers its roster chat; a role without one has no turn to steer.
+      const chatId = target.kind === 'chat' ? target.chatId : pool.resolveRole(target.role, target.context.ownerSessionId)
+      if (chatId === undefined) throw new Error(`role ${target.kind === 'role' ? target.role : ''} has no chat in this session, so it has no turn to steer; use ${toolPrefix}send`)
+      if (!pool.knows(chatId)) throw unknownChat(chatId)
       let result
       try {
-        result = await pool.steer(args.chatId, args.message)
+        result = await pool.steer(chatId, args.message)
       } catch (error: unknown) {
         if (error instanceof AcpSteerUnsupportedError) {
           throw new Error(
@@ -560,13 +575,87 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       }
       const id = result.messageId === undefined ? '' : ` (messageId ${result.messageId})`
       const text = result.queued
-        ? `steering message queued for chat ${args.chatId}${id}; it takes effect at the next tool or message boundary of the running turn`
-        : `the agent did not queue the steering message for chat ${args.chatId}${id}`
+        ? `steering message queued for chat ${chatId}${id}; it takes effect at the next tool or message boundary of the running turn`
+        : `the agent did not queue the steering message for chat ${chatId}${id}`
       return { text, queued: result.queued, ...(result.messageId === undefined ? {} : { messageId: result.messageId }) }
     },
   })
 
   return [start, list, close, steer]
+}
+
+/** Name of the workflow tool (D27); fixed, not under the chat tools' prefix. */
+export const WORKFLOW_TOOL = 'acp_workflow'
+
+/** The run's JSON output, followed by nothing else, so a model can parse it. */
+function workflowText(result: WorkflowResult): string {
+  return JSON.stringify(result, undefined, 2)
+}
+
+/**
+ * The `acp_workflow` tool (D27): run a workspace template over the session's
+ * roles. Preflight (calling session, template defined, params complete)
+ * throws as a tool error. With `jobs` the run is an `acp-chat` job (D17: the
+ * id returns at once, the completion notice wakes the model, the D22 gate
+ * refuses blocking waits) whose output is the run's JSON; `job_kill` cancels
+ * every in-flight role turn (D6 cancel path). Without `jobs` the call awaits
+ * the run, and a run that did not complete is thrown with its JSON.
+ * @param pool - the pool the roles run on.
+ * @param roles - workspace role access; the tool exists only with roles.
+ * @param jobs - the job registry, when the host composes one.
+ */
+export function chatWorkflowTool(pool: AcpSessionPool, roles: RoleSupport, jobs?: ChatJobsFace): ToolDefinitionOf {
+  const prepare = (args: { readonly template: string; readonly params?: unknown }, agent: Agent | undefined) => {
+    if (agent === undefined) throw new Error('acp_workflow needs a calling DSH session (rosters are per session)')
+    const context: RoleCallContext = { ownerSessionId: agent.id, workspaceDir: roles.workspaceDirFor(agent) }
+    const template = pool.templateFor(args.template, context)
+    return { context, template, params: bindParams(template, args.params) }
+  }
+  return defineTool({
+    name: WORKFLOW_TOOL,
+    description: 'Run a workflow template defined in the workspace .agents/acp-team.yml over this session\'s roles. '
+      + 'Steps run in order: a parallel step sends its prompt to each listed role at once (a role\'s chat is set up on first use), '
+      + 'later steps see earlier results, and a merge step either returns everything to you or has one role merge it. '
+      + 'Pass the template\'s params; every declared param is required. '
+      + (jobs === undefined
+        ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
+        : 'Returns at once with a background job id; you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
+          + 'Ending your turn while it runs is correct. Stop it with job_kill.'),
+    parameters: {
+      template: { type: 'string', required: true, description: 'Template name from the workspace team file.' },
+      params: { type: 'object', additionalProperties: true, description: 'Template params as name → value (strings, numbers, or booleans).' },
+    },
+    output: SEND_OUTPUT,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      exec.signal.throwIfAborted()
+      const { context, template, params } = prepare(args, exec.agent)
+      if (jobs === undefined) {
+        const result = await runWorkflow(pool, template, params, context, exec.signal)
+        if (result.status !== 'completed') throw new Error(`workflow ${template.name} ${result.status}: ${result.error ?? ''}\n${workflowText(result)}`)
+        return { text: workflowText(result) }
+      }
+      const controller = new AbortController()
+      const jobId = jobs.start({
+        kind: 'acp-chat',
+        label: jobLabel(`workflow ${template.name}`, ''),
+        toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
+        ...(exec.agent === undefined ? {} : { owner: exec.agent.id }),
+        run: job => ({
+          done: runWorkflow(pool, template, params, context, controller.signal).then((result): JobOutcome => {
+            job.append(workflowText(result))
+            if (result.status === 'completed') return { status: 'completed' }
+            return { status: result.status === 'aborted' ? 'killed' : 'failed', detail: result.error ?? result.status }
+          }),
+          cancel: (reason) => { controller.abort(new Error(reason ?? 'acp-resume: workflow job killed')) },
+        }),
+      })
+      return {
+        text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes.`,
+        jobId,
+      }
+    },
+  })
 }
 
 /**
@@ -577,11 +666,12 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
  * @param pool - the pool the tools drive.
  * @param toolPrefix - name prefix for all five tools.
  * @param jobs - the job registry; when given, send is the job-backed variant.
- * @param roles - workspace role access (D27); absent keeps the pre-D27 definitions.
+ * @param roles - workspace role access (D27): adds `role` parameters and the `acp_workflow` tool; absent keeps the pre-D27 definitions.
  */
 export function registerChatTools(ctx: Context, tools: ToolsRegistryFace, pool: AcpSessionPool, toolPrefix: string, jobs?: ChatJobsFace, roles?: RoleSupport): void {
   const [start, list, close, steer] = chatStaticTools(pool, toolPrefix, [], roles)
-  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, undefined, roles), list, close, steer]) {
+  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs)]
+  for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, undefined, roles), list, close, steer, ...workflow]) {
     ctx.effect(() => tools.register(definition))
   }
 }

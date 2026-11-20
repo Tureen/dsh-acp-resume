@@ -75,6 +75,7 @@
  * - `MOCK_NO_STEER`    — if `1`, `_session/steer` is not registered (the SDK
  *                        answers -32601 Method not found), for the degrade path.
  * - `MOCK_FLAT_SESSION_UPDATE` / `MOCK_UPDATE_CONTENT_ARRAY` / `MOCK_SPLIT_UPDATE_WRITES` — emit flat, array-content, or split-write session/update variants.
+ * - `MOCK_ECHO_PROMPT` — if `1`, the answer is `echo:<this prompt's text>` (needs the session table, as MOCK_REMEMBER).
  * - `MOCK_ECHO_ARGV`   — if `1`, the answer is the JSON of `process.argv.slice(2)`
  *                        (the args the agent process was spawned with).
  * - `MOCK_LOAD_READY` / `MOCK_LOAD_GO` — `session/load` touches READY, then
@@ -334,7 +335,7 @@ function makeAgent() {
       if (entry === undefined) throw new Error(`mock: prompt for unknown session: ${params.sessionId}`)
       entry.prompts.push(params.prompt.map(b => (b as { text?: string }).text ?? '').join(''))
       saveTable(sessions)
-      const answer = ECHO_ARGV ? JSON.stringify(process.argv.slice(2)) : REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
+      const answer = ECHO_ARGV ? JSON.stringify(process.argv.slice(2)) : process.env.MOCK_ECHO_PROMPT === '1' ? `echo:${entry.prompts.at(-1) ?? ''}` : REMEMBER ? `remember:${entry.prompts.at(-2) ?? 'none'}` : TEXT
       // Stream the canned assistant text as one chunk (or, under MOCK_ECHO_CWD,
       // the observable process cwd + announced session cwd).
       const content = { type: 'text', text: ECHO_CWD ? `${process.cwd()}\n${sessionCwd ?? ''}` : answer }

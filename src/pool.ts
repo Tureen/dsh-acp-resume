@@ -50,7 +50,7 @@ import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
-import { loadTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint } from './team-config.js'
+import { loadTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type Template } from './team-config.js'
 
 /** One pooled chat as reportable state (registry projection + liveness). */
 export interface PooledChatInfo {
@@ -833,6 +833,20 @@ export class AcpSessionPool {
       return discard(`the roster could not be written: ${toError(error).message}`, error)
     }
     return chat
+  }
+
+  /** The workspace template `name` seen from the caller's working directory; throws a model-facing reason when there is none. */
+  templateFor(name: string, context: RoleCallContext): Template {
+    const config = loadTeamConfig(context.workspaceDir, this.opts.onWarn)
+    if (config === undefined) {
+      throw new Error(`acp-resume: unknown template ${name}: no usable workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
+    }
+    const template = config.templates.find(t => t.name === name)
+    if (template === undefined) {
+      const names = config.templates.map(t => t.name).join(', ')
+      throw new Error(`acp-resume: unknown template ${name}; templates defined in ${config.root}/${TEAM_CONFIG_FILE}: ${names === '' ? '(none)' : names}`)
+    }
+    return template
   }
 
   /** The workspace blueprint of `role`, on a configured backend; throws a model-facing reason otherwise. */

@@ -53,8 +53,8 @@ templates:
     params: [target]
     steps:
       - id: review
-        parallel: [reviewer, { role: scout, prompt: "scan {{target}}" }]
-        prompt: "review {{target}}"
+        parallel: [reviewer, { role: scout, prompt: "scan {target}" }]
+        prompt: "review {target}"
       - id: merge
         merge: { mode: return_to_model }
 `
@@ -87,7 +87,7 @@ describe('team config (D27)', () => {
       name: 'double-review',
       params: ['target'],
       steps: [
-        { id: 'review', parallel: [{ role: 'reviewer' }, { role: 'scout', prompt: 'scan {{target}}' }], prompt: 'review {{target}}' },
+        { id: 'review', parallel: [{ role: 'reviewer' }, { role: 'scout', prompt: 'scan {target}' }], prompt: 'review {target}' },
         { id: 'merge', merge: { mode: 'return_to_model' } },
       ],
     })

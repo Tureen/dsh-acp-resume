@@ -22,6 +22,8 @@ export const TEAM_CONFIG_FILE = join('.agents', 'acp-team.yml')
 export const TEAM_CONFIG_SEARCH_LEVELS = 3
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
+/** Template params and step ids: the names a `{name}` placeholder can use. */
+const PLACEHOLDER_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/
 
 /** One role a workspace can instantiate. */
 export interface RoleBlueprint {
@@ -47,10 +49,14 @@ export interface ParallelStep {
   readonly prompt?: string
 }
 
-/** Combine the previous results: hand them back to the model, or to one role. */
+/**
+ * Combine the previous results: hand them back to the model (last step only),
+ * or send them to one role, whose answer becomes this step's result. `prompt`
+ * is the merging role's instruction.
+ */
 export interface MergeStep {
   readonly id: string
-  readonly merge: { readonly mode: 'return_to_model' } | { readonly mode: 'role'; readonly role: string }
+  readonly merge: { readonly mode: 'return_to_model' } | { readonly mode: 'role'; readonly role: string; readonly prompt?: string }
 }
 
 export type Step = ParallelStep | MergeStep
@@ -135,15 +141,23 @@ function role(raw: Record<string, unknown>, at: string, root: string): RoleBluep
 
 function template(raw: Record<string, unknown>, at: string, roles: ReadonlySet<string>): Template {
   const name = str(raw['name'], `${at}.name`, true) as string
-  const params = list(raw['params'], `${at}.params`).map((p, i) => str(p, `${at}.params[${i}]`, true) as string)
+  const params = list(raw['params'], `${at}.params`).map((p, i) => placeholderName(str(p, `${at}.params[${i}]`, true) as string, `${at}.params[${i}]`))
+  unique(params, `param in ${at}`)
   const steps = list(raw['steps'], `${at}.steps`).map((s, i) => step(record(s, `${at}.steps[${i}]`), `${at}.steps[${i}]`, roles))
   if (steps.length === 0) throw new Error(`${at}.steps must not be empty`)
   unique(steps.map(s => s.id), `step id in ${at}`)
+  // One namespace for {name} placeholders: a param and a step id may not share a name.
+  for (const s of steps) if (params.includes(s.id)) throw new Error(`${at}: step id ${s.id} collides with a param of the same name`)
+  steps.forEach((s, i) => {
+    if ('merge' in s && s.merge.mode === 'return_to_model' && i !== steps.length - 1) {
+      throw new Error(`${at}.steps[${i}]: a return_to_model merge must be the last step`)
+    }
+  })
   return { name, description: str(raw['description'], `${at}.description`) ?? '', params, steps }
 }
 
 function step(raw: Record<string, unknown>, at: string, roles: ReadonlySet<string>): Step {
-  const id = str(raw['id'], `${at}.id`, true) as string
+  const id = placeholderName(str(raw['id'], `${at}.id`, true) as string, `${at}.id`)
   const knownRole = (name: string, where: string): string => {
     if (!roles.has(name)) throw new Error(`${where} names unknown role ${name}`)
     return name
@@ -152,7 +166,10 @@ function step(raw: Record<string, unknown>, at: string, roles: ReadonlySet<strin
     const merge = record(raw['merge'], `${at}.merge`)
     const mode = merge['mode']
     if (mode === 'return_to_model') return { id, merge: { mode } }
-    if (mode === 'role') return { id, merge: { mode, role: knownRole(str(merge['role'], `${at}.merge.role`, true) as string, `${at}.merge.role`) } }
+    if (mode === 'role') {
+      const prompt = str(merge['prompt'], `${at}.merge.prompt`)
+      return { id, merge: { mode, role: knownRole(str(merge['role'], `${at}.merge.role`, true) as string, `${at}.merge.role`), ...(prompt === undefined ? {} : { prompt }) } }
+    }
     throw new Error(`${at}.merge.mode must be return_to_model or role`)
   }
   const parallel = list(raw['parallel'], `${at}.parallel`).map((ref, i): RoleRef => {
@@ -163,8 +180,15 @@ function step(raw: Record<string, unknown>, at: string, roles: ReadonlySet<strin
     return { role: knownRole(str(fields['role'], `${where}.role`, true) as string, where), ...(prompt === undefined ? {} : { prompt }) }
   })
   if (parallel.length === 0) throw new Error(`${at} needs a non-empty parallel list or a merge`)
+  // A role serves one prompt at a time (D6 single flight): listing it twice in one step would fail the second.
+  unique(parallel.map(r => r.role), `role in ${at}.parallel`)
   const prompt = str(raw['prompt'], `${at}.prompt`)
   return { id, parallel, ...(prompt === undefined ? {} : { prompt }) }
+}
+
+function placeholderName(name: string, at: string): string {
+  if (!PLACEHOLDER_NAME.test(name)) throw new Error(`${at} must match [A-Za-z_][A-Za-z0-9_-]{0,63}`)
+  return name
 }
 
 function record(value: unknown, at: string): Record<string, unknown> {

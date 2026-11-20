@@ -388,7 +388,9 @@ describe('apply: the send variant follows ctx.jobs', () => {
     ctx.jobs.attachController('jobs-spec')
     await until(() => /background job id/.test(sendDescription(ctx) ?? ''), 'the job-backed send')
     const tools = (ctx.get('tools') as unknown as StubTools).registered
-    expect([...tools.keys()].sort()).toEqual(['acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer'])
+    expect([...tools.keys()].sort()).toEqual(['acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_workflow'])
+    // acp_workflow follows the registry like send: job-backed now, inline again below.
+    expect(tools.get('acp_workflow')!.description).toMatch(/background job id/)
     const { chatId } = await tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
     const { jobId } = await tools.get('acp_chat_send')!.execute({ chatId, message: 'hi' }, exec()) as { jobId: JobId }
     expect((await ctx.jobs.wait(jobId, 5000)).status).toBe('completed')
@@ -396,6 +398,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
 
     await jobsFiber.dispose()
     await until(() => /await its final answer/.test(sendDescription(ctx) ?? ''), 'the inline send to return')
+    expect(tools.get('acp_workflow')!.description).toMatch(/The call waits for the run/)
     expect(await tools.get('acp_chat_send')!.execute({ chatId, message: 'inline' }, exec())).toEqual({ text: 'mock child answer' })
   })
 
