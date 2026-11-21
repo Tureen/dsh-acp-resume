@@ -7,12 +7,15 @@
  * `backend · N turns · last active` (the backend only with several
  * backends), replaced while a turn runs by `backend · running 1m20s`, ticking
  * each second. The full chatId, cwd, remote session id, and state sit in the
- * name's hover text. The history is a borderless list, newest first, rows
- * split by a divider: a running entry on top (spinner, the sent message's
- * first line, expandable), then turns as two lines each — question (primary
- * colour, relative time at the end, a stop-reason tag when not completed, a
- * fresh-session tag) and answer (secondary colour, "full text · N lines" when
- * cut) — and reconnect events as one line on a warning rail. A click on a turn
+ * name's hover text; the meta line ends with the cwd's last segment. The
+ * history is a borderless list, newest first, rows split by a divider: a
+ * running entry on top (spinner, the sent message's first two lines,
+ * expandable), then turns as a question preview (primary colour, up to two
+ * lines, relative time at the end, a stop-reason tag when not completed, a
+ * fresh-session tag) and an answer preview (secondary colour, up to three
+ * lines, "full text · N lines" when cut). A turn that ended in error carries a
+ * red left rail; one that stopped short or was answered by a fresh session an
+ * orange one. Reconnect events are one line on a warning rail. A click on a turn
  * toggles it, and only one turn is open at a time; an open turn shows the full
  * message and answer in scrollable regions, the diagnostic behind its own
  * toggle, and a collapse button. The full text is fetched on demand when a
@@ -56,10 +59,14 @@ const styles = {
   // History: a borderless list, rows split by a divider.
   list: { display: 'flex', flexDirection: 'column', margin: 0, padding: 0, listStyle: 'none' },
   row: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0', borderBottom: ROW_DIVIDER },
+  // A turn that did not go plainly gets a rail, as reconnect events do: red for an error, orange otherwise.
+  rowError: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0 8px 8px', borderBottom: ROW_DIVIDER, borderLeft: '3px solid var(--dsw-alias-state-error-primary)' },
+  rowWarn: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0 8px 8px', borderBottom: ROW_DIVIDER, borderLeft: '3px solid var(--dsw-alias-state-warn-primary)' },
   rowHead: { display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px' },
-  line: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
-  question: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  answer: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  // Previews keep their line breaks and clamp to 2 (question) / 3 (answer) lines.
+  question: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-line', overflowWrap: 'anywhere', overflow: 'hidden', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 },
+  answer: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-line', overflowWrap: 'anywhere', overflow: 'hidden', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3 },
+  line: { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0 },
   aside: { flex: 'none', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
 
   full: { margin: 0, maxHeight: 320, overflow: 'auto', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.6, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l4)' },
@@ -83,13 +90,38 @@ function countLines(text: string): number {
   return text.split('\n').filter(line => line.trim() !== '').length
 }
 
-/** First non-empty line, trimmed and cut to `max` characters with an ellipsis; `clipped` when anything is not shown. */
-function firstLine(text: string, max = 100): { text: string; clipped: boolean } {
-  const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-  const chars = Array.from(line)
-  const multiline = text.split('\n').some(l => l.trim() !== '') && text.trim() !== line
-  if (chars.length > max) return { text: `${chars.slice(0, max).join('')}…`, clipped: true }
-  return { text: line, clipped: multiline }
+/**
+ * The first `lines` non-empty lines, each trimmed and cut to `max` characters
+ * with an ellipsis; `clipped` when anything is not shown. The CSS line clamp
+ * also caps wrapped lines visually.
+ */
+function preview(text: string, lines: number, max = 200): { text: string; clipped: boolean } {
+  const all = text.split('\n').map(l => l.trim()).filter(l => l !== '')
+  let clipped = all.length > lines
+  const shown = all.slice(0, lines).map((line) => {
+    const chars = Array.from(line)
+    if (chars.length <= max) return line
+    clipped = true
+    return `${chars.slice(0, max).join('')}…`
+  })
+  return { text: shown.join('\n'), clipped }
+}
+
+/** Lines shown in a collapsed preview. */
+const QUESTION_LINES = 2
+const ANSWER_LINES = 3
+
+/** The rail of a turn: red for an error, orange for a stop short of completion or a fresh-session answer, none otherwise. */
+function turnRail(item: TurnItem): 'error' | 'warn' | undefined {
+  if (item.stopReason === 'error') return 'error'
+  if (item.stopReason !== 'completed' || item.freshSession) return 'warn'
+  return undefined
+}
+
+/** Last path segment of a cwd (`/a/b/repo` → `repo`); the root stays `/`. */
+export function cwdName(cwd: string): string {
+  const parts = cwd.split(/[\\/]/).filter(part => part !== '')
+  return parts.at(-1) ?? cwd
 }
 
 /** The stop reason's localized label and tag tone, for a turn that did not end `completed`. */
@@ -143,14 +175,15 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   const message = fullEntry?.message ?? item.message
   const output = fullEntry?.output ?? item.output
   const tag = item.stopReason === 'completed' ? undefined : stopTag(item.stopReason)
-  const question = firstLine(item.message)
-  const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : firstLine(item.output)
+  const question = preview(item.message, QUESTION_LINES)
+  const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : preview(item.output, ANSWER_LINES)
+  const rail = turnRail(item)
   // "Full text · N lines" only when the two lines do not already show everything.
   const truncated = question.clipped || answer.clipped || item.messageMore || item.outputMore
   const lines = Math.max(countLines(message), countLines(output))
   const toggle = (): void => { onToggle(item) }
   return (
-    <li style={styles.row} data-seq={item.seq} data-open={open ? '' : undefined}>
+    <li style={rail === 'error' ? styles.rowError : rail === 'warn' ? styles.rowWarn : styles.row} data-seq={item.seq} data-open={open ? '' : undefined} data-rail={rail}>
       <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t('turnToggle', { seq: item.seq })}
         title={`#${item.seq}`} data-turn-head="">
         <div style={styles.line}>
@@ -188,14 +221,14 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
 
 function RunningRow({ item, now, t }: { readonly item: RunningItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const [open, setOpen] = useState(false)
-  const preview = firstLine(item.message)
-  const toggle = (): void => { if (preview.clipped) setOpen(value => !value) }
+  const sent = preview(item.message, QUESTION_LINES)
+  const toggle = (): void => { if (sent.clipped) setOpen(value => !value) }
   return (
     <li style={styles.row} data-running>
       <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}>
         <div style={styles.line}>
           <ChatStateDot state="ongoing" />
-          <p style={styles.question}>{preview.text}</p>
+          <p style={styles.question} data-running-preview>{sent.text}</p>
           <LiveElapsed startedAt={item.startedAt} now={now} t={t} />
         </div>
       </div>
@@ -324,8 +357,8 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
         : (
           <p style={styles.meta} data-meta>
             {inFlightSince === undefined
-              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), relativeTime(t, chat.lastActive, now)].join(' · ')
-              : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" /></>}
+              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), relativeTime(t, chat.lastActive, now), cwdName(chat.cwd)].join(' · ')
+              : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" />{` · ${cwdName(chat.cwd)}`}</>}
           </p>
         )}
       {snapshot.status === 'error' && snapshot.error !== undefined

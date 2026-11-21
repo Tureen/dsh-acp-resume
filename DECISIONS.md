@@ -698,3 +698,9 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - **连接事件**:去掉「连接」标签，保留警告色竖条、一行说明和时间。
 - **空状态**:一行灰字「暂无轮次记录」。
 - **文案**:删去不再使用的 question / answer / expandFull / expandFullLines / refreshDetail / runningMessage / eventBadge / turnExpand;新增 fullLines / inFlightFor / releaseProcess / deleteRecord / moreActions。`chatTitle`(「首轮:」)仍用于列表行的悬停提示，保留。
+
+修订(2026-11-20,密度再平衡):用户反馈 D30 之后「过于简朴、内容过密」,整体太扁平，每轮的信息不够辨认。在 D30 的结构上加回信息量，仍只改展示层:
+- 收起时问题预览最多 2 行、回答预览最多 3 行：取前几行非空行(每行至多 200 字),保留换行，再用 CSS `line-clamp` 限住折行;还有未显示的行或被截断时，行尾照旧显示「全文 · N 行」。
+- 异常轮加左侧竖条，样式同连接事件:`error` 红色;未正常完成(`aborted`、`max-tokens`、`refusal` 等)或由新会话作答的轮橙色;正常完成的轮无竖条。
+- 进行中条目显示已发送消息的前 2 行。
+- 元信息行末尾追加 cwd 的最后一级目录名(如 `kiro-cli · 12 轮 · 3 分钟前 · dsh-acp-resume`),进行中时同样追加;完整路径仍在名称的悬停提示里。

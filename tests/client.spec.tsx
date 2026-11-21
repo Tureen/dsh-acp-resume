@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as client from '../src/client/index.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
-import { ChatDetail, ChatDetailTitle, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
+import { ChatDetail, ChatDetailTitle, cwdName, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
 import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
 import { WorkflowsSource } from '../src/client/workflows-source.ts'
@@ -969,7 +969,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const heading = screen.getByRole('heading', { level: 2 })
     expect(heading.textContent).toBe('审阅')
     expect(heading.getAttribute('title')).toBe(`chat-${UUID_A}\ncwd /tmp\n远端 4fb07582-1111-4111-8111-111111111111\n活跃`)
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 轮 · 3 分钟前')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 轮 · 3 分钟前 · tmp')
     // Gone from the body: cwd, remote id, first-turn line, the section's turn count, the refresh button.
     expect(container.textContent).not.toMatch(/cwd|远端|首轮/)
     expect(screen.queryByRole('button', { name: '刷新' })).toBeNull()
@@ -986,7 +986,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(name(chat({ title: '首轮问题' }))).toBe('首轮问题')
     expect(name(chat())).toBe('chat-a1b2c3d4')
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ turnCount: 4, backend: 'review', backendDisplay: 'review', backendCount: 2 }) }))).injected} />)
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('review · 4 轮 · 3 分钟前')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('review · 4 轮 · 3 分钟前 · tmp')
   })
 
   it('lists turns newest first as two borderless lines: question with time and non-completed tags, answer; events as one line on a rail', () => {
@@ -1015,16 +1015,16 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(event.style.borderLeft).toMatch(/3px solid/)
   })
 
-  it('puts a running entry on top with a spinner, its first line, and a live timer; the meta line switches to running', async () => {
-    const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: `第一行\n${'长文本'.repeat(80)}` }
+  it('puts a running entry on top with a spinner, its first two lines, and a live timer; the meta line switches to running', async () => {
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: `第一行\n第二行\n${'长文本'.repeat(80)}` }
     const source = fakeSource(detailSnapshot({ entries: [running, turn(1)] }))
     const { container } = render(<ChatDetail {...detailProps(source).injected} />)
     const top = container.querySelector('li') as HTMLElement
     expect(top.hasAttribute('data-running')).toBe(true)
     expect(top.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('ongoing')
-    expect(within(top).getByText('第一行')).toBeTruthy()
+    expect(top.querySelector('[data-running-preview]')?.textContent).toBe('第一行\n第二行')
     expect(within(top).getByText('已运行 1分20秒')).toBeTruthy()
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分20秒')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分20秒 · tmp')
     await act(async () => { fireEvent.click(within(top).getByRole('button', { name: '展开进行中的消息' })) })
     expect(top.querySelector('[data-running-full]')?.textContent).toBe(running.message)
     expect(source.loadEntry).not.toHaveBeenCalled()
@@ -1035,7 +1035,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: 'm' }
     const { container, unmount } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [running] }))).injected} />)
     act(() => { vi.advanceTimersByTime(3_000) })
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分23秒')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分23秒 · tmp')
     unmount()
     render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [turn(1)] }))).injected} />)
     expect(vi.getTimerCount()).toBe(0)
@@ -1054,6 +1054,51 @@ describe('ChatDetail (D18, D30 density)', () => {
     render(<ChatDetail {...detailProps(fakeSource({ status: 'loading', entries: [], total: 0 })).injected} />)
     expect(screen.queryByText('暂无轮次记录')).toBeNull()
     expect(screen.getByText('正在读取…')).toBeTruthy()
+  })
+
+  it('previews up to two question lines and three answer lines, clamped, and flags more as full text', () => {
+    const long = turn(1, { message: '问一\n\n问二\n问三', output: '答一\n答二\n答三\n答四' })
+    const fits = turn(2, { message: '问一\n问二', output: '答一\n答二\n答三' })
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [long, fits] }))).injected} />)
+    const q = container.querySelector('[data-seq="1"] [data-question]') as HTMLElement
+    const a = container.querySelector('[data-seq="1"] [data-answer]') as HTMLElement
+    expect(q.textContent).toBe('问一\n问二')
+    expect(a.textContent).toBe('答一\n答二\n答三')
+    expect(q.style.webkitLineClamp).toBe('2')
+    expect(a.style.webkitLineClamp).toBe('3')
+    expect(container.querySelector('[data-seq="1"] [data-full-hint]')?.textContent).toBe('全文 · 4 行')
+    expect(container.querySelector('[data-seq="2"] [data-full-hint]')).toBeNull()
+  })
+
+  it('rails a turn red for an error, orange for a stop short or a fresh-session answer, and none when it completed plainly', () => {
+    const entries = [
+      turn(1),
+      turn(2, { stopReason: 'error' }),
+      turn(3, { stopReason: 'aborted' }),
+      turn(4, { stopReason: 'max-tokens' }),
+      turn(5, { freshSession: true }),
+    ]
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
+    const rail = (seq: number): [string | null, string] => {
+      const row = container.querySelector(`[data-seq="${seq}"]`) as HTMLElement
+      return [row.getAttribute('data-rail'), row.style.borderLeft]
+    }
+    expect(rail(1)).toEqual([null, ''])
+    expect(rail(2)[0]).toBe('error')
+    expect(rail(2)[1]).toMatch(/3px solid var\(--dsw-alias-state-error-primary\)/)
+    for (const seq of [3, 4, 5]) {
+      expect(rail(seq)[0]).toBe('warn')
+      expect(rail(seq)[1]).toMatch(/3px solid var\(--dsw-alias-state-warn-primary\)/)
+    }
+  })
+
+  it('ends the meta line with the cwd\'s last segment only', () => {
+    expect(cwdName('/Users/me/Developer/dsh-acp-resume')).toBe('dsh-acp-resume')
+    expect(cwdName('C:\\work\\repo\\')).toBe('repo')
+    expect(cwdName('/')).toBe('/')
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ cwd: '/Users/me/Developer/dsh-acp-resume', turnCount: 12 }) }))).injected} />)
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('12 轮 · 3 分钟前 · dsh-acp-resume')
+    expect(screen.getByRole('heading', { level: 2 }).getAttribute('title')).toContain('cwd /Users/me/Developer/dsh-acp-resume')
   })
 
   it('marks a cut turn with "full text · N lines" at the end of the answer line, and a fully shown one with nothing', () => {
@@ -1218,7 +1263,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: 'a\nb', messageMore: true })] })), { t: translator(en) })
     const { container } = render(<ChatDetail {...injected} />)
     expect(screen.getByText('Turn history')).toBeTruthy()
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 turns · 3 min ago')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 turns · 3 min ago · tmp')
     expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByText('9 min ago')).toBeTruthy()
     expect(container.querySelector('[data-full-hint]')?.textContent).toBe('full text · 2 lines')
     expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
