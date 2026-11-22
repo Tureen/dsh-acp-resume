@@ -37,25 +37,30 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 | Backend | Capabilities |
 | --- | --- |
 | **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. |
-| **Antigravity** (agy) | Connects through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
+| **Antigravity** (agy) | Connects automatically through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
 | **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and can be discovered automatically or configured as a named backend. |
 
 At startup, the plugin discovers CLIs on DSH’s `PATH` and at configured paths, checks the [supported versions](docs/backend-compatibility.md), and automatically verifies eligible backends. It does not start a protocol connection for unsupported versions, create a test session, or send a prompt. With no ready backend, dispatch is disabled but history remains available. Open **Right sidebar → ACP chats** and expand the compact **Backend status** row for Kiro, Codex, and Antigravity CLI (`agy`) status, including CLIs that were not found. Use **Recheck backends** on the same row, even when collapsed, after a CLI update, sign-in, or default-model change without restarting DSH. It does not delete chats, sign you out, or change settings.
 
 ### Use a single backend
 
-For Kiro, make sure DSH can find a supported version of `kiro-cli`; the plugin checks it automatically. To switch to agy, override the top-level `command` and `args` under the same plugin ID in your profile’s `cordis.patch.yml`. Set `agentEngine: none` to omit kiro’s engine flag.
+Make sure DSH can find a supported Kiro, Antigravity, or Codex CLI, and sign in through the CLI as needed. Antigravity and Codex require neither a Kiro installation nor YAML. If only one backend is ready, it becomes the default for new chats.
+
+Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and denies permission requests. Startup only performs a handshake; if opening a chat requests authentication, sign in through `agy`, then recheck. To override Antigravity’s path, model, or permissions, configure a named backend:
 
 ```yaml
 - id: subagent-acp-resume
   name: dsh-acp-resume
   config:
-    command: agy
-    args: [acp]
-    agentEngine: none
+    backends:
+      agy:
+        command: agy
+        args: [acp]
+        agentEngine: none
+        permission: ask
 ```
 
-Restart DSH. If agy is the only ready backend, it becomes the default for new chats. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. For Codex alone, install a supported Codex CLI and sign in there. No Kiro installation or YAML is needed. The plugin verifies your existing Codex model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
+Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
 
 ### Let the model choose between backends
 
@@ -81,7 +86,7 @@ To keep kiro as the default and offer Codex as an alternative, use the following
 
 After the automatic startup check, `acp_backend_status` reads the results; `acp_chat_start` lists ready backends only. With no configured default, a sole ready backend becomes the default; if more than one is ready, choose explicitly. If a configured default fails, the plugin does not silently substitute another backend. Existing chat IDs keep their original binding.
 
-For a custom ACP command or wrapper, explicitly set `allowUnverifiedBackends: true`. This option does not admit an out-of-range known CLI. `discoverBackends: false` disables additional PATH discovery and automatic Codex setup without disabling checks on explicitly configured commands. Auto-discovered Codex uses a read-only sandbox and does not inherit other backends’ explicit credentials or permission settings. Configure a named backend to override settings.
+For a custom ACP command or wrapper, explicitly set `allowUnverifiedBackends: true`. This option does not admit an out-of-range known CLI. `discoverBackends: false` disables additional PATH discovery and automatic Codex and Antigravity setup without disabling checks on explicitly configured commands. Auto-discovered backends do not inherit other backends’ explicit credentials or permission settings. Auto-discovered Codex also uses a read-only sandbox. Configure a named backend to override settings.
 
 For Codex, `effort` sets the reasoning level per turn. The `sandbox` options are `read-only` (default), `workspace-write`, and `danger-full-access`. Codex uses `approvalPolicy` to decide when to request approval. Each backend’s `permission` controls the response: `allow` approves automatically, `reject` declines, and `ask` prompts the user. The bundle sets `allow` for the default backend. A named backend defaults to `reject` if the field is omitted.
 

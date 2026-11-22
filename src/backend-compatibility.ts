@@ -9,21 +9,22 @@
 /** Backend families whose upstream stable releases have a supported range. */
 export type KnownBackendKind = 'kiro-v2' | 'kiro-v3' | 'codex' | 'agy'
 
-type VersionInterval = readonly [min: string, max: string]
+type VersionInterval = readonly [minInclusive: string, maxExclusive: string]
 
-const KIRO_RELEASES = [['2.36.0', '2.37.1'], ['3.0.0', '3.5.0']] as const
+// End at the next unverified minor line, not at the last reviewed patch.
+const KIRO_RELEASES = [['2.36.0', '2.38.0'], ['3.0.0', '3.6.0']] as const
 const RELEASES = {
   'kiro-v2': KIRO_RELEASES,
   'kiro-v3': KIRO_RELEASES,
-  codex: [['0.154.0', '0.171.0']],
-  agy: [['1.5.4', '1.5.12']],
+  codex: [['0.154.0', '0.172.0']],
+  agy: [['1.5.4', '1.6.0']],
 } as const satisfies Readonly<Record<KnownBackendKind, readonly VersionInterval[]>>
 
 export const KNOWN_BACKEND_KINDS: readonly KnownBackendKind[] = Object.freeze(Object.keys(RELEASES) as KnownBackendKind[])
 
 /** Keep the publisher's documented and the runtime's accepted bounds identical. */
 export function backendSupportRange(kind: KnownBackendKind): string {
-  return (RELEASES[kind] as readonly VersionInterval[]).map(([min, max]) => `>=${min} <=${max}`).join(' || ')
+  return (RELEASES[kind] as readonly VersionInterval[]).map(([min, max]) => `>=${min} <${max}`).join(' || ')
 }
 
 const NUMERIC = '(?:0|[1-9][0-9]*)'
@@ -59,12 +60,12 @@ function compareReleases(left: string, right: string): number {
   return 0
 }
 
-/** Check a stable release against the documented inclusive bounds. */
+/** Check a stable release against the documented half-open intervals. */
 export function backendCompatibility(kind: KnownBackendKind, version: string): { readonly supported: boolean; readonly range: string } {
   const intervals: readonly VersionInterval[] = RELEASES[kind]
   const release = RELEASE.exec(version)?.[1]
   return {
-    supported: release !== undefined && intervals.some(([min, max]) => compareReleases(release, min) >= 0 && compareReleases(release, max) <= 0),
+    supported: release !== undefined && intervals.some(([min, max]) => compareReleases(release, min) >= 0 && compareReleases(release, max) < 0),
     range: backendSupportRange(kind),
   }
 }

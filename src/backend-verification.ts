@@ -1,7 +1,7 @@
 /** Explicit, session-free connection checks for configured built-in backends. @module */
 import { homedir } from 'node:os'
 import { resultWithin, type Verification } from './backend-readiness.js'
-import { openAcpConnection } from './connection.js'
+import { AcpConnectionError, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
 import type { BackendSpec } from './pool.js'
 
@@ -98,7 +98,10 @@ export async function verifyBackend(spec: BackendSpec, signal: AbortSignal): Pro
     } finally {
       await connection.dispose()
     }
-  } catch {
+  } catch (error) {
+    if (spec.protocol !== 'codex' && error instanceof AcpConnectionError && error.category === 'protocol' && error.jsonRpcCode === -32000) {
+      return { status: 'login-required' }
+    }
     // Do not send raw child responses, RPC errors or credentials to logs or status surfaces.
     return { status: 'handshake-failed' }
   }

@@ -548,7 +548,7 @@ exit 1
     expect(panel.backends().backends).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'default', version: '2.21.1', compatibility: 'unsupported' }),
       expect.objectContaining({ id: 'codex', version: '0.155.1', compatibility: 'supported', readiness: 'ready', automatic: true, configured: false }),
-      expect.objectContaining({ id: 'agy', label: 'Antigravity CLI (agy)', compatibility: 'not-found', reason: 'missing-executable', range: '>=1.5.4 <=1.5.12' }),
+      expect.objectContaining({ id: 'agy', label: 'Antigravity CLI (agy)', compatibility: 'not-found', reason: 'missing-executable', range: '>=1.5.4 <1.6.0' }),
     ]))
     const status = await tools.get('acp_backend_status')!.execute({}, exec()) as { text: string }
     expect(status.text).toContain('agy — Antigravity CLI (agy): not-found, unavailable')
@@ -578,6 +578,48 @@ exit 1
     expect(tools.has('acp_chat_close')).toBe(true)
     await expect(start.execute({ cwd: process.cwd() }, exec())).rejects.toThrow(/No dispatch backend is ready/)
     expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'codex' })])
+  }, 10_000)
+
+  it.skipIf(process.platform === 'win32')('auto-discovers agy 1.5.14, reports auth failure on first start, and retries after sign-in', async () => {
+    const ctx = await host()
+    const fixture = autoFixture()
+    const dir = fixture.config.env.PATH
+    const command = join(dir, 'agy')
+    const decision = join(dir, 'agy-permission')
+    const writeAgy = (version: string, signedOut = false): void => writeFileSync(command, `#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\\n' '${version}'; exit 0; fi
+[ "$#" = 1 ] && [ "$1" = acp ] && [ -z "\${OTHER_BACKEND_SECRET:-}" ] || exit 1
+export MOCK_AUTH_REQUIRED=${signedOut ? 1 : 0} MOCK_PERMISSION=1 MOCK_PERMISSION_IGNORE_DECISION=1 MOCK_PERMISSION_DECISION_FILE="${decision}"
+exec "${process.execPath}" "${mockServer}"
+`, { mode: 0o755 })
+    fixture.writeCodex('0.153.0')
+    writeAgy('1.5.14', true)
+    const fiber = await ctx.plugin(acp, { ...fixture.config, permission: 'allow' })
+    cleanups.push(() => fiber.dispose())
+    const panel = ctx.get('acpResume')!
+    const tools = stubTools(ctx).registered
+    await until(() => panel.backends().dispatchEnabled, 'automatic agy check')
+    expect(panel.backends()).toMatchObject({ defaultBackend: 'agy', dispatchEnabled: true })
+    expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'agy', version: '1.5.14', readiness: 'ready', automatic: true, configured: false }))
+    expect(existsSync(fixture.registryPath)).toBe(false)
+    await expect(tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec())).rejects.toThrow('Sign in using the backend CLI')
+    expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'agy', readiness: 'needs-login', reason: 'login-required' }))
+    expect(tools.has('acp_chat_start')).toBe(false)
+    writeAgy('1.5.14')
+    expect(await panel.checkBackends()).toMatchObject({ defaultBackend: 'agy', dispatchEnabled: true })
+    const chat = await tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec()) as { backend: string; chatId: string }
+    expect(chat.backend).toBe('agy')
+    await tools.get('acp_chat_send')!.execute({ chatId: chat.chatId, message: 'hello' }, exec())
+    expect(readFileSync(decision, 'utf8')).toBe('cancelled\n')
+    fixture.writeCodex('0.171.1')
+    const mixed = await panel.checkBackends()
+    expect(mixed.backends.filter(row => row.readiness === 'ready').map(row => row.id).sort()).toEqual(['agy', 'codex'])
+    expect(mixed.defaultBackend).toBeUndefined()
+    fixture.writeCodex('0.153.0')
+    writeAgy('1.6.0')
+    expect(await panel.checkBackends()).toMatchObject({ dispatchEnabled: false })
+    expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'agy', version: '1.6.0', compatibility: 'unsupported', reason: 'unsupported-version' }))
+    expect(panel.list()).toContainEqual(expect.objectContaining({ chatId: chat.chatId, backend: 'agy' }))
   }, 10_000)
 
   it.skipIf(process.platform === 'win32')('reports Codex signed out automatically and rechecks after the user signs in', async () => {

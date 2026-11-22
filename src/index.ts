@@ -147,7 +147,7 @@ export interface Config {
   backends?: Record<string, BackendConfig>
   /** Preferred backend for new persistent chats; does not change existing bindings or one-shot. */
   defaultBackend?: string
-  /** Discover known CLI versions and supply a safe Codex backend when none is configured (default true). */
+  /** Discover known CLI versions and add Codex and Antigravity backends unless explicitly configured (default true). */
   discoverBackends?: boolean
   /** Opt in to configured custom wrappers without a known version contract (default false). */
   allowUnverifiedBackends?: boolean
@@ -314,6 +314,14 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
     entries.push(['codex', { name: 'codex', description: 'Codex (auto-discovered, read-only)', automatic: true,
       specBase: { ...base(auto), env: backendPathEnv(config.env) }, protocol: 'codex',
       codex: { sandbox: 'read-only', approvalPolicy: 'never' },
+    }])
+  }
+  if (config.discoverBackends && !entries.some(([name, backend]) => name === 'agy' || commandKind(backend.specBase.command) === 'agy')) {
+    const auto: BackendConfig = {
+      command: 'agy', args: ['acp'], agentEngine: 'none', permission: 'reject', env: {},
+    }
+    entries.push(['agy', { name: 'agy', description: 'Antigravity CLI (auto-discovered)', automatic: true,
+      specBase: { ...base(auto), env: backendPathEnv(config.env) },
     }])
   }
   return new Map(entries)

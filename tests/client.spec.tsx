@@ -182,6 +182,11 @@ describe('backend readiness', () => {
     expect(screen.getByText('Default for new chats: Codex')).toBeTruthy()
     expect(screen.getByText(/Uses your existing Codex account/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Recheck backends' })).toBeTruthy()
+    const agy = { ...found.backends[0]!, id: 'agy', label: 'Antigravity CLI (agy)' }
+    first.rerender(<ChatsPanel {...props(ready([]), { backendStatus: source({ status: 'ready', checking: false, data: { ...found, defaultBackend: 'agy', backends: [agy] } }), t: translator(en) })} />)
+    expect(screen.getByRole('button', { name: 'Backend status agy handshake passed; sign-in not checked' })).toBeTruthy()
+    expect(screen.getByText(/Uses agy model settings.*Sign-in checked when opening a chat/)).toBeTruthy()
+    expect(screen.queryByText(/Uses your existing Codex account/)).toBeNull()
   })
 
   it('distinguishes named configurations for the same CLI and explains an unselected default', () => {

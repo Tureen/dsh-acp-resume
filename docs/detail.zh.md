@@ -16,7 +16,7 @@
 > - 正确方式:用 npm 包名 `dsh plugin --profile <name> add dsh-acp-resume`,或从 Discover 市场安装。
 > - 确需离线安装时，可用 `npm pack dsh-acp-resume` 下载 tgz 后 `dsh plugin --profile <name> add <tgz 路径>` 本地安装;不推荐，这样装的插件没有更新按钮。
 
-安装后重启 DSH。插件自动检测版本并验证可用后端；在右侧栏 **ACP 会话** 展开 **后端状态**，查看 Kiro、Codex 和 Antigravity CLI（`agy`），包括未找到的 CLI。升级、登录或更换默认模型后可直接点状态栏上的 **重新检测后端**，无需展开；不会删除会话、退出登录或修改配置。已登录且拥有可用默认模型的 Codex 无需配置即可独立派工，不用安装 Kiro。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
+安装后重启 DSH。插件自动检测版本并验证可用后端；在右侧栏 **ACP 会话** 展开 **后端状态**，查看 Kiro、Codex 和 Antigravity CLI（`agy`），包括未找到的 CLI。升级、登录或更换默认模型后可直接点状态栏上的 **重新检测后端**，无需展开；不会删除会话、退出登录或修改配置。Codex 和 Antigravity 都可自动接入，不用安装 Kiro 或写 YAML；按需在各自 CLI 中登录。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
 
 ## 会话工具与面板
 
@@ -40,7 +40,7 @@
 ### 后端支持等级
 
 - **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）选模型用 `modelSelect: session` + `model`（经 `session/set_config_option`），不要直接设 model/effort（会追加 v3 拒绝的 CLI 旗标，导致启动失败）；v2（遗留）才支持 `--model` / `--effort` 旗标。
-- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；必须设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
+- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；可自动接入（使用 CLI 的模型设置，拒绝权限请求）；显式配置时应设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
 - **一等支持：Codex。** 走 `codex app-server` 私有协议（可自动接入；手动配置时用 `protocol: codex` 声明命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。可覆盖 `model`，也可使用 Codex 的默认模型；可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。模型清单来自 `codex app-server` 的 `model/list`；agy 的在 `initialize` 响应的 `models.availableModels`，effort 内嵌在模型 ID；kiro 模型动态（auto）。目前仅经 mock 验证，真机探针待做。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
 

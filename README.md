@@ -37,25 +37,30 @@ dsh plugin --profile <name> add dsh-acp-resume
 | 后端 | 支持能力 |
 | --- | --- |
 | **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话。 |
-| **Antigravity**（agy） | 通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
+| **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
 | **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
 
 启动时，插件用 DSH 的 `PATH` 和显式配置路径查找 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并自动验证可用的后端。不支持的版本不会启动代理协议；验证不会创建会话或发提示词。没有就绪后端时不开放派工，但仍可查看和清理历史。在 **右侧栏 → ACP 会话** 默认只显示一行 **后端状态**。展开后查看 Kiro、Codex 和 Antigravity CLI（`agy`）的检测状态，未找到的 CLI 也会显示。升级 CLI、登录或更换默认模型后，直接点同一行的 **重新检测后端**（无需展开）即可，无需重启 DSH；不会删除会话、退出登录或修改配置。
 
 ### 只用一个后端
 
-使用 Kiro 时，确保 DSH 能找到支持范围内的 `kiro-cli`；插件会自动验证。要换成 agy，在 profile 的 `cordis.patch.yml` 中按同一插件 id 覆盖顶层 `command` 和 `args`，并设 `agentEngine: none` 关闭 kiro 专用的启动参数：
+使用 Kiro、Antigravity 或 Codex 时，只需确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。Antigravity 和 Codex 无需安装 Kiro 或写 YAML；唯一就绪的后端会成为新会话默认项。
+
+自动接入的 Antigravity 使用 `agy acp` 和 CLI 的模型设置，不自动批准权限请求。启动时只握手，不创建会话；若首次建会话返回需要认证，请在 `agy` 中登录，再重新检测。要手动覆盖 Antigravity 的路径、模型或权限，可以定义命名后端：
 
 ```yaml
 - id: subagent-acp-resume
   name: dsh-acp-resume
   config:
-    command: agy
-    args: [acp]
-    agentEngine: none
+    backends:
+      agy:
+        command: agy
+        args: [acp]
+        agentEngine: none
+        permission: ask
 ```
 
-重启 DSH。若只有 agy 就绪，新建会话就会自动使用它。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。只用 Codex 时，安装受支持的 Codex CLI 并在 CLI 中登录即可。不必安装 Kiro，也不用写 YAML。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
+如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
 
 ### 让模型在多个后端中选择
 
@@ -81,7 +86,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 启动自动检测后，`acp_backend_status` 只读查看状态，`acp_chat_start` 只列出就绪后端。未指定默认项时，唯一就绪的后端自动成为新会话默认；多个就绪须显式选择。指定的默认后端失效时，不会静默切换。已有 `chatId` 仍绑定原后端。
 
-自定义 ACP 命令或包装脚本需要显式设置 `allowUnverifiedBackends: true`。此开关不会绕过已知 CLI 的版本限制。设置 `discoverBackends: false` 可关闭额外的 PATH 探测及自动启用 Codex，不影响显式配置命令的检查。自动启用的 Codex 使用 `read-only` 沙箱，不继承其他后端的显式凭据和授权配置；若要指定模型、环境或权限，请配置命名后端。
+自定义 ACP 命令或包装脚本需要显式设置 `allowUnverifiedBackends: true`。此开关不会绕过已知 CLI 的版本限制。设置 `discoverBackends: false` 可关闭额外的 PATH 探测及自动接入 Codex 和 Antigravity，不影响显式配置命令的检查。自动接入的后端不继承其他后端的显式凭据和授权配置；Codex 另使用 `read-only` 沙箱；若要指定模型、环境或权限，请配置命名后端。
 
 Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。`approvalPolicy` 决定 Codex 何时请求审批，各后端的 `permission` 决定如何答复，可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问。自带配置为默认后端设置了 `allow`，命名后端省略此字段时使用 `reject`。
 

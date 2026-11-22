@@ -13,7 +13,7 @@ const startAt = source.indexOf(begin)
 const endAt = source.indexOf(end)
 if (startAt < 0 || endAt <= startAt) throw new Error('Missing compatibility table markers')
 const table = [begin,
-  '| 后端 | 稳定正式版范围（含边界） |', '| --- | --- |',
+  '| 后端 | 稳定正式版范围（含下限，不含上限） |', '| --- | --- |',
   ...KNOWN_BACKEND_KINDS.map(kind => `| ${labels[kind]} | ${backendSupportRange(kind).split(' || ').map(range => `\`${range}\``).join(' 或 ')} |`),
   end,
 ].join('\n')

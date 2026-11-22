@@ -320,7 +320,9 @@ function backendName(t: PanelTranslate, backend: BackendStatus): string {
 }
 
 function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; readonly t: PanelTranslate }): ReactNode {
-  const remediation = backend.reason === undefined ? undefined : copyFor(REMEDIATION_COPY, backend.reason)
+  const remediation = backend.reason === undefined ? undefined
+    : backend.automatic && backend.id === 'agy' && backend.reason === 'login-required' ? 'backendFixAgyLogin' as const
+      : copyFor(REMEDIATION_COPY, backend.reason)
   return (
     <li style={styles.backendRow}>
       <div style={styles.backendMeta}>
@@ -335,7 +337,9 @@ function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; rea
         <span style={styles.notice}>{t('backendCompatibility', { status: t(copyFor(COMPATIBILITY_COPY, backend.compatibility) ?? 'backendUnknown') })}</span>
         <span style={styles.notice}>{t('backendReadiness', { status: t(copyFor(READINESS_COPY, backend.readiness) ?? 'backendUnverified') })}</span>
       </div>
-      {backend.automatic && backend.readiness === 'ready' ? <p style={styles.notice}>{t('backendAutomaticReady')}</p> : null}
+      {backend.automatic && backend.readiness === 'ready' ? (
+        <p style={styles.notice}>{t(backend.id === 'agy' ? 'backendAutomaticAgyReady' : 'backendAutomaticReady')}</p>
+      ) : null}
       {remediation === undefined ? null : <p style={styles.notice}>{t(remediation)}</p>}
     </li>
   )
@@ -356,20 +360,22 @@ function BackendStatusSection({ source, view, t }: {
     && data.backends.every(row => row.reason === 'backend-unready'))
   const selected = data?.backends.find(backend => backend.id === data.defaultBackend)
   const defaultName = selected === undefined ? data?.defaultBackend : backendName(t, selected)
-  const readyNames = data?.dispatchEnabled
-    ? data.backends.filter(backend => backend.readiness === 'ready').map(backend => backendName(t, backend))
-    : []
+  const readyBackends = data?.dispatchEnabled ? data.backends.filter(backend => backend.readiness === 'ready') : []
+  const readyNames = readyBackends.map(backend => backendName(t, backend))
+  const onlyAutomaticAgy = readyBackends.length === 1 && readyBackends[0]?.id === 'agy' && readyBackends[0].automatic === true
   const summary = startup || checking ? t('backendSummaryChecking')
     : status === 'unavailable' ? t('backendSummaryUnavailable')
       : view.checkFailed ? t('backendSummaryCheckFailed')
         : status === 'error' ? t('backendSummaryReadFailed')
-        : readyNames.length === 0 ? t('backendSummaryNone')
-          : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
-            : t('backendSummaryMany', { count: readyNames.length })
+          : readyNames.length === 0 ? t('backendSummaryNone')
+            : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
+              : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
+                : t('backendSummaryMany', { count: readyNames.length })
   const checkResult = !view.checkCompleted ? null
     : readyNames.length === 0 ? t('backendCheckNoneReady')
-      : readyNames.length === 1 ? t('backendCheckReady', { name: readyNames[0]! })
-        : t('backendCheckMultipleReady', { names: readyNames.join(t('backendNameSeparator')) })
+      : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
+        : readyNames.length === 1 ? t('backendCheckReady', { name: readyNames[0]! })
+          : t('backendCheckMultipleReady', { names: readyNames.join(t('backendNameSeparator')) })
   return (
     <section style={styles.backendSection} aria-label={t('backendStatusHeading')}>
       <div style={styles.backendToolbar}>
