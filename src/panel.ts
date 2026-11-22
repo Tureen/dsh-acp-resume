@@ -1,6 +1,6 @@
 /**
  * Host half of the persistent-chat side panel (D15, PANEL-DESIGN §3.6.1). A
- * Cordis service under key `acpResume` exposes seven Remote methods over the
+ * Cordis service under key `acpResume` exposes Remote methods over the
  * official Typert Gateway's source-mode discovery, so no generated artifact is
  * needed: `acpResume/list`, `acpResume/close`, and `acpResume/purge` (wire
  * name `purge`, not `remove`, which collides with the Client namespace
@@ -8,14 +8,17 @@
  * (one chat's registry row and its newest turn-log entries as previews) and
  * `acpResume/turn` (one entry in full), `acpResume/usage` (D28: every
  * backend's quota through the shared cache), and `acpResume/workflows` (D29:
- * one session's running and recent workflow runs). The methods map one-to-one onto the
- * pool and own no state. Source-mode parameters accept a missing field as `undefined`, so
+ * one session's running and recent workflow runs). Backend readiness has a
+ * side-effect-free `acpResume/backends` snapshot and an explicit bounded
+ * `acpResume/checkBackends` action. The panel owns no state. Source-mode
+ * parameters accept a missing field as `undefined`, so
  * every method validates its own arguments.
  * @module dsh-acp-resume/panel
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
 import type { LogEntry } from './turn-log.js'
 import type { BackendUsage, UsageService } from './usage.js'
@@ -116,9 +119,28 @@ export class AcpResumePanelService extends TypertRemoteService {
    * Register under {@link PANEL_SERVICE_KEY}; the registration follows `ctx`'s fiber.
    * @param ctx - owning Cordis context.
    * @param pool - the plugin's session pool, the single source of truth.
+   * @param usageService - optional quota data owner.
+   * @param backendStatus - optional readiness data owner and bounded checker.
    */
-  constructor(ctx: Context, private readonly pool: AcpSessionPool, private readonly usageService?: UsageService) {
+  constructor(
+    ctx: Context,
+    private readonly pool: AcpSessionPool,
+    private readonly usageService?: UsageService,
+    private readonly backendStatus?: BackendStatusService,
+  ) {
     super(ctx, PANEL_SERVICE_KEY)
+  }
+
+  /** Read the current readiness snapshot without starting discovery or any process. */
+  @Remote
+  backends(): BackendStatusSnapshot {
+    return this.backendStatus?.snapshot() ?? { backends: [], checking: false, dispatchEnabled: false }
+  }
+
+  /** An explicit user action; the readiness service owns the probe limits and cleanup. */
+  @Remote
+  async checkBackends(): Promise<BackendStatusSnapshot> {
+    return this.backendStatus?.check() ?? this.backends()
   }
 
   /**

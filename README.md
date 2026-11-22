@@ -18,7 +18,7 @@ DeepSeek Harness（DSH）官方的 ACP 后端采用一次性委派，每次都�
 
 ## 安装
 
-需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本。使用默认后端时，请先安装 `kiro-cli`，确保 DSH 能在 `PATH` 中找到它。
+需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本，以及至少一个[受支持的 CLI](docs/backend-compatibility.md)。Kiro 不是必装依赖；也可以只用 Codex 或 agy。
 
 从 npm 安装到你的 DSH profile，将 `<name>` 换成实际名称，安装后重启 DSH：
 
@@ -38,11 +38,13 @@ dsh plugin --profile <name> add dsh-acp-resume
 | --- | --- |
 | **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话。 |
 | **Antigravity**（agy） | 通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
-| **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批，只能配置为命名后端。 |
+| **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
+
+启动时，插件用 DSH 的 `PATH` 和显式配置路径查找 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并自动验证可用的后端。不支持的版本不会启动代理协议；验证不会创建会话或发提示词。没有就绪后端时不开放派工，但仍可查看和清理历史。在 **右侧栏 → ACP 会话** 默认只显示一行 **后端状态**。展开后查看 Kiro、Codex 和 Antigravity CLI（`agy`）的检测状态，未找到的 CLI 也会显示。升级 CLI、登录或更换默认模型后，直接点同一行的 **重新检测后端**（无需展开）即可，无需重启 DSH；不会删除会话、退出登录或修改配置。
 
 ### 只用一个后端
 
-使用 kiro 时，确保 DSH 能从 `PATH` 找到 `kiro-cli`，即可直接快速上手。要换成 agy，在 profile 的 `cordis.patch.yml` 中按同一插件 id 覆盖顶层 `command` 和 `args`，并设 `agentEngine: none` 关闭 kiro 专用的启动参数：
+使用 Kiro 时，确保 DSH 能找到支持范围内的 `kiro-cli`；插件会自动验证。要换成 agy，在 profile 的 `cordis.patch.yml` 中按同一插件 id 覆盖顶层 `command` 和 `args`，并设 `agentEngine: none` 关闭 kiro 专用的启动参数：
 
 ```yaml
 - id: subagent-acp-resume
@@ -53,11 +55,11 @@ dsh plugin --profile <name> add dsh-acp-resume
     agentEngine: none
 ```
 
-重启 DSH 后，模型新建会话时就会使用 agy。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。只使用 Codex 时也需按下节将其注册为命名后端，建会话时指定 `backend: codex`。
+重启 DSH。若只有 agy 就绪，新建会话就会自动使用它。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。只用 Codex 时，安装受支持的 Codex CLI 并在 CLI 中登录即可。不必安装 Kiro，也不用写 YAML。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
 
 ### 让模型在多个后端中选择
 
-要用 kiro 作为默认后端、Codex 作为备选，在同一处使用下面这份配置。顶层字段定义默认后端，`backends` 下的键是模型可选择的名称。把 `model` 换成你账号在 Codex `model/list` 中可用的 ID。
+要用 kiro 作为默认后端、Codex 作为备选，在同一处使用下面这份配置。顶层 `command` 和 `args` 定义名为 `default` 的传统后端，`defaultBackend` 选择新会话的默认项。把 `model` 换成你账号在 Codex `model/list` 中可用的 ID。
 
 ```yaml
 - id: subagent-acp-resume
@@ -65,6 +67,7 @@ dsh plugin --profile <name> add dsh-acp-resume
   config:
     command: kiro-cli
     args: [acp]
+    defaultBackend: default # 只用 Codex 时改为 codex
     backends:
       codex:
         protocol: codex
@@ -76,7 +79,9 @@ dsh plugin --profile <name> add dsh-acp-resume
         permission: ask
 ```
 
-重启 DSH 后，`acp_chat_start` 会列出可选后端。模型传入工作目录的绝对路径 `cwd`，省略 `backend` 即用 kiro，指定 `backend: codex` 即用 Codex。侧栏徽标显示每个会话的后端；之后用同一个 `chatId` 续聊即可。
+启动自动检测后，`acp_backend_status` 只读查看状态，`acp_chat_start` 只列出就绪后端。未指定默认项时，唯一就绪的后端自动成为新会话默认；多个就绪须显式选择。指定的默认后端失效时，不会静默切换。已有 `chatId` 仍绑定原后端。
+
+自定义 ACP 命令或包装脚本需要显式设置 `allowUnverifiedBackends: true`。此开关不会绕过已知 CLI 的版本限制。设置 `discoverBackends: false` 可关闭额外的 PATH 探测及自动启用 Codex，不影响显式配置命令的检查。自动启用的 Codex 使用 `read-only` 沙箱，不继承其他后端的显式凭据和授权配置；若要指定模型、环境或权限，请配置命名后端。
 
 Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。`approvalPolicy` 决定 Codex 何时请求审批，各后端的 `permission` 决定如何答复，可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问。自带配置为默认后端设置了 `allow`，命名后端省略此字段时使用 `reject`。
 
@@ -133,6 +138,7 @@ templates:
 
 | 工具 | 何时使用 |
 | --- | --- |
+| `acp_backend_status` | 只读查询支持范围、就绪状态、新会话默认项和建议，不启动外部进程。 |
 | `acp_chat_start` | 建立持久会话，返回 `chatId`。配置多个后端后可指定 `backend`。 |
 | `acp_chat_send` | 开始下一轮，自动按需重连。同一会话一次只执行一轮，忙时再次发送会报错。 |
 | `acp_chat_list` | 找回当前 DSH 会话创建的子代理，包括已释放的会话。 |

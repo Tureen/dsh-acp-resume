@@ -42,7 +42,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "typecheck:client": "tsc -p tsconfig.client.json",
-    "prepack": "rm -rf lib && tsc -p tsconfig.json && tsdown",
+    "docs:compatibility": "node scripts/backend-compatibility.mjs --write",
+    "check:compatibility": "node scripts/backend-compatibility.mjs",
+    "prepack": "node scripts/backend-compatibility.mjs && rm -rf lib && tsc -p tsconfig.json && tsdown",
     "test": "vitest run"
   },
   "dependencies": {

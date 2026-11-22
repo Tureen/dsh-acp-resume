@@ -46,16 +46,28 @@ import { acpStopReason, disposeAcpChild, type AcpRunSpec } from './run.js'
 import { isCodexApprovalMethod, resolveCodexApproval } from './codex-approval.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 
-/** {@link AcpRunSpec} plus the Codex-only thread parameters. `command`/`args` default to nothing here; the caller supplies `codex app-server`. */
-export interface CodexSessionSpec extends AcpRunSpec {
-  /** Explicit model id. Required: Codex's own default may be unavailable for the account. */
-  readonly codexModel: string
+interface CodexConnectionSpec extends AcpRunSpec {
+  /** Set on new threads; omit it on resume to keep the thread's existing model. */
+  readonly codexModel?: string
   /** `read-only` | `workspace-write` | `danger-full-access`. Default `read-only`. */
   readonly sandbox?: string
   /** `never` | `untrusted` | `on-request` | `on-failure`. Default `never`. */
   readonly approvalPolicy?: string
   /** Reasoning effort passed on every `turn/start`, when set. */
   readonly codexEffort?: string
+}
+
+/** The Codex spawn and thread settings with a selected model for a new thread. */
+export interface CodexSessionSpec extends CodexConnectionSpec {
+  readonly codexModel: string
+}
+
+/** Readiness-only connection: no thread, turn, login or usage methods. */
+interface CodexProbeConnection {
+  readAccount(): Promise<unknown>
+  readConfig(): Promise<unknown>
+  listModels(cursor?: string): Promise<unknown>
+  dispose(): Promise<void>
 }
 
 /** JSON-RPC error reply from the Codex server. */
@@ -140,24 +152,16 @@ interface TurnState {
   resolveTerminal: (terminal: { status: string | undefined; errorInfo: string | undefined }) => void
 }
 
-/**
- * Open one Codex connection: spawn `codex app-server`, handshake, then start or
- * resume a thread. Startup failure cleans the process up first and rejects with
- * an {@link AcpConnectionError}: a spawn failure is `process-start`, a closed
- * stream `transport` or `process-exit`, a server rejection (including resuming
- * an unknown thread) `protocol`. Local cancellation rejects with a plain abort error.
- * @param spec - resolved spawn spec plus Codex thread parameters.
- * @param open - fresh thread or resume of a saved thread id.
- * @param signal - optional cancellation for the startup window.
- */
-/**
- * How to open a Codex connection: the ACP modes (new / load a thread), or
- * `usage` (D28): `initialize` only, no thread, for the read-only account reads.
- * A `usage` connection has an empty `remoteSessionId` and must not prompt.
- */
+/** Open a new/existing thread, or initialize only for usage reads (D28). */
 export type CodexOpenMode = OpenAcpMode | { readonly mode: 'usage' }
+type CodexProbeMode = { readonly mode: 'probe' }
 
-export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpenMode, signal?: AbortSignal): Promise<AcpConnection> {
+/** Open `codex app-server`; failed startup tears down the child before rejecting. */
+export function openCodexConnection(spec: CodexSessionSpec, open: CodexOpenMode, signal?: AbortSignal): Promise<AcpConnection>
+export function openCodexConnection(spec: CodexConnectionSpec, open: Exclude<CodexOpenMode, { mode: 'new' }>, signal?: AbortSignal): Promise<AcpConnection>
+/** Initialize only for readiness (D31), with no capability to start turns. */
+export function openCodexConnection(spec: AcpRunSpec, open: CodexProbeMode, signal?: AbortSignal): Promise<CodexProbeConnection>
+export async function openCodexConnection(spec: CodexConnectionSpec, open: CodexOpenMode | CodexProbeMode, signal?: AbortSignal): Promise<AcpConnection | CodexProbeConnection> {
   if (signal?.aborted) throw new Error('subagent request was aborted before the Codex child started')
   const id = brandString<SessionId>(randomUUID())
 
@@ -166,7 +170,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpe
     child = spec.spawn({
       argv: [spec.command, ...spec.args],
       cwd: spec.cwd,
-      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: open.mode === 'probe' ? 'pipe' : 'inherit' },
       graceMs: spec.disposeGraceMs,
       env: spec.env,
     })
@@ -174,6 +178,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpe
     try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
     throw connectionError({ stage: 'initialize', category: 'process-start' }, error)
   }
+  if (open.mode === 'probe') child.stderr?.resume()
   const stdin = child.stdin
   const stdout = child.stdout
   if (stdin === undefined || stdout === undefined) {
@@ -376,7 +381,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpe
 
   // ---- startup ------------------------------------------------------------
   const threadParams = {
-    model: spec.codexModel,
+    ...(spec.codexModel === undefined ? {} : { model: spec.codexModel }),
     approvalPolicy: spec.approvalPolicy ?? 'never',
     sandbox: spec.sandbox ?? 'read-only',
   }
@@ -386,7 +391,7 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpe
       (async (): Promise<void> => {
         await request('initialize', { clientInfo: { name: 'dsh-acp-resume', version: '0.1.0' } })
         notify('initialized')
-        if (open.mode === 'usage') {
+        if (open.mode === 'usage' || open.mode === 'probe') {
           remoteThreadId = ''
         } else if (open.mode === 'new') {
           startupStage = 'new-session'
@@ -439,6 +444,15 @@ export async function openCodexConnection(spec: CodexSessionSpec, open: CodexOpe
   signal?.removeEventListener('abort', onAbort)
   if (remoteThreadId === undefined) throw new Error('unreachable: Codex startup fulfilled without a thread id')
   const threadId = remoteThreadId
+
+  if (open.mode === 'probe') {
+    return {
+      readAccount: () => request('account/read', { refreshToken: false }),
+      readConfig: () => request('config/read', { includeLayers: false }),
+      listModels: (cursor) => request('model/list', { limit: 100, ...(cursor === undefined ? {} : { cursor }) }),
+      dispose,
+    }
+  }
 
   return {
     id,

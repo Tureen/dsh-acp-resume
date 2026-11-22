@@ -121,6 +121,7 @@ export class UsageService {
     private readonly pool: UsagePool,
     private readonly now: () => number = Date.now,
     private readonly timeoutMs: number = USAGE_READ_TIMEOUT_MS,
+    private readonly readyBackends?: () => ReadonlySet<string>,
   ) {}
 
   /**
@@ -130,8 +131,11 @@ export class UsageService {
   async read(options: { readonly backend?: string; readonly refresh?: boolean } = {}): Promise<readonly BackendUsage[]> {
     const backends = this.pool.backendList()
     const selected = options.backend === undefined ? backends : backends.filter(b => b.name === options.backend)
-    if (selected.length === 0) throw new Error(`unknown backend ${options.backend ?? ''}; configured backends: ${backends.map(b => b.name).join(', ')}`)
-    return Promise.all(selected.map(b => b.protocol === 'codex'
+    if (options.backend !== undefined && selected.length === 0) throw new Error(`unknown backend ${options.backend}; configured backends: ${backends.map(b => b.name).join(', ')}`)
+    const ready = this.readyBackends?.()
+    const visible = ready === undefined ? selected : selected.filter(b => ready.has(b.name))
+    if (options.backend !== undefined && visible.length === 0) throw new Error(`backend ${options.backend} is not ready; check backend status first`)
+    return Promise.all(visible.map(b => b.protocol === 'codex'
       ? this.codex(b.name, options.refresh === true)
       : Promise.resolve<BackendUsage>({ backend: b.name, protocol: 'acp', status: 'unsupported', fetchedAt: this.now() })))
   }

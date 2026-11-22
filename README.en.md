@@ -18,7 +18,7 @@ If every review calls for two independent reviewers and an editor to combine the
 
 ## Installation
 
-You need DSH `>=0.2.2-rc.3` and Node.js 24 or later. To use the default backend, install `kiro-cli` and make sure DSH can find it on its `PATH`.
+You need DSH `>=0.2.2-rc.3`, Node.js 24 or later, and at least one [supported CLI](docs/backend-compatibility.md). Kiro is optional.
 
 Replace `<name>` with your DSH profile name and install the package from npm. Restart DSH after installation.
 
@@ -38,11 +38,13 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 | --- | --- |
 | **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. |
 | **Antigravity** (agy) | Connects through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
-| **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and requires a named backend. |
+| **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and can be discovered automatically or configured as a named backend. |
+
+At startup, the plugin discovers CLIs on DSH’s `PATH` and at configured paths, checks the [supported versions](docs/backend-compatibility.md), and automatically verifies eligible backends. It does not start a protocol connection for unsupported versions, create a test session, or send a prompt. With no ready backend, dispatch is disabled but history remains available. Open **Right sidebar → ACP chats** and expand the compact **Backend status** row for Kiro, Codex, and Antigravity CLI (`agy`) status, including CLIs that were not found. Use **Recheck backends** on the same row, even when collapsed, after a CLI update, sign-in, or default-model change without restarting DSH. It does not delete chats, sign you out, or change settings.
 
 ### Use a single backend
 
-For kiro, make sure DSH can find `kiro-cli` on its `PATH`, then continue to the quick start. To switch to agy, override the top-level `command` and `args` under the same plugin ID in your profile’s `cordis.patch.yml`. Set `agentEngine: none` to omit kiro’s engine flag.
+For Kiro, make sure DSH can find a supported version of `kiro-cli`; the plugin checks it automatically. To switch to agy, override the top-level `command` and `args` under the same plugin ID in your profile’s `cordis.patch.yml`. Set `agentEngine: none` to omit kiro’s engine flag.
 
 ```yaml
 - id: subagent-acp-resume
@@ -53,11 +55,11 @@ For kiro, make sure DSH can find `kiro-cli` on its `PATH`, then continue to the 
     agentEngine: none
 ```
 
-Restart DSH and new chats will use agy automatically. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. If you use Codex exclusively, register it as a named backend as shown below and select `backend: codex` when starting a chat.
+Restart DSH. If agy is the only ready backend, it becomes the default for new chats. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. For Codex alone, install a supported Codex CLI and sign in there. No Kiro installation or YAML is needed. The plugin verifies your existing Codex model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
 
 ### Let the model choose between backends
 
-To keep kiro as the default and offer Codex as an alternative, use the following configuration in the same file. The top-level fields define the default backend. Each key under `backends` is a name the model can select. Replace `model` with an ID available to your account in the Codex `model/list` response.
+To keep kiro as the default and offer Codex as an alternative, use the following configuration in the same file. The top-level `command` and `args` define the legacy backend named `default`; `defaultBackend` selects the backend for new chats. Each key under `backends` is a name the model can select. Replace `model` with an ID available to your account in the Codex `model/list` response.
 
 ```yaml
 - id: subagent-acp-resume
@@ -65,6 +67,7 @@ To keep kiro as the default and offer Codex as an alternative, use the following
   config:
     command: kiro-cli
     args: [acp]
+    defaultBackend: default # Use codex for a Codex-only setup
     backends:
       codex:
         protocol: codex
@@ -76,7 +79,9 @@ To keep kiro as the default and offer Codex as an alternative, use the following
         permission: ask
 ```
 
-After restarting DSH, the model can see the available backends in `acp_chat_start`. It supplies an absolute working directory in `cwd` and either omits `backend` to use kiro or passes `backend: codex` to use Codex. A sidebar badge identifies each chat’s backend. Follow-ups use the same `chatId`.
+After the automatic startup check, `acp_backend_status` reads the results; `acp_chat_start` lists ready backends only. With no configured default, a sole ready backend becomes the default; if more than one is ready, choose explicitly. If a configured default fails, the plugin does not silently substitute another backend. Existing chat IDs keep their original binding.
+
+For a custom ACP command or wrapper, explicitly set `allowUnverifiedBackends: true`. This option does not admit an out-of-range known CLI. `discoverBackends: false` disables additional PATH discovery and automatic Codex setup without disabling checks on explicitly configured commands. Auto-discovered Codex uses a read-only sandbox and does not inherit other backends’ explicit credentials or permission settings. Configure a named backend to override settings.
 
 For Codex, `effort` sets the reasoning level per turn. The `sandbox` options are `read-only` (default), `workspace-write`, and `danger-full-access`. Codex uses `approvalPolicy` to decide when to request approval. Each backend’s `permission` controls the response: `allow` approves automatically, `reject` declines, and `ask` prompts the user. The bundle sets `allow` for the default backend. A named backend defaults to `reject` if the field is omitted.
 
@@ -133,6 +138,7 @@ For example, when sessions 1 and 2 run `dual_review` in the same workspace, they
 
 | Tool | When to use it |
 | --- | --- |
+| `acp_backend_status` | Read version support, readiness, the new-chat default, and suggested actions without launching a CLI. |
 | `acp_chat_start` | Open a persistent chat and get its `chatId`. Specify `backend` to select among configured backends. |
 | `acp_chat_send` | Start the next turn, reconnecting as needed. A chat runs one turn at a time. Sending again while it is busy returns an error. |
 | `acp_chat_list` | Find subagent chats created in the current DSH session, including chats whose processes have been released. |

@@ -27,6 +27,7 @@
 | 13 | D27 工作区角色(第一轮) | `team-config.ts` 配置层、`roster.ts` 花名册、池自动供给、send/close/list 的 role、Config `workflow` | `team.spec.ts` 13 例全绿；`workflow: false` 时工具定义与 0.2.7 逐字节一致 | ☑ |
 | 14 | D27 `acp_workflow` 引擎(第二轮) | `workflow-engine.ts`:parallel 部分容错 / `{stepId}` 顺序注入 / merge 两模式;`acp_workflow` 工具(后台 job 或同步);steer 的 role | `workflow.spec.ts` 10 例全绿 | ☑ |
 | 12 | D25 Codex app-server 适配器 | `connection-codex.ts` 连接层、池协议路由与 Config、`mock-codex-server.ts`、`codex-approval.ts`(ask 桥)与四份文档 | mock 联调全绿(见 AGENTS.md 基线)；ACP 路径与单后端工具定义不回归；**真机 Codex 探针待做** | ☑(mock) |
+| 15 | D31 后端兼容性与就绪门控 | 兼容表、启动自动验证、Codex 零配置、状态工具/面板、新会话路由 | 夹具覆盖不支持的 Kiro、Codex 零配置和登录诊断、旧线程模型保留、缺失的 agy 仍可见；Desktop 本地验证覆盖 Codex 升级后重新检测恢复派工，以及折叠栏入口 | ☑ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

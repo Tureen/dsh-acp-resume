@@ -1360,7 +1360,7 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
   it('refuses a Codex backend that has no codex parameters', async () => {
     const broken: BackendSpec = { ...codexBackend(), codex: undefined as never }
     const { pool, spawns } = makePool({ backends: new Map([['codex', broken]]) })
-    await expect(pool.start(process.cwd(), undefined, codexStart)).rejects.toThrow(/protocol codex but has no codex model/)
+    await expect(pool.start(process.cwd(), undefined, codexStart)).rejects.toThrow(/missing settings for Codex backend codex/)
     expect(spawns.children).toHaveLength(0)
   })
 

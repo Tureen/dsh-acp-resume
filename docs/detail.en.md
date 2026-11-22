@@ -16,7 +16,7 @@ This feature is off by default; set `workflow: true` in the plugin config. Write
 > - Install by npm package name with `dsh plugin --profile <name> add dsh-acp-resume`, or from the Discover market.
 > - If you must install offline, download the tgz with `npm pack dsh-acp-resume`, then install it locally with `dsh plugin --profile <name> add <tgz path>`. This is not recommended: a plugin installed that way has no update button.
 
-Restart DSH after installation. See the [README](../README.en.md) for npm, local tgz, and upgrade instructions.
+Restart DSH after installation. The plugin checks backends automatically. Open **Right sidebar → ACP chats** and expand **Backend status** to see Kiro, Codex, and Antigravity CLI (`agy`), including CLIs that were not found. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the status row without expanding it or restarting DSH. This does not delete chats, sign you out, or change settings. See the [README](../README.en.md) for install and configuration instructions.
 
 ## Chat tools and panel
 

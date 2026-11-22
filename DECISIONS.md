@@ -368,7 +368,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - **取消**:`turn/interrupt {threadId, turnId}`，毫秒级。
 - **流式**:`item/agentMessage/delta`，params 为 `{threadId, turnId, itemId, delta}`。最终输出取 `item/completed` 中 `agentMessage.phase === 'final_answer'` 的 `text`。
 - **审批**:三套 `item/*/requestApproval`(命令/文件/权限)。`availableDecisions` 含 `accept` / `acceptWithExecpolicyAmendment` / `cancel`，不含 `decline`，但服务端接受 `decline` 回复：该条被拒、整轮继续；`cancel` 则整轮 interrupted。
-- **模型**:`model/list` 返回 10 个(含 2 个隐藏)，由 `thread/start` 或 `turn/start` 的 `model` 参数指定。默认模型 `gpt-6.1-terra` 本机不可用，必须显式指定。
+- **模型**:`model/list` 返回 10 个(含 2 个隐藏)，由 `thread/start` 或 `turn/start` 的 `model` 参数指定。默认模型 `gpt-6.1-terra` 在当时的本机环境不可用，原先要求显式指定；D31 现按上游账号与默认模型信息自动验证，不再一律必填。
 - **stopReason 映射**:completed→end_turn、interrupted→cancelled、failed→error、`codexErrorInfo === 'contextWindowExceeded'`→max-tokens。
 
 ### 架构裁定
@@ -382,7 +382,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 
 ### Config
 
-`BackendConfig` 增加 `protocol?: 'acp' | 'codex'`(默认 `'acp'`)。Codex 后端额外字段：`model`(必填，因默认模型不可用)、`sandbox`(`read-only` | `workspace-write` | `danger-full-access`，默认 `read-only`)、`approvalPolicy`(`never` | `untrusted` | `on-request` | `on-failure`，默认 `never`)。Config schema 随池集成轮扩展。
+`BackendConfig` 增加 `protocol?: 'acp' | 'codex'`(默认 `'acp'`)。Codex 后端额外字段：`model`(当时因默认模型不可用设为必填；D31 改为可选)、`sandbox`(`read-only` | `workspace-write` | `danger-full-access`，默认 `read-only`)、`approvalPolicy`(`never` | `untrusted` | `on-request` | `on-failure`，默认 `never`)。Config schema 随池集成轮扩展。
 
 ### 连接层实施细节(第一轮)
 
@@ -396,7 +396,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 ### 已知风险
 
 - `decline` 不在 `availableDecisions` 里却被接受，依赖未文档化行为，Codex 升级可能失效；失效时 reject 策略退回 `cancel`(整轮 interrupted)。
-- 默认模型不可用属环境问题(Codex 版本或账号)，适配器通过必填 `model` 规避。
+- 默认模型不可用属环境问题(Codex 版本或账号)，适配器原先通过必填 `model` 规避；D31 改为验证 Codex 提供的明确默认值。
 - 官方包针对 0.147.0，本机为 0.160.0，协议可能有小变化。
 - 私有协议无稳定性承诺，升级 Codex 后须重跑真机探针。
 
@@ -704,3 +704,11 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - 异常轮加左侧竖条，样式同连接事件:`error` 红色;未正常完成(`aborted`、`max-tokens`、`refusal` 等)或由新会话作答的轮橙色;正常完成的轮无竖条。
 - 进行中条目显示已发送消息的前 2 行。
 - 元信息行末尾追加 cwd 的最后一级目录名(如 `kiro-cli · 12 轮 · 3 分钟前 · dsh-acp-resume`),进行中时同样追加;完整路径仍在名称的悬停提示里。
+
+## D31 派工后端的版本支持、就绪检查与准入(2026-11-22)
+
+- **发布支持而非逐版实测**：[兼容范围与证据](docs/backend-compatibility.md)按 CLI + 协议或引擎记录边界；支持范围来自版本化的上游文档、发行说明和源码，证据不足时只补关键边界。`src/backend-compatibility.ts` 是运行时和发布表的唯一版本来源，`pnpm check:compatibility` 检查同步。范围之外是插件的支持策略，不等于已证实不兼容。
+- **启动自动验证**：使用宿主 subprocess 的环境与查找语义读取 CLI 版本；只有版本在范围内、配置合法、且属于可派工候选时才做有时限的连接检查。「重新检测后端」复用同一流程，不是初次启用的条件，不清理会话、登录或配置。侧栏默认只显示一行「后端状态」摘要与独立的「重新检测后端」按钮；无需展开即可检测，版本范围与修复提示仍在详情内。宿主和面板保留未找到的内置 CLI 行并显示支持范围；发现不等于启用，agy 仍需显式配置。ACP 握手不凭 `authMethods` 猜登录；Codex 只读 `account/read`（显式不请求刷新 token）、`config/read` 和 `model/list`，不触发登录、不创建会话、不发提示词。上游 CLI 自己可能访问网络。面板轮询和模型状态工具只读缓存；D28 额度读取只对就绪后端发起。
+- **Codex 零配置**：若没有显式 Codex 后端，从 PATH 发现 `codex` 后使用 `read-only` / `never` / `reject`，只继承查找路径覆写，不带入其他后端的显式凭据。显式设置优先；省略模型时验证 Codex 用户级配置，若未设置才采用唯一公布的可用默认；不替用户猜模型。重连自动发现的线程不传新默认模型，保留原线程选择。
+- **准入**：零就绪时不挂 start/send/workflow，旧会话可查看或清理，已在途任务不被检查打断。池也校验捕获的工具和间接调用。唯一就绪且没有显式默认时自动路由；多个则显示选择，显式配置的默认不可用也不偷偷换。`defaultBackend` 仅影响新建，注册表中的 `default` 含义、历史路由和 D6 恢复规则不迁移。D24 的单后端旧版工具定义仍保留用于传统 `default` 已就绪的情形；运行时多后端列表改为只列就绪项。自定义命令须显式启用 `allowUnverifiedBackends`，该选项不放宽已知 CLI 的版本边界。
+- **模式与边界**：修订 D26，保留 `acp-dispatcher` 预设标识（宿主重启后恢复历史需要它），不可用时只能查诊断，不会偷偷启用 bash 或切到标准模式。`acp_backend_status` 与面板读取同一状态。官方 one-shot 和 `src/run.ts` 按 D11 不动；本决策只门控持久派工。

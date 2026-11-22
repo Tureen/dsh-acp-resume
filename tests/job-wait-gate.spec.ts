@@ -254,7 +254,7 @@ describe('apply: allowChatJobWait switch', () => {
     const ctx = await pluginHost()
     const dir = mkdtempSync(join(tmpdir(), 'acp-resume-gate-'))
     dirs.push(dir)
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json'), ...config })
+    const fiber = await ctx.plugin(acp, { allowUnverifiedBackends: true, discoverBackends: false, command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json'), ...config })
     cleanups.push(() => fiber.dispose())
     const agent = await liveAgent(ctx, 'session-a')
     return { ctx, agent, job: startJob(ctx, 'acp-chat', agent) }
@@ -294,7 +294,7 @@ describe('apply: allowChatJobWait switch', () => {
     cleanups.push(() => ctx.fiber.dispose())
     const dir = mkdtempSync(join(tmpdir(), 'acp-resume-gate-'))
     dirs.push(dir)
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json') })
+    const fiber = await ctx.plugin(acp, { allowUnverifiedBackends: true, discoverBackends: false, command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json') })
     cleanups.push(() => fiber.dispose())
     const agent = await liveAgent(ctx, 'session-a')
     // Without jobs the listener is absent: the chain falls straight through.
@@ -355,7 +355,7 @@ describe('real ToolRuntime dispatch', () => {
     }))
     const dir = mkdtempSync(join(tmpdir(), 'acp-resume-gate-'))
     dirs.push(dir)
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json') })
+    const fiber = await ctx.plugin(acp, { allowUnverifiedBackends: true, discoverBackends: false, command: process.execPath, args: [mockServer], registryPath: join(dir, 'registry.json') })
     cleanups.push(() => fiber.dispose())
     const agent = await liveAgent(ctx, 'session-a')
     const job = startJob(ctx, 'acp-chat', agent)

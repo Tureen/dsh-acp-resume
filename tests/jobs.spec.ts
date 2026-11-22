@@ -380,7 +380,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
   it('registers the inline send without a registry, the job-backed one while it is present, and inline again when it leaves', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-jobs-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, workflow: true })
+    const fiber = await ctx.plugin(acp, { allowUnverifiedBackends: true, discoverBackends: false, command: process.execPath, args: [mockServer], registryPath, workflow: true })
     cleanups.push(() => fiber.dispose())
     await until(() => sendDescription(ctx) !== undefined, 'tool registration')
     expect(sendDescription(ctx)).toMatch(/await its final answer/)
@@ -389,7 +389,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
     ctx.jobs.attachController('jobs-spec')
     await until(() => /background job id/.test(sendDescription(ctx) ?? ''), 'the job-backed send')
     const tools = (ctx.get('tools') as unknown as StubTools).registered
-    expect([...tools.keys()].sort()).toEqual(['acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_workflow'])
+    expect([...tools.keys()].sort()).toEqual(['acp_backend_status', 'acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_workflow'])
     // acp_workflow follows the registry like send: job-backed now, inline again below.
     expect(tools.get('acp_workflow')!.description).toMatch(/background job id/)
     const { chatId } = await tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
@@ -408,7 +408,7 @@ describe('apply: the send variant follows ctx.jobs', () => {
     await ctx.plugin(LocalJobRegistry)
     ctx.jobs.attachController('jobs-spec')
     const registryPath = join(tempDir('acp-resume-jobs-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
+    const fiber = await ctx.plugin(acp, { allowUnverifiedBackends: true, discoverBackends: false, command: process.execPath, args: [mockServer], registryPath })
     cleanups.push(() => fiber.dispose())
     await until(() => sendDescription(ctx) !== undefined, 'tool registration')
     expect(sendDescription(ctx)).toMatch(/background job id/)

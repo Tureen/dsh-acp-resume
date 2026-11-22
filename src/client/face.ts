@@ -7,6 +7,8 @@
  * @module dsh-acp-resume/client/face
  */
 
+import type { BackendStatusSnapshot } from '../backend-status.ts'
+
 /**
  * One chat as `acpResume/list` returns it. Mirrors the host `PooledChatInfo`
  * (src/pool.ts); restated because the browser half must not reach the node half.
@@ -193,8 +195,25 @@ export interface WorkflowsSnapshot {
   readonly fetchedAt?: number
 }
 
+/** Client state around the Host readiness snapshot; failed requests keep the last good data. */
+export interface BackendStatusView {
+  readonly status: 'loading' | 'ready' | 'error' | 'unavailable'
+  readonly data?: BackendStatusSnapshot
+  /** An explicit check requested by this Client is still in flight. */
+  readonly checking: boolean
+  readonly checkFailed?: boolean
+  readonly checkCompleted?: boolean
+}
+
+/** Profile-wide readiness source and its explicit refresh action. */
+export interface BackendStatusSourceFace extends Observable<BackendStatusView> {
+  check(): Promise<void>
+}
+
+/** What the sidebar slot injects before the renderer binds `hooks`. */
 export interface ChatsPanelInjected {
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }
+  readonly backendStatus?: BackendStatusSourceFace
   /** The viewing session's workflow runs (D29); absent without a session on screen. */
   readonly workflows?: Observable<WorkflowsSnapshot>
   /** The DSH session viewing the panel (the seat's `inject` sessionId); `undefined` when none is on screen. */
