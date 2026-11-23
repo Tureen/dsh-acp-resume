@@ -72,7 +72,6 @@ async function chatArgv(config: Record<string, unknown>): Promise<string[]> {
   dirs.push(dir)
   const fiber = await ctx.plugin(acp, {
     command: process.execPath,
-    allowUnverifiedBackends: true, discoverBackends: false,
     registryPath: join(dir, 'registry.json'),
     env: { MOCK_ECHO_ARGV: '1' },
     ...config,

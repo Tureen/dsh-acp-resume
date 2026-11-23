@@ -395,7 +395,7 @@ describe('apply (panel wiring)', () => {
   it('registers the panel service with the tools and withdraws it with the tools service and the plugin', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-panel-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, discoverBackends: false })
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
     cleanups.push(() => fiber.dispose())
     // No tools service yet: no pool, no panel.
     await new Promise(r => setTimeout(r, 50))
@@ -407,10 +407,12 @@ describe('apply (panel wiring)', () => {
     expect(panel.list()).toEqual([])
     await until(() => !panel.backends().checking, 'backend discovery')
     expect(panel.backends()).toMatchObject({
-      dispatchEnabled: false,
-      backends: [{ id: 'default', compatibility: 'custom', readiness: 'unavailable', reason: 'custom-unverified' }],
+      dispatchEnabled: true,
+      defaultBackend: 'default',
+      backends: expect.arrayContaining([
+        expect.objectContaining({ id: 'default', compatibility: 'custom', readiness: 'unverified', reason: 'custom-unverified' }),
+      ]),
     })
-    expect(panel.backends().defaultBackend).toBeUndefined()
 
     await tools.dispose()
     await until(() => ctx.get(PANEL_SERVICE_KEY) === undefined, 'panel withdrawal with the tools service')

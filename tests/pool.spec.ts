@@ -51,6 +51,7 @@ interface PoolSetup {
   onWarn?: (message: string) => void
   onError?: (error: Error) => void
   backends?: ReadonlyMap<string, BackendSpec>
+  dispatch?: PoolOptions['dispatch']
 }
 
 function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: string; spawns: SpawnLog } {
@@ -76,6 +77,7 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
     registryPath,
     idleTimeoutMs: setup.idleTimeoutMs ?? 600_000,
     ...(setup.backends === undefined ? {} : { backends: setup.backends }),
+    ...(setup.dispatch === undefined ? {} : { dispatch: setup.dispatch }),
     ...(setup.onWarn === undefined ? {} : { onWarn: setup.onWarn }),
   }
   const pool = new AcpSessionPool(options)
@@ -139,6 +141,72 @@ describe('AcpSessionPool', () => {
     expect(second.output).toBe('remember:记住暗号A')
     expect(second.freshSession).toBe(false)
     expect(spawns.children).toHaveLength(1)
+  })
+
+  it('continues a live or released chat when readiness is unavailable, without consulting the checked executable', async () => {
+    const { env } = storeEnv('acp-resume-continuation-')
+    let ready = true
+    const checkedCommand = `${process.execPath}-checked`
+    const commands: string[] = []
+    const dispatch: NonNullable<PoolOptions['dispatch']> = {
+      select: (requested) => {
+        if (!ready) throw new Error('new chat blocked by readiness')
+        return requested ?? 'default'
+      },
+      executable: () => {
+        if (!ready) throw new Error('no cached executable')
+        return checkedCommand
+      },
+    }
+    const spawn = (spec: SubprocessSpawnSpec): SubprocessHandle => {
+      const [command, ...args] = spec.argv
+      commands.push(command!)
+      return nodeSpawn({ ...spec, argv: [command === checkedCommand ? process.execPath : command!, ...args] })
+    }
+    const first = makePool({ env, spawn, dispatch })
+    const chat = await first.pool.start(process.cwd())
+    ready = false
+    await expect(first.pool.start(process.cwd())).rejects.toThrow('new chat blocked by readiness')
+    expect(() => first.pool.assertSendable(chat.chatId)).not.toThrow()
+    await expect(first.pool.send(chat.chatId, 'on the live child')).resolves.toMatchObject({ stopReason: 'completed', remoteSessionId: chat.remoteSessionId })
+    await first.pool.disposeAll()
+
+    const { pool } = makePool({ registryPath: first.registryPath, env, spawn, dispatch })
+    expect(() => pool.assertSendable(chat.chatId)).not.toThrow()
+    const reconnect = await pool.send(chat.chatId, 'after restart before the first check')
+    expect(reconnect).toMatchObject({ stopReason: 'completed', freshSession: false, remoteSessionId: chat.remoteSessionId, output: 'remember:on the live child' })
+    expect(registryRow(first.registryPath, chat.chatId)).toMatchObject({ backend: 'default', remoteSessionId: chat.remoteSessionId })
+    expect(commands).toEqual([checkedCommand, process.execPath])
+  })
+
+  it('keeps startup diagnostics without latching a transient failure, and records explicit AuthRequired', async () => {
+    let failureMode: 'initialize' | 'auth' | undefined = 'initialize'
+    const diagnostics: [string, string][] = []
+    const selections: Array<AbortSignal | undefined> = []
+    const { pool } = makePool({
+      dispatch: {
+        select: async (backend, signal) => { selections.push(signal); return backend ?? 'default' },
+        executable: () => undefined,
+        failure: (backend, reason) => { diagnostics.push([backend, reason]) },
+      },
+      spawn: spec => nodeSpawn({ ...spec, env: { ...spec.env,
+        MOCK_CRASH_ON_INITIALIZE: failureMode === 'initialize' ? '1' : '0',
+        MOCK_AUTH_REQUIRED: failureMode === 'auth' ? '1' : '0',
+      } }),
+    })
+    const { signal } = new AbortController()
+    await expect(pool.start(process.cwd(), signal)).rejects.toMatchObject({
+      message: expect.stringContaining('Retry this backend'),
+      cause: expect.objectContaining({ stage: 'initialize', category: 'process-exit' }),
+    })
+    expect(diagnostics).toEqual([])
+    failureMode = undefined
+    const chat = await pool.start(process.cwd())
+    failureMode = 'auth'
+    await expect(pool.start(process.cwd())).rejects.toThrow('Sign in using the backend CLI')
+    expect(diagnostics).toEqual([['default', 'login-required']])
+    expect(selections[0]).toBe(signal)
+    await expect(pool.send(chat.chatId, 'still usable')).resolves.toMatchObject({ stopReason: 'completed' })
   })
 
   it('projects the in-flight message only while a prompt is running', async () => {
@@ -1345,6 +1413,43 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
     const next = await pool.send(chat.chatId, 'after')
     expect(next).toMatchObject({ freshSession: true, freshSessionReason: 'repeated-errors' })
     expect(next.remoteSessionId).not.toBe(chat.remoteSessionId)
+  })
+
+  it('replaces an automatic Codex thread after repeated errors without any cached path or model', async () => {
+    const dir = tempDir('acp-resume-codex-continuation-')
+    const requestLog = join(dir, 'requests')
+    const env = { MOCK_SESSION_STORE: join(dir, 's.json'), MOCK_REQUEST_FILE: requestLog, MOCK_CODEX_TURN_STATUS: 'failed' }
+    const automatic = { ...codexBackend(env), codex: {}, automatic: true as const }
+    let ready = true
+    const dispatch: NonNullable<PoolOptions['dispatch']> = {
+      select: () => {
+        if (!ready) throw new Error('no cached readiness')
+        return 'codex'
+      },
+      executable: () => {
+        if (!ready) throw new Error('no cached executable')
+        return undefined
+      },
+      model: () => {
+        if (!ready) throw new Error('no cached model')
+        return 'mock-model'
+      },
+    }
+    const { pool, registryPath } = makePool({ backends: new Map([['codex', automatic]]), dispatch })
+    const chat = await pool.start(process.cwd(), undefined, codexStart)
+    ready = false
+    for (let count = 0; count < CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD; count += 1) {
+      await expect(pool.send(chat.chatId, `fail-${count}`)).resolves.toMatchObject({ stopReason: 'error', freshSession: false })
+    }
+    const next = await pool.send(chat.chatId, 'after')
+    expect(next).toMatchObject({ freshSession: true, freshSessionReason: 'repeated-errors' })
+    expect(next.remoteSessionId).not.toBe(chat.remoteSessionId)
+    expect(registryRow(registryPath, chat.chatId)).toMatchObject({ backend: 'codex', remoteSessionId: next.remoteSessionId })
+    const requests = readFileSync(requestLog, 'utf8').split('\n')
+    const starts = requests.filter(line => line.startsWith('thread/start '))
+    expect(starts).toHaveLength(2)
+    expect(starts[0]).toContain('"model":"mock-model"')
+    expect(starts[1]).not.toContain('"model"')
   })
 
   it('routes an ACP chat and a Codex chat to their own protocol side by side', async () => {

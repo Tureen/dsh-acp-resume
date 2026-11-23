@@ -156,9 +156,14 @@ interface TurnState {
 export type CodexOpenMode = OpenAcpMode | { readonly mode: 'usage' }
 type CodexProbeMode = { readonly mode: 'probe' }
 
-/** Open `codex app-server`; failed startup tears down the child before rejecting. */
-export function openCodexConnection(spec: CodexSessionSpec, open: CodexOpenMode, signal?: AbortSignal): Promise<AcpConnection>
-export function openCodexConnection(spec: CodexConnectionSpec, open: Exclude<CodexOpenMode, { mode: 'new' }>, signal?: AbortSignal): Promise<AcpConnection>
+/**
+ * Spawn `codex app-server`, initialize, then start/resume a thread or return a usage connection.
+ * Startup failures dispose the child before rejecting: spawn failures are `process-start`,
+ * closed streams are `transport` or `process-exit`, and server rejections are `protocol`.
+ * Local cancellation rejects with a plain abort error. Configured starts and D6 recovery
+ * may omit the model to use the app-server default; resume keeps the saved thread's model.
+ */
+export function openCodexConnection(spec: CodexConnectionSpec, open: CodexOpenMode, signal?: AbortSignal): Promise<AcpConnection>
 /** Initialize only for readiness (D31), with no capability to start turns. */
 export function openCodexConnection(spec: AcpRunSpec, open: CodexProbeMode, signal?: AbortSignal): Promise<CodexProbeConnection>
 export async function openCodexConnection(spec: CodexConnectionSpec, open: CodexOpenMode | CodexProbeMode, signal?: AbortSignal): Promise<AcpConnection | CodexProbeConnection> {

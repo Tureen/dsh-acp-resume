@@ -114,7 +114,7 @@ const backendFixture: BackendStatusSnapshot = {
   checking: false, dispatchEnabled: true, defaultBackend: 'codex',
   backends: [
     { id: 'codex', label: 'Codex', configured: true, version: '0.170.0', range: '>=0.100.0 <1', compatibility: 'supported', readiness: 'ready' },
-    { id: 'kiro', label: 'Kiro', configured: true, version: '2.0.0', compatibility: 'unsupported', readiness: 'unavailable', reason: 'unsupported-version' },
+    { id: 'kiro', label: 'Kiro', configured: true, version: '2.0.0', compatibility: 'unverified-version', readiness: 'unverified', reason: 'unsupported-version' },
     { id: 'agy', label: 'Antigravity', configured: false, compatibility: 'not-found', readiness: 'unavailable', reason: 'missing-executable' },
     { id: 'review', label: 'Review', configured: true, compatibility: 'custom', readiness: 'unverified', reason: 'custom-unverified' },
     { id: 'other', label: 'Other', configured: true, compatibility: 'unknown', readiness: 'needs-login', reason: 'login-required' },
@@ -145,8 +145,8 @@ describe('backend readiness', () => {
     expect(within(rows[0]!).getByText('Supported range: >=0.100.0 <1')).toBeTruthy()
     expect(within(rows[0]!).getByText('Compatibility: Supported')).toBeTruthy()
     expect(within(rows[0]!).getByText('Readiness: Ready')).toBeTruthy()
-    expect(within(rows[1]!).getByText('Compatibility: Unsupported')).toBeTruthy()
-    expect(within(rows[1]!).getByText('Install a CLI version in the supported range, then check again.')).toBeTruthy()
+    expect(within(rows[1]!).getByText('Compatibility: Unverified version')).toBeTruthy()
+    expect(within(rows[1]!).getByText('This version is outside the verified range; you can still try the configured backend.')).toBeTruthy()
     expect(within(rows[2]!).getByText('Compatibility: CLI not found')).toBeTruthy()
     expect(within(rows[2]!).getByText('Not configured')).toBeTruthy()
     expect(within(rows[2]!).getByText('No CLI version detected')).toBeTruthy()

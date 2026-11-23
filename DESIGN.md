@@ -15,7 +15,7 @@
 
 - 保留:one-shot provider(走 ctx.subagents,注册名 acp-resume,行为与官方一致)。
 - 新增:持久会话池 + 模型工具(走 ctx.tools):acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close,另有 acp_chat_steer(D19,2026-11-09 修订:原稿为四个)。
-- D31：已发布的 CLI 兼容范围驱动宿主启动探测；自动连接检查与只读状态查询分离；对发现的 Codex 使用安全默认值验证已有登录和模型；自动接入的 Antigravity 只握手，使用 CLI 模型设置，拒绝权限请求。状态由工具和面板共享，派工准入由池兜底。切换新会话默认项不重写注册表、旧后端身份或 one-shot。
+- D31：宿主默认发现内置 CLI，自动连接检查与只读状态查询分离。Codex 按安全默认值验证已有登录和模型；Antigravity 只握手，使用 CLI 模型设置并拒绝 ACP 权限请求。工具和面板共享诊断缓存，工具不随就绪状态增减。池仅在新建（含首次供给角色）时选路：显式 `backend` 优先，其次固定的 `defaultBackend`；保留自定义顶层后端的旧 `default` 路由，内置配置按就绪的 Kiro → Codex → `agy` 选择。单次失败不锁定后端；已有会话的发送与重连不查就绪门，注册表、D6 与 one-shot 不变。
 
 ## 文件改动
 

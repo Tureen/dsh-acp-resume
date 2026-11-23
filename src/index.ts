@@ -29,7 +29,7 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { UsageService } from './usage.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
@@ -38,10 +38,8 @@ import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
 import { BackendReadinessService, backendPathEnv, type BackendCandidate } from './backend-readiness.js'
 import { verifyBackend } from './backend-verification.js'
-import { backendStatusTool } from './tools.js'
 
-// cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
-// cannot read at runtime; `satisfies` pins the literal to the declared member.
+// Cordis exposes an ambient const enum; pin its active value at compile time.
 const FIBER_ACTIVE = 2 satisfies FiberState.ACTIVE
 
 export const name = 'acp-resume'
@@ -149,7 +147,7 @@ export interface Config {
   defaultBackend?: string
   /** Discover known CLI versions and add Codex and Antigravity backends unless explicitly configured (default true). */
   discoverBackends?: boolean
-  /** Opt in to configured custom wrappers without a known version contract (default false). */
+  /** Allow explicitly selecting an auto-discovered CLI outside the verified range (default false). */
   allowUnverifiedBackends?: boolean
   /** Name prefix for the five persistent-chat tools (default `acp_chat_`). */
   toolPrefix?: string
@@ -324,6 +322,14 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
       specBase: { ...base(auto), env: backendPathEnv(config.env) },
     }])
   }
+  if (config.discoverBackends && !entries.some(([name, backend]) => name === 'kiro' || commandKind(backend.specBase.command) === 'kiro-cli')) {
+    const auto: BackendConfig = {
+      command: 'kiro-cli', args: ['acp'], agentEngine: 'v3', permission: 'reject', env: {},
+    }
+    entries.push(['kiro', { name: 'kiro', description: 'Kiro CLI (auto-discovered)', automatic: true,
+      specBase: { ...base(auto), env: backendPathEnv(config.env) },
+    }])
+  }
   return new Map(entries)
 }
 
@@ -409,12 +415,19 @@ export function apply(ctx: Context, config: Config): void {
   // on the first tools arrival, so a host without a tools service touches no registry file.
   let pool: AcpSessionPool | undefined
   let usage: UsageService | undefined
+  // Only the stock Kiro recipe adopts priority routing. Custom legacy commands remain pinned.
+  const automaticPriority = resolved.discoverBackends && resolved.command === 'kiro-cli'
+    && resolved.args.length === 1 && resolved.args[0] === 'acp'
+    && resolved.agentEngine === 'v3' && resolved.model === undefined && resolved.effort === undefined
+  const preferred = resolved.defaultBackend ?? (automaticPriority ? undefined : DEFAULT_BACKEND)
   const readiness = new BackendReadinessService({
-    candidates: readinessCandidates(backends, resolved), preferred: resolved.defaultBackend,
+    candidates: readinessCandidates(backends, resolved), preferred,
     allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: ctx.subprocess,
+    onWarn: message => { ctx.logger.warn(message) },
     verify: (candidate, executable, signal) => {
       const spec = backends.get(candidate.id)!
-      return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal)
+      return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal,
+        (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
     },
   })
   if (resolved.defaultBackend !== undefined && !backends.has(resolved.defaultBackend)) {
@@ -438,49 +451,35 @@ export function apply(ctx: Context, config: Config): void {
     const chatPool = pool
     const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) } } : undefined
     const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
-    const [, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles)
-    scope.effect(() => scope.tools.register(steer))
-    scope.effect(() => scope.tools.register(list))
-    scope.effect(() => scope.tools.register(close))
-    scope.effect(() => scope.tools.register(backendStatusTool(readiness)))
+    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
+      false, preferred, automaticPriority && preferred === undefined)
+    for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix)]) {
+      scope.effect(() => scope.tools.register(tool))
+    }
     usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
-    // Register only dispatch tools for currently admitted backends. The pool also gates
-    // captured tool bodies, and indirect role/workflow paths, before committing work.
+    if (chatPool.backendList().some(backend => backend.protocol === 'codex')) {
+      const usageTool = chatUsageTool(usage)
+      scope.effect(() => scope.tools.register(usageTool))
+    }
+    // Only changes to the jobs service affect send/workflow registration, never readiness.
     let unregister: (() => void) | undefined
-    let jobs = scope.get('jobs') as ChatJobsFace | undefined
-    let lastKey: string | undefined
-    let lastJobs: ChatJobsFace | undefined
-    const syncDispatch = (): void => {
-      if (scope.fiber.state !== FIBER_ACTIVE) return
-      const state = readiness.snapshot()
-      const ready = new Set(state.backends.filter(row => row.readiness === 'ready').map(row => row.id))
-      const choices = backendChoices.filter(backend => ready.has(backend.name))
-      const key = JSON.stringify([choices.map(choice => choice.name), state.defaultBackend])
-      if (key === lastKey && jobs === lastJobs) return
-      lastKey = key
-      lastJobs = jobs
+    let registeredJobs: ChatJobsFace | undefined
+    const registerSend = (jobs?: ChatJobsFace): void => {
+      if (unregister !== undefined && registeredJobs === jobs) return
       unregister?.()
-      unregister = undefined
-      if (!state.dispatchEnabled) return
-      const [start] = chatStaticTools(chatPool, resolved.toolPrefix, choices, roles, state.defaultBackend === undefined || choices[0]?.name !== DEFAULT_BACKEND, state.defaultBackend)
-      const definitions = [start, chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles),
+      registeredJobs = jobs
+      const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles),
         ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
-      if (chatPool.backendList().some(backend => backend.protocol === 'codex' && ready.has(backend.name))) definitions.push(chatUsageTool(usage as UsageService))
-      const revokers = definitions.map(definition => scope.tools.register(definition))
+      const revokers = definitions.map(tool => scope.tools.register(tool))
       unregister = () => { for (const revoke of revokers) revoke() }
     }
-    scope.effect(() => {
-      const unsubscribe = readiness.subscribe(syncDispatch)
-      syncDispatch()
-      return () => { unsubscribe(); unregister?.(); unregister = undefined }
-    })
+    scope.effect(() => { registerSend(scope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
     scope.inject(['jobs'], (jobsScope) => {
-      jobs = jobsScope.jobs
-      syncDispatch()
+      registerSend(jobsScope.jobs)
       if (!resolved.allowChatJobWait) {
         jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
       }
-      jobsScope.effect(() => () => { jobs = undefined; syncDispatch() })
+      jobsScope.effect(() => () => { if (scope.fiber.state === FIBER_ACTIVE) registerSend() })
     })
     new AcpResumePanelService(scope, pool, usage, readiness)
     if (!checkedAtStartup) {

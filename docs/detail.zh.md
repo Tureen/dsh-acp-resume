@@ -16,7 +16,7 @@
 > - 正确方式:用 npm 包名 `dsh plugin --profile <name> add dsh-acp-resume`,或从 Discover 市场安装。
 > - 确需离线安装时，可用 `npm pack dsh-acp-resume` 下载 tgz 后 `dsh plugin --profile <name> add <tgz 路径>` 本地安装;不推荐，这样装的插件没有更新按钮。
 
-安装后重启 DSH。插件自动检测版本并验证可用后端；在右侧栏 **ACP 会话** 展开 **后端状态**，查看 Kiro、Codex 和 Antigravity CLI（`agy`），包括未找到的 CLI。升级、登录或更换默认模型后可直接点状态栏上的 **重新检测后端**，无需展开；不会删除会话、退出登录或修改配置。Codex 和 Antigravity 都可自动接入，不用安装 Kiro 或写 YAML；按需在各自 CLI 中登录。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
+安装后重启 DSH。默认开启后端发现；在右侧栏 **ACP 会话** 展开 **后端状态**，可查看各 CLI 的版本和就绪情况。升级、登录或更换默认模型后，可直接点同一行的 **重新检测后端**；不需要重启，也不会删除会话、退出登录或修改配置。使用内置配置时，新会话按 Kiro → Codex → Antigravity（`agy`）的顺序选择就绪后端；Codex 和 Antigravity 均可零配置接入，按需在 CLI 中登录。可用 `discoverBackends: false` 关闭额外发现。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
 
 ## 会话工具与面板
 
@@ -32,7 +32,9 @@
 
 ## 关键配置
 
-- `command`：外部 ACP agent 的可执行文件。默认示例使用 `kiro-cli`。
+- `command`：外部 ACP agent 的可执行文件。自定义顶层后端保留原来的 `default` 路由。
+- `defaultBackend`：固定新会话的默认后端；不可用时不会自动切换。显式传入的 `backend` 优先。
+- `allowUnverifiedBackends: true`：允许显式尝试自动发现的范围外 CLI，但不会把它加入自动选择。已配置后端的版本检查只告警；已有会话发送和重连不受检测状态影响。
 - `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
 - `model` / `effort`：通过 `--model` / `--effort` CLI 旗标生效，仅对接受这些旗标的 agent 有效（kiro v2 引擎）；agy 与 kiro v3 会拒绝它们，直接设置会启动失败。这两类后端请设 `modelSelect: session` + `model`，走会话级方法。
@@ -41,10 +43,10 @@
 
 - **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）选模型用 `modelSelect: session` + `model`（经 `session/set_config_option`），不要直接设 model/effort（会追加 v3 拒绝的 CLI 旗标，导致启动失败）；v2（遗留）才支持 `--model` / `--effort` 旗标。
 - **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；可自动接入（使用 CLI 的模型设置，拒绝权限请求）；显式配置时应设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
-- **一等支持：Codex。** 走 `codex app-server` 私有协议（可自动接入；手动配置时用 `protocol: codex` 声明命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。可覆盖 `model`，也可使用 Codex 的默认模型；可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。模型清单来自 `codex app-server` 的 `model/list`；agy 的在 `initialize` 响应的 `models.availableModels`，effort 内嵌在模型 ID；kiro 模型动态（auto）。目前仅经 mock 验证，真机探针待做。
+- **一等支持：Codex。** 走 `codex app-server` 私有协议（可自动接入；手动配置时用 `protocol: codex` 声明命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。可覆盖 `model`，也可使用 Codex 的默认模型；可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。Codex 模型清单来自 `codex app-server` 的 `model/list`。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
 
-完整的支持等级、agy 配方和模型列表见 [README 的后端支持等级](../README.md#后端支持等级)。
+自动接入和手动覆盖示例见 [README 的后端选择说明](../README.md#选择后端)。
 
 ### 新手配方
 
@@ -91,7 +93,7 @@
         permission: ask
 ```
 
-完整配置、默认值和手动接线方式见 [README](../README.md#配置)。
+默认值和手动接线方式见 [README](../README.md#让模型在多个后端中选择)。
 
 ## ACP Dispatcher 模式
 
@@ -104,7 +106,7 @@
 
 ## 已知限制
 
-- kiro-cli、agy / Antigravity 与 Codex 属一等支持（Codex 尚未做真机验证）；Other 通用 ACP 后端仍需按其能力自行验证。
+- 内置后端的自动选择受[发布的版本范围](backend-compatibility.md)和就绪状态限制；通用 ACP 后端仍需按其协议能力自行验证。
 - `acp_chat_steer` 在 kiro 上使用专属的 `_session/steer` 扩展，在 Codex 上使用原生 `turn/steer`。其他 agent 未实现时会明确报错。
 - 持久会话依赖远端 agent 支持 `session/load`。会话丢失或连续失败时，插件会新开会话并提示重新提供必要上下文。
 

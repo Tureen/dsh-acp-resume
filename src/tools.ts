@@ -37,9 +37,9 @@ declare module '@deepseek-ai/dsh-jobs' {
 }
 
 /** Read-only status for the model: never probes or creates a session. */
-export function backendStatusTool(service: BackendStatusService) {
+export function backendStatusTool(service: BackendStatusService, toolPrefix = 'acp_chat_') {
   return defineTool({
-    name: 'acp_backend_status',
+    name: `${toolPrefix.replace(/chat_$/, '')}backend_status`,
     description: 'Read the automatic ACP backend check: supported versions, ready backends, the new-chat default, and any needed action. This read does not launch a CLI. If detection is running, say so. For changes or recovery, direct the user to Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」). This does not delete chats, log users out, or change settings.',
     parameters: {},
     output: {
@@ -411,7 +411,7 @@ export function chatSendTool(
  */
 export interface BackendChoice { readonly name: string; readonly description: string }
 
-export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backends: readonly BackendChoice[] = [], roles?: RoleSupport, exposeBackend = false, defaultBackend?: string): ToolDefinitionOf[] {
+export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backends: readonly BackendChoice[] = [], roles?: RoleSupport, exposeBackend = false, defaultBackend?: string, automaticPriority = false): ToolDefinitionOf[] {
   const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
 
   const backendDescription = ` Available backends:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}`
@@ -454,7 +454,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
         label: { type: 'string', description: `Optional short name for the chat (at most ${LABEL_MAX} characters), shown by ${toolPrefix}list so you can tell chats apart later.` },
         backend: { type: 'string', ...(exposeBackend && defaultBackend === undefined ? { required: true as const } : {}), description: exposeBackend && defaultBackend === undefined
           ? `Select a ready backend explicitly: ${backends.map(backend => backend.name).join(', ')}`
-          : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
+          : automaticPriority
+            ? `Optional backend name; omit for Kiro → Codex → Antigravity priority. Candidate names: ${backends.map(backend => backend.name).join(', ')}`
+            : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
       },
       output: {
         schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true }, backend: { type: 'string', required: true }, cwd: { type: 'string', required: true } } },

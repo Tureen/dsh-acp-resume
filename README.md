@@ -18,7 +18,7 @@ DeepSeek Harness（DSH）官方的 ACP 后端采用一次性委派，每次都�
 
 ## 安装
 
-需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本，以及至少一个[受支持的 CLI](docs/backend-compatibility.md)。Kiro 不是必装依赖；也可以只用 Codex 或 agy。
+需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本，以及至少一个可用的后端。自动接入请使用[兼容范围内的 CLI](docs/backend-compatibility.md)。Kiro 不是必装依赖；也可以只用 Codex 或 agy。
 
 从 npm 安装到你的 DSH profile，将 `<name>` 换成实际名称，安装后重启 DSH：
 
@@ -40,11 +40,11 @@ dsh plugin --profile <name> add dsh-acp-resume
 | **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
 | **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
 
-启动时，插件用 DSH 的 `PATH` 和显式配置路径查找 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并自动验证可用的后端。不支持的版本不会启动代理协议；验证不会创建会话或发提示词。没有就绪后端时不开放派工，但仍可查看和清理历史。在 **右侧栏 → ACP 会话** 默认只显示一行 **后端状态**。展开后查看 Kiro、Codex 和 Antigravity CLI（`agy`）的检测状态，未找到的 CLI 也会显示。升级 CLI、登录或更换默认模型后，直接点同一行的 **重新检测后端**（无需展开）即可，无需重启 DSH；不会删除会话、退出登录或修改配置。
+插件默认开启 `discoverBackends`：启动时用 DSH 的 `PATH` 和显式配置路径检测 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并验证符合条件的内置后端。检测不会创建会话或发送提示词；CLI 自身可能联网。在 **右侧栏 → ACP 会话** 展开 **后端状态**，可查看版本、就绪情况和失败原因。升级 CLI、登录或更换默认模型后，可以直接点击同一行的 **重新检测后端**，无需展开或重启 DSH；不会删除会话、退出登录或修改配置。
 
 ### 只用一个后端
 
-使用 Kiro、Antigravity 或 Codex 时，只需确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。Antigravity 和 Codex 无需安装 Kiro 或写 YAML；唯一就绪的后端会成为新会话默认项。
+确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。未指定其他默认项且未自定义顶层后端时，新会话按 **Kiro → Codex → Antigravity（`agy`）** 的顺序选择第一个就绪后端。Kiro 就绪时仍优先使用 Kiro；没有可用的 Kiro 时，Codex 或 `agy` 也可自动接入，无需另写 YAML。
 
 自动接入的 Antigravity 使用 `agy acp` 和 CLI 的模型设置，不自动批准权限请求。启动时只握手，不创建会话；若首次建会话返回需要认证，请在 `agy` 中登录，再重新检测。要手动覆盖 Antigravity 的路径、模型或权限，可以定义命名后端：
 
@@ -84,9 +84,15 @@ dsh plugin --profile <name> add dsh-acp-resume
         permission: ask
 ```
 
-启动自动检测后，`acp_backend_status` 只读查看状态，`acp_chat_start` 只列出就绪后端。未指定默认项时，唯一就绪的后端自动成为新会话默认；多个就绪须显式选择。指定的默认后端失效时，不会静默切换。已有 `chatId` 仍绑定原后端。
+`acp_backend_status` 只读查询检测结果，不启动 CLI。新会话按以下顺序选后端：
 
-自定义 ACP 命令或包装脚本需要显式设置 `allowUnverifiedBackends: true`。此开关不会绕过已知 CLI 的版本限制。设置 `discoverBackends: false` 可关闭额外的 PATH 探测及自动接入 Codex 和 Antigravity，不影响显式配置命令的检查。自动接入的后端不继承其他后端的显式凭据和授权配置；Codex 另使用 `read-only` 沙箱；若要指定模型、环境或权限，请配置命名后端。
+1. 调用 `acp_chat_start` 显式传入 `backend`，优先使用该后端。
+2. 否则使用配置中的 `defaultBackend`；该后端不可用时会报错，不会悄悄换后端。
+3. 否则，仅在发现开启且顶层使用内置 `command: kiro-cli`、`args: [acp]`、`agentEngine: v3`，且没有模型或推理强度覆盖时，才按 Kiro → Codex → `agy` 的顺序选择就绪后端，跳过超出版本范围或未就绪的候选。关闭发现或使用自定义顶层后端时，保留原来的 `default` 路由。
+
+显式配置的后端（包括自定义命令和包装脚本）即使版本未知或超出范围，也会告警并按原配置尝试连接，不保证兼容。对**自动发现**的范围外 CLI，可设 `allowUnverifiedBackends: true`，再通过 `backend` 手动选择，或用 `defaultBackend` 固定它；该开关不会把它加入自动回退顺序。检查结果和单次启动失败不会撤掉工具或阻断旧 `chatId` 的发送与重连；旧会话始终按原绑定续聊。
+
+设置 `discoverBackends: false` 可关闭额外的 PATH 探测和自动接入，不影响显式配置的后端。自动接入的后端不继承其他后端的显式凭据或权限；Codex 使用 `read-only` 沙箱、`never` 审批策略并拒绝 ACP 权限请求，`agy` 也默认拒绝 ACP 权限请求。如需覆盖路径、模型、环境或权限，请配置命名后端。
 
 Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。`approvalPolicy` 决定 Codex 何时请求审批，各后端的 `permission` 决定如何答复，可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问。自带配置为默认后端设置了 `allow`，命名后端省略此字段时使用 `reject`。
 

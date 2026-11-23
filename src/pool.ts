@@ -206,12 +206,12 @@ export interface PoolOptions {
   readonly idleTimeoutMs: number
   /** Non-fatal pool conditions (e.g. a corrupt registry file set aside). */
   readonly onWarn?: (message: string) => void
-  /** Host readiness policy; direct consumers without one retain legacy routing. */
+  /** Host admission for new chats, independent of existing chats' saved bindings. */
   readonly dispatch?: {
-    select(backend?: string): string
-    executable?(backend: string): string
+    select(backend?: string, signal?: AbortSignal): string | Promise<string>
+    executable?(backend: string): string | undefined
     model?(backend: string): string | undefined
-    failure?(backend: string, reason?: 'handshake-failed' | 'login-required'): void
+    failure?(backend: string, reason: 'login-required'): void
   }
 }
 
@@ -534,7 +534,9 @@ export class AcpSessionPool {
     // Fail loud at the earliest resolvable point, mirroring the official provider start.
     assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const label = options.label?.trim() ?? ''
-    const backend = this.opts.dispatch?.select(options.backend) ?? options.backend ?? DEFAULT_BACKEND
+    const selected = this.opts.dispatch?.select(options.backend, signal) ?? options.backend ?? DEFAULT_BACKEND
+    const backend = typeof selected === 'string' ? selected : await selected
+    this.assertLive()
     const backendSpec = this.backends.get(backend)
     if (backendSpec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
     const ownerSessionId = options.ownerSessionId?.trim() ?? ''
@@ -545,14 +547,14 @@ export class AcpSessionPool {
       const startupSignal = windowSignal(controller, signal)
       let conn: AcpConnection
       try {
-        conn = await this.connect(backendSpec, cwd, { mode: 'new' }, startupSignal)
+        conn = await this.connect(backendSpec, cwd, { mode: 'new' }, startupSignal, 'start')
       } catch (error: unknown) {
         if (!startupSignal.aborted && error instanceof AcpConnectionError && this.opts.dispatch !== undefined) {
           const needsLogin = backendSpec.protocol !== 'codex' && error.category === 'protocol' && error.jsonRpcCode === -32000 // ACP AuthRequired
           if (needsLogin || error.stage === 'initialize') {
-            this.opts.dispatch.failure?.(backend, needsLogin ? 'login-required' : 'handshake-failed')
+            if (needsLogin) this.opts.dispatch.failure?.(backend, 'login-required')
             const action = needsLogin ? 'Sign in using the backend CLI, then open Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」).'
-              : 'Open Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」), or select another ready backend.'
+              : 'Retry this backend, or open Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」) for diagnostics.'
             throw new Error(`${error.message}\nBackend ${backend} did not open a session. ${action}`, { cause: error })
           }
         }
@@ -610,7 +612,7 @@ export class AcpSessionPool {
     if (isAborted(signal)) throw new Error('acp-resume: send aborted before it started')
     const entry = this.registry.get(chatId)
     if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
-    if (this.opts.dispatch !== undefined) this.opts.dispatch.select(this.backendFor(entry).name)
+    // Existing chats use their saved backend, not the admission policy for new chats.
     const existing = this.live.get(chatId)
     if (existing?.busy === true || this.starting.has(chatId)) {
       throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
@@ -757,7 +759,6 @@ export class AcpSessionPool {
     if (existing?.busy === true || this.starting.has(chatId)) {
       throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
     }
-    if (this.opts.dispatch !== undefined) this.opts.dispatch.select(this.backendFor(entry).name)
     if (existing === undefined) this.assertSameAgent(entry)
   }
 
@@ -1111,7 +1112,6 @@ export class AcpSessionPool {
     const spec = this.backends.get(backend)
     if (spec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
     if (spec.protocol !== 'codex' || spec.codex === undefined) throw new Error(`acp-resume: backend ${backend} is not a Codex backend`)
-    this.opts.dispatch?.select(backend)
     for (const chat of this.live.values()) {
       const entry = this.registry.get(chat.chatId)
       if (entry === undefined || this.backendName(entry) !== backend) continue
@@ -1133,23 +1133,24 @@ export class AcpSessionPool {
     }
   }
 
-  /** Open a connection with the backend's wire protocol (D25); ACP is the default. */
-  private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined): Promise<AcpConnection> {
-    const base = { ...backend.specBase, cwd, command: this.opts.dispatch?.executable?.(backend.name) ?? backend.specBase.command }
+  /** Open the bound backend's wire protocol (D25). Only a new chat uses discovery results. */
+  private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined, source: 'start' | 'continuation'): Promise<AcpConnection> {
+    const checkedCommand = source === 'start' ? this.opts.dispatch?.executable?.(backend.name) : undefined
+    const base = { ...backend.specBase, cwd, command: checkedCommand ?? backend.specBase.command }
     if (backend.protocol !== 'codex') return openAcpConnection(base, open, signal)
     const codex = backend.codex
     if (codex === undefined) throw new Error(`acp-resume: missing settings for Codex backend ${backend.name}`)
-    // Let an existing thread retain its own model unless the operator explicitly overrode it.
-    const settings = {
+    // Resume preserves the thread model unless explicitly overridden. If D6 replaces
+    // a lost thread without an override, app-server uses its own model settings.
+    const model = codex.model ?? (source === 'start' ? this.opts.dispatch?.model?.(backend.name) : undefined)
+    if (source === 'start' && backend.automatic && model === undefined) throw new Error(`acp-resume: no usable default model for Codex backend ${backend.name}`)
+    return openCodexConnection({
       ...base,
+      ...(model === undefined ? {} : { codexModel: model }),
       ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
       ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
       ...(codex.effort === undefined ? {} : { codexEffort: codex.effort }),
-    }
-    if (open.mode === 'load') return openCodexConnection({ ...settings, ...(codex.model === undefined ? {} : { codexModel: codex.model }) }, open, signal)
-    const model = codex.model ?? this.opts.dispatch?.model?.(backend.name)
-    if (model === undefined) throw new Error(`acp-resume: no usable default model for Codex backend ${backend.name}`)
-    return openCodexConnection({ ...settings, codexModel: model }, open, signal)
+    }, open, signal)
   }
 
   private assertSameAgent(entry: RegistryEntry): void {
@@ -1184,17 +1185,17 @@ export class AcpSessionPool {
   private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
     const backend = this.backendFor(entry)
     if (forceFresh) {
-      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
       return { conn, freshSessionReason: 'repeated-errors' }
     }
     try {
-      const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal, 'continuation')
       return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
       // Only a proven missing session is replaced; any other rejection keeps the binding (D6).
       if (!isLoadSessionMissing(error)) throw error
       this.assertLive()
-      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
       return { conn, freshSessionReason: 'load-rejected', lost: error }
     }
   }

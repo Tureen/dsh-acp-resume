@@ -1,4 +1,4 @@
-/** Host-owned CLI compatibility and readiness, shared by dispatch admission, panel and model. @module */
+/** Host-owned CLI compatibility and readiness, shared by dispatch admission, panel and model. @module acp-resume/backend-readiness */
 import { homedir } from 'node:os'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { backendCompatibility, backendSupportRange, parseBackendVersion, type KnownBackendKind } from './backend-compatibility.js'
@@ -29,10 +29,11 @@ interface ProbeHost {
 
 export interface BackendReadinessOptions {
   readonly candidates: readonly BackendCandidate[]
-  /** Absent lets a sole ready backend become the default. */
+  /** Pinned default; never fall back if it fails. Otherwise use built-in priority. */
   readonly preferred?: string
-  /** Explicit escape hatch for a user-configured custom ACP adapter, never for a known incompatible CLI. */
+  /** Permit explicit attempts on detected, out-of-range CLI versions, never automatic fallback. */
   readonly allowUnverifiedBackends?: boolean
+  readonly onWarn?: (message: string) => void
   readonly host: ProbeHost
   readonly verify: (backend: BackendCandidate, executable: string, signal: AbortSignal) => Promise<Verification>
   readonly timeoutMs?: number
@@ -41,12 +42,12 @@ export interface BackendReadinessOptions {
 const reasons: Readonly<Record<BackendStatusReason, string>> = {
   'missing-executable': 'executable not found in the DSH runtime; install it or configure its absolute path',
   'version-unreadable': 'could not read the CLI version; check the executable and run backend detection again',
-  'unsupported-version': 'CLI version is not supported; install a version in the supported range',
+  'unsupported-version': 'CLI version is outside the verified range; configure it explicitly or allow unverified backends to opt in',
   'unsupported-mode': 'configured CLI launch mode or flags are not supported; check the backend configuration',
   'not-configured': 'CLI detected but not configured as a dispatch backend',
   'model-required': 'Codex did not advertise a usable default model; choose one in Codex or explicitly configure an available model',
   'model-override-unavailable': 'the explicitly configured Codex model is unavailable; update or remove the plugin model override and recheck',
-  'custom-unverified': 'custom ACP executable has no published compatibility range; explicitly allow unverified backends to use it',
+  'custom-unverified': 'custom ACP executable has no published compatibility range; explicit configuration can still be used',
   'login-required': 'sign in to the CLI, then run backend detection again',
   'handshake-failed': 'the backend did not pass the connection check; check its configuration or CLI diagnostics and retry',
   'backend-unready': 'waiting for the automatic backend check',
@@ -55,8 +56,11 @@ const reasons: Readonly<Record<BackendStatusReason, string>> = {
 export function describeBackendStatus(row: BackendStatus): string {
   const version = row.version === undefined ? '' : ` ${row.version}`
   const range = row.range === undefined ? '' : ` (supported range: ${row.range})`
+  const action = row.reason === 'unsupported-version' && row.configured ? 'version is outside the verified range; the configured backend can still be tried'
+    : row.reason === 'unsupported-version' && row.readiness === 'ready' ? 'available by explicit selection only, not by automatic priority'
+      : row.reason === undefined ? undefined : reasons[row.reason]
   return `${row.id} — ${row.label}${version}: ${row.compatibility}, ${row.readiness}${range}`
-    + (row.reason === undefined ? '' : `; ${reasons[row.reason]}`)
+    + (action === undefined ? '' : `; ${action}`)
 }
 
 export function describeBackendSnapshot(status: BackendStatusSnapshot): string {
@@ -117,6 +121,7 @@ export class BackendReadinessService implements BackendStatusService {
   private executables: ReadonlyMap<string, string> = new Map()
   private models: ReadonlyMap<string, string> = new Map()
   private active: Promise<BackendStatusSnapshot> | undefined
+  private checkedAt: number | undefined
   private readonly timeoutMs: number
   private readonly listeners = new Set<() => void>()
 
@@ -128,15 +133,13 @@ export class BackendReadinessService implements BackendStatusService {
   snapshot(): BackendStatusSnapshot {
     // Missing discovered CLIs still explain what is supported and how to prepare it.
     const backends = this.rows
-    const ready = backends.filter(row => row.readiness === 'ready')
-    const preferred = this.options.preferred
-    const defaultBackend = preferred === undefined ? (ready.length === 1 ? ready[0]?.id : undefined)
-      : ready.find(row => row.id === preferred)?.id
-    return { backends, ...(defaultBackend === undefined ? {} : { defaultBackend }), checking: this.active !== undefined, dispatchEnabled: ready.length > 0 }
+    const defaultBackend = this.options.preferred ?? this.automaticDefault()
+    const dispatchEnabled = backends.some(row => row.readiness === 'ready' || this.canStart(row))
+    return { backends, ...(defaultBackend === undefined ? {} : { defaultBackend }), checking: this.active !== undefined, dispatchEnabled }
   }
 
   check(): Promise<BackendStatusSnapshot> {
-    return this.active ??= this.run().finally(() => { this.active = undefined; this.changed() }).then(() => this.snapshot())
+    return this.active ??= this.run().finally(() => { this.active = undefined; this.checkedAt = Date.now(); this.changed() }).then(() => this.snapshot())
   }
 
   subscribe(listener: () => void): () => void {
@@ -150,31 +153,57 @@ export class BackendReadinessService implements BackendStatusService {
     for (const listener of this.listeners) listener()
   }
 
-  /** Pool-level gate: workflow/role calls cannot bypass the same decision the tools publish. */
-  select(requested?: string): string {
-    const state = this.snapshot()
-    const id = requested ?? state.defaultBackend
-    const row = state.backends.find(item => item.id === id)
-    if (row?.readiness === 'ready') return row.id
-    if (row !== undefined) throw new Error(`acp-resume: cannot dispatch: ${describeBackendStatus(row)}`)
-    throw new Error(`acp-resume: cannot dispatch${requested === undefined ? '' : ': selected backend is not available'}. ${describeBackendSnapshot(state)}`)
+  private automaticDefault(): string | undefined {
+    for (const family of [['kiro-v2', 'kiro-v3'], ['codex'], ['agy']] as const) {
+      const candidates = this.options.candidates.filter(candidate => family.some(kind => candidate.kind === kind))
+      const isVerified = ({ id }: BackendCandidate): boolean => this.rows.some(row => row.id === id && row.readiness === 'ready' && row.compatibility === 'supported')
+      const selected = candidates.find(candidate => candidate.id === 'default' && isVerified(candidate))
+        ?? candidates.find(candidate => candidate.configured && isVerified(candidate)) ?? candidates.find(isVerified)
+      if (selected !== undefined) return selected.id
+    }
+    return undefined
   }
 
-  /** Use the exact host-resolved command for checking and later process startup; do not rewrite the registry fingerprint. */
-  executable(backend: string): string {
-    this.select(backend)
-    const executable = this.executables.get(backend)
-    if (executable === undefined) throw new Error('acp-resume: ready backend does not have a resolved executable')
-    return executable
+  private canStart(row: BackendStatus): boolean {
+    return row.configured && row.readiness !== 'ready' && row.compatibility !== 'not-found'
+      && row.reason !== 'backend-unready' && row.reason !== 'model-required'
   }
+
+  /** Select for a new chat only. Explicit configurations may try the real connection without waiting on diagnostics. */
+  select(requested?: string, signal?: AbortSignal): string | Promise<string> {
+    signal?.throwIfAborted()
+    if (this.life.signal.aborted) throw new Error('acp-resume: backend detection is disposed')
+    const explicit = requested ?? this.options.preferred
+    const candidate = explicit === undefined ? undefined : this.options.candidates.find(row => row.id === explicit)
+    if (explicit !== undefined && candidate === undefined) throw new Error(`acp-resume: selected backend is not available: ${explicit}`)
+    if (candidate?.configured === true) return candidate.id
+    const pick = (): string => {
+      const id = explicit ?? this.automaticDefault()
+      const row = this.rows.find(item => item.id === id)
+      if (row?.readiness === 'ready') return row.id
+      if (row !== undefined) throw new Error(`acp-resume: cannot dispatch: ${describeBackendStatus(row)}`)
+      throw new Error(`acp-resume: cannot dispatch${explicit === undefined ? '' : ': selected backend is not available'}. ${describeBackendSnapshot(this.snapshot())}`)
+    }
+    const selected = explicit ?? this.automaticDefault()
+    const ready = this.rows.some(row => row.id === selected && row.readiness === 'ready')
+    // Retries are bounded and single-flight; the cached explicit choice is never silently replaced.
+    if (!ready && (this.active !== undefined || this.checkedAt === undefined || Date.now() - this.checkedAt >= 1_000)) {
+      const check = this.check()
+      return (signal === undefined ? check : resultWithin(check, signal)).then(pick)
+    }
+    return pick()
+  }
+
+  /** Use a checked executable when available; a configured start may go through normal resolution. */
+  executable(backend: string): string | undefined { return this.executables.get(backend) }
 
   /** Model selected by the Codex daemon, never exposed through the status DTO. */
   model(backend: string): string | undefined { return this.models.get(backend) }
 
-  failure(backend: string, reason: 'handshake-failed' | 'login-required' = 'handshake-failed'): void {
+  failure(backend: string, reason: 'login-required'): void {
     if (this.life.signal.aborted) return
-    this.rows = this.rows.map(row => row.id === backend && row.compatibility === 'supported'
-      ? { ...row, readiness: reason === 'login-required' ? 'needs-login' : 'unavailable', reason } : row)
+    this.rows = this.rows.map(row => row.id === backend
+      ? { ...row, readiness: 'needs-login', reason } : row)
     this.changed()
   }
 
@@ -207,11 +236,7 @@ export class BackendReadinessService implements BackendStatusService {
     }
     if (candidate.kind === undefined) {
       if (candidate.configurationIssue === 'model-required') return { ...row, compatibility: 'custom', readiness: 'needs-configuration', reason: 'model-required' }
-      if (this.options.allowUnverifiedBackends && candidate.configured) {
-        executables.set(row.id, executable)
-        return { id: row.id, label: row.label, configured: true, compatibility: 'custom', readiness: 'ready' }
-      }
-      return { ...row, compatibility: 'custom', readiness: 'unavailable', reason: 'custom-unverified' }
+      return { ...row, compatibility: 'custom', readiness: 'unverified', reason: 'custom-unverified' }
     }
     if (candidate.kind === null) return { ...row, compatibility: 'unsupported', readiness: 'unavailable', reason: 'unsupported-mode' }
     let version: string | undefined
@@ -219,8 +244,14 @@ export class BackendReadinessService implements BackendStatusService {
     if (version === undefined) return { ...row, readiness: 'unavailable', reason: 'version-unreadable' }
     const { supported, range } = backendCompatibility(candidate.kind, version)
     const { reason: _progress, ...identity } = row
-    const known = { ...identity, version, range, compatibility: 'supported' as const }
-    if (!supported) return { ...known, compatibility: 'unsupported', readiness: 'unavailable', reason: 'unsupported-version' }
+    const compatibility = supported ? 'supported' : 'unverified-version'
+    const known = { ...identity, version, range, compatibility } as const
+    if (!supported) {
+      if (candidate.configured) this.options.onWarn?.(`acp-resume: configured backend ${row.id} version ${version} is outside verified range ${range}; explicit dispatch remains enabled`)
+      if (candidate.configured || candidate.automatic !== true || !this.options.allowUnverifiedBackends) {
+        return { ...known, readiness: 'unverified', reason: 'unsupported-version' }
+      }
+    }
     if (candidate.configurationIssue === 'unsupported-mode') return { ...known, readiness: 'needs-configuration', reason: 'unsupported-mode' }
     if (candidate.configurationIssue === 'model-required') return { ...known, readiness: 'needs-configuration', reason: 'model-required' }
     if (!candidate.configured && candidate.automatic !== true) return { ...known, readiness: 'needs-configuration', reason: 'not-configured' }
@@ -230,7 +261,7 @@ export class BackendReadinessService implements BackendStatusService {
     if (result.status === 'ready') {
       executables.set(row.id, executable)
       if (result.model !== undefined) models.set(row.id, result.model)
-      return { ...known, readiness: 'ready' }
+      return { ...known, readiness: 'ready', ...(supported ? {} : { reason: 'unsupported-version' as const }) }
     }
     return { ...known, readiness: result.status === 'login-required' ? 'needs-login' : (result.status === 'model-required' || result.status === 'model-override-unavailable') ? 'needs-configuration' : 'unavailable', reason: result.status }
   }

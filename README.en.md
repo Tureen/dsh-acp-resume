@@ -18,7 +18,7 @@ If every review calls for two independent reviewers and an editor to combine the
 
 ## Installation
 
-You need DSH `>=0.2.2-rc.3`, Node.js 24 or later, and at least one [supported CLI](docs/backend-compatibility.md). Kiro is optional.
+You need DSH `>=0.2.2-rc.3`, Node.js 24 or later, and at least one usable backend. Automatic setup expects a CLI in the [published version ranges](docs/backend-compatibility.md). Kiro is optional.
 
 Replace `<name>` with your DSH profile name and install the package from npm. Restart DSH after installation.
 
@@ -40,11 +40,11 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 | **Antigravity** (agy) | Connects automatically through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
 | **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and can be discovered automatically or configured as a named backend. |
 
-At startup, the plugin discovers CLIs on DSH’s `PATH` and at configured paths, checks the [supported versions](docs/backend-compatibility.md), and automatically verifies eligible backends. It does not start a protocol connection for unsupported versions, create a test session, or send a prompt. With no ready backend, dispatch is disabled but history remains available. Open **Right sidebar → ACP chats** and expand the compact **Backend status** row for Kiro, Codex, and Antigravity CLI (`agy`) status, including CLIs that were not found. Use **Recheck backends** on the same row, even when collapsed, after a CLI update, sign-in, or default-model change without restarting DSH. It does not delete chats, sign you out, or change settings.
+With `discoverBackends` on by default, the plugin checks CLIs on DSH’s `PATH` and at configured paths against the [published version ranges](docs/backend-compatibility.md), then verifies eligible built-in backends. Checks do not create a session or send a prompt; the CLI itself may access the network. Open **Right sidebar → ACP chats** and expand **Backend status** to see versions, readiness, and failure reasons. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without expanding it or restarting DSH. This does not delete chats, sign you out, or change settings.
 
 ### Use a single backend
 
-Make sure DSH can find a supported Kiro, Antigravity, or Codex CLI, and sign in through the CLI as needed. Antigravity and Codex require neither a Kiro installation nor YAML. If only one backend is ready, it becomes the default for new chats.
+Make sure DSH can find a supported CLI, and sign in through the CLI as needed. With the bundled settings and no override, new chats use the first ready backend in this order: **Kiro → Codex → Antigravity (`agy`)**. Kiro still takes priority when ready. Codex and Antigravity can be discovered automatically without Kiro or YAML.
 
 Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and denies permission requests. Startup only performs a handshake; if opening a chat requests authentication, sign in through `agy`, then recheck. To override Antigravity’s path, model, or permissions, configure a named backend:
 
@@ -84,9 +84,15 @@ To keep kiro as the default and offer Codex as an alternative, use the following
         permission: ask
 ```
 
-After the automatic startup check, `acp_backend_status` reads the results; `acp_chat_start` lists ready backends only. With no configured default, a sole ready backend becomes the default; if more than one is ready, choose explicitly. If a configured default fails, the plugin does not silently substitute another backend. Existing chat IDs keep their original binding.
+`acp_backend_status` reads the cached check results without starting a CLI. New chats select a backend in this order:
 
-For a custom ACP command or wrapper, explicitly set `allowUnverifiedBackends: true`. This option does not admit an out-of-range known CLI. `discoverBackends: false` disables additional PATH discovery and automatic Codex and Antigravity setup without disabling checks on explicitly configured commands. Auto-discovered backends do not inherit other backends’ explicit credentials or permission settings. Auto-discovered Codex also uses a read-only sandbox. Configure a named backend to override settings.
+1. A `backend` explicitly passed to `acp_chat_start` takes precedence.
+2. Otherwise, use the configured `defaultBackend`. If unavailable, return an error instead of switching backends.
+3. Otherwise, with discovery enabled, the bundled top-level `command: kiro-cli`, `args: [acp]`, and `agentEngine: v3`, with no model or effort override, use Kiro → Codex → `agy` priority. Automatic selection skips out-of-range or unready candidates. A custom top-level backend, or discovery being disabled, retains the legacy `default` route.
+
+An explicitly configured backend, including a custom command or wrapper, can still be tried when its version is unknown or out of range. The plugin warns but does not guarantee compatibility. For an **auto-discovered** CLI outside the range, set `allowUnverifiedBackends: true` and choose it with `backend` or pin it with `defaultBackend`; it will not become an automatic fallback. Check results and one-off start failures do not remove tools or block sends and reconnects to existing chat IDs, which retain their original backend.
+
+Set `discoverBackends: false` to turn off additional PATH discovery and automatic setup without disabling configured backends. Auto-discovered backends do not inherit other backends’ explicit credentials or permission settings. Codex uses a `read-only` sandbox, `never` approval policy and rejects ACP permission requests; `agy` also rejects ACP permission requests by default. Configure a named backend to override the path, model, environment, or permissions.
 
 For Codex, `effort` sets the reasoning level per turn. The `sandbox` options are `read-only` (default), `workspace-write`, and `danger-full-access`. Codex uses `approvalPolicy` to decide when to request approval. Each backend’s `permission` controls the response: `allow` approves automatically, `reject` declines, and `ask` prompts the user. The bundle sets `allow` for the default backend. A named backend defaults to `reject` if the field is omitted.
 

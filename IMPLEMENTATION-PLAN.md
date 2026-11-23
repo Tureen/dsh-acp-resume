@@ -27,7 +27,8 @@
 | 13 | D27 工作区角色(第一轮) | `team-config.ts` 配置层、`roster.ts` 花名册、池自动供给、send/close/list 的 role、Config `workflow` | `team.spec.ts` 13 例全绿；`workflow: false` 时工具定义与 0.2.7 逐字节一致 | ☑ |
 | 14 | D27 `acp_workflow` 引擎(第二轮) | `workflow-engine.ts`:parallel 部分容错 / `{stepId}` 顺序注入 / merge 两模式;`acp_workflow` 工具(后台 job 或同步);steer 的 role | `workflow.spec.ts` 10 例全绿 | ☑ |
 | 12 | D25 Codex app-server 适配器 | `connection-codex.ts` 连接层、池协议路由与 Config、`mock-codex-server.ts`、`codex-approval.ts`(ask 桥)与四份文档 | mock 联调全绿(见 AGENTS.md 基线)；ACP 路径与单后端工具定义不回归；**真机 Codex 探针待做** | ☑(mock) |
-| 15 | D31 后端兼容性与就绪门控 | 兼容表、启动自动验证、Codex 与 Antigravity 零配置、状态工具/面板、新会话路由 | 夹具覆盖不支持的 Kiro、Codex 零配置和登录诊断、旧线程模型保留、缺失的 agy 仍可见、agy 1.5.14 自动接入与首次建会话认证错误；Desktop 已验证 Codex 升级和折叠栏入口 | ◐ agy 零配置待 Desktop 实测 |
+| 15 | D31 后端诊断与新会话路由 | 兼容表、启动发现与验证、Codex 与 Antigravity 零配置、状态工具/面板 | 初版夹具覆盖版本边界、Codex 登录与旧线程模型、`agy 1.5.14` 零配置及建会话认证错误；Desktop 已验证 Codex 升级和折叠栏入口 | ◐ agy 零配置待 Desktop 实测 |
+| 16 | D31 PR #1 审阅后兼容性修订 | 已配置的未知版本告警但可试、老会话按 D6 续聊、单次失败不锁后端、工具注册稳定；内置自动顺序 Kiro → Codex → `agy`，保留显式选择与固定默认 | 旧回归配置不再添加新开关；全量 547 例通过、D8 因缺少官方源码夹具跳过 24 例。另测优先顺序、显式默认不回退、范围外告警、故障后重试及续聊。默认仍开启发现，明确不同于审阅第 ⑤ 条 | ◐ 自动化通过，D8 与 Desktop 实测待补 |
 
 ## 冒烟剧本(第 6 步固定内容)
 

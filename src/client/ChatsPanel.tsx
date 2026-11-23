@@ -292,7 +292,7 @@ function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | unde
 
 const COMPATIBILITY_COPY = {
   supported: 'backendSupported', unsupported: 'backendUnsupported', unknown: 'backendUnknown',
-  'not-found': 'backendNotFound', custom: 'backendCustom',
+  'not-found': 'backendNotFound', custom: 'backendCustom', 'unverified-version': 'backendUnverifiedVersion',
 } satisfies Record<BackendStatus['compatibility'], PanelCopyKey>
 
 const READINESS_COPY = {
@@ -322,7 +322,9 @@ function backendName(t: PanelTranslate, backend: BackendStatus): string {
 function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; readonly t: PanelTranslate }): ReactNode {
   const remediation = backend.reason === undefined ? undefined
     : backend.automatic && backend.id === 'agy' && backend.reason === 'login-required' ? 'backendFixAgyLogin' as const
-      : copyFor(REMEDIATION_COPY, backend.reason)
+      : backend.reason === 'unsupported-version' && backend.configured ? 'backendFixConfiguredVersion' as const
+        : backend.reason === 'unsupported-version' && backend.readiness === 'ready' ? 'backendSelectUnverifiedVersion' as const
+          : copyFor(REMEDIATION_COPY, backend.reason)
   return (
     <li style={styles.backendRow}>
       <div style={styles.backendMeta}>
@@ -367,10 +369,12 @@ function BackendStatusSection({ source, view, t }: {
     : status === 'unavailable' ? t('backendSummaryUnavailable')
       : view.checkFailed ? t('backendSummaryCheckFailed')
         : status === 'error' ? t('backendSummaryReadFailed')
-          : readyNames.length === 0 ? t('backendSummaryNone')
+          : selected !== undefined && selected.readiness !== 'ready' ? t('backendSummaryPinnedUnready', { name: defaultName! })
             : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
-              : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
-                : t('backendSummaryMany', { count: readyNames.length })
+              : readyNames.length === 0 ? t('backendSummaryNone')
+                : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
+                  : defaultName !== undefined ? t('backendSummaryDefault', { name: defaultName })
+                    : t('backendSummaryMany', { count: readyNames.length })
   const checkResult = !view.checkCompleted ? null
     : readyNames.length === 0 ? t('backendCheckNoneReady')
       : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
@@ -407,6 +411,7 @@ function BackendStatusSection({ source, view, t }: {
             {data === undefined || startup ? null : (
               <>
                 <p style={styles.notice}>{defaultName === undefined ? t('backendNoDefault') : t('backendDefault', { name: defaultName })}</p>
+                {selected !== undefined && selected.readiness !== 'ready' && !checking ? <p style={styles.notice}>{t('backendPinnedUnready')}</p> : null}
                 {data.dispatchEnabled
                   ? defaultName === undefined ? <p style={styles.notice}>{t('backendChooseReady')}</p> : null
                   : checking ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}

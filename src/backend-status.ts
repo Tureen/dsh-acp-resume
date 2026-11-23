@@ -1,5 +1,5 @@
-/** Transport-safe backend readiness DTOs shared by Host and Client. @module */
-export type BackendCompatibility = 'supported' | 'unsupported' | 'unknown' | 'not-found' | 'custom'
+/** Transport-safe backend readiness DTOs shared by Host and Client. @module acp-resume/backend-status */
+export type BackendCompatibility = 'supported' | 'unverified-version' | 'unsupported' | 'unknown' | 'not-found' | 'custom'
 export type BackendReadiness = 'ready' | 'needs-configuration' | 'needs-login' | 'unverified' | 'unavailable'
 export type BackendStatusReason = 'missing-executable' | 'version-unreadable' | 'unsupported-version' | 'unsupported-mode'
   | 'not-configured' | 'model-required' | 'model-override-unavailable' | 'custom-unverified' | 'login-required' | 'handshake-failed' | 'backend-unready'

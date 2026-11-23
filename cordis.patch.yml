@@ -41,9 +41,10 @@
             config:
               # Literal block (|-): line breaks are kept, so the synthesis checklist stays a list.
               prefix: |-
-                You are a task dispatcher. Check acp_backend_status before reporting available workers or dispatching. This status tool never creates a session.
-                If automatic detection is running, say so. If no backend is ready after it finishes, explain the specific action needed. After a CLI upgrade, sign-in, or default model change, direct users to Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」). This is for changes or recovery, not initial setup, and does not delete chats, log users out, or change settings. Do not create a test chat or silently substitute a backend.
-                When a backend is ready, break work into sub-tasks and start workers with acp_chat_start. Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.
+                You are a task dispatcher. Check the registered ACP backend status tool (acp_backend_status with the default prefix) before reporting available workers or dispatching. This status tool never creates a session. Use the registered start and send tools, whose names may also have a custom prefix.
+                If detection is running, say so. After a CLI upgrade, sign-in, or default model change, users can choose Right sidebar → ACP chats → Recheck backends (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」). This does not delete chats, log users out, or change settings. Do not create a test chat.
+                Honor a user-selected backend by passing its ID to acp_chat_start; never substitute another for an explicit choice. Otherwise use the configured default or the built-in Kiro → Codex → Antigravity priority, and mention the backend if it differs from Kiro under the built-in policy. Auto-discovered Codex is read-only: do not delegate tasks requiring writes to it. If new dispatch fails, explain the cause and available choices.
+                For an existing chat, send to its chatId without switching backends based on detection. Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.
                 If the target directory is unclear, ask the user before creating a chat.
                 Workers sharing the same cwd must have non-overlapping file write boundaries.
                 For lightweight fact-checking use web tools directly; delegate full research tasks to workers.

@@ -1,4 +1,4 @@
-/** Explicit, session-free connection checks for configured built-in backends. @module */
+/** Session-free checks for built-in backends. @module acp-resume/backend-verification */
 import { homedir } from 'node:os'
 import { resultWithin, type Verification } from './backend-readiness.js'
 import { AcpConnectionError, openAcpConnection } from './connection.js'
@@ -53,7 +53,7 @@ async function advertisedModel(
 }
 
 /** Initialize only; never send a prompt, create a session, or request sign-in/refresh. */
-export async function verifyBackend(spec: BackendSpec, signal: AbortSignal): Promise<Verification> {
+export async function verifyBackend(spec: BackendSpec, signal: AbortSignal, onFailure?: (stage: string, category: string) => void): Promise<Verification> {
   const base = { ...spec.specBase, cwd: homedir(), onError: undefined, disposeGraceMs: 250, disposeEofGraceMs: 250 }
   try {
     if (spec.protocol !== 'codex') {
@@ -102,7 +102,11 @@ export async function verifyBackend(spec: BackendSpec, signal: AbortSignal): Pro
     if (spec.protocol !== 'codex' && error instanceof AcpConnectionError && error.category === 'protocol' && error.jsonRpcCode === -32000) {
       return { status: 'login-required' }
     }
-    // Do not send raw child responses, RPC errors or credentials to logs or status surfaces.
+    // Only structured failure facts belong in the logger, not child output or RPC data.
+    if (!signal.aborted || signal.reason?.name === 'TimeoutError') {
+      if (error instanceof AcpConnectionError) onFailure?.(error.stage, error.category)
+      else onFailure?.('verification', signal.aborted ? 'timeout' : 'unknown')
+    }
     return { status: 'handshake-failed' }
   }
 }
