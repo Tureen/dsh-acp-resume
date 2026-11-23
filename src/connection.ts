@@ -152,6 +152,9 @@ export type OpenAcpMode =
   | { readonly mode: 'new' }
   | { readonly mode: 'load'; readonly sessionId: string }
 
+/** The readiness check stops after initialize; it cannot allocate a session. */
+export type AcpOpenMode = OpenAcpMode | { readonly mode: 'probe' }
+
 /** Update kinds whose ACP `content` is ONE block; vendors that send an array of blocks get one message per block. */
 const CHUNK_UPDATE = /^[a-z]+_(?:message|thought)_chunk$/
 
@@ -338,7 +341,7 @@ function hasProcessErrorCode(error: Error | undefined): error is Error {
  * @param open - establish a fresh session or reconnect a saved one.
  * @param signal - optional cancellation for the startup window.
  */
-export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode, signal?: AbortSignal): Promise<AcpConnection> {
+export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode, signal?: AbortSignal): Promise<AcpConnection> {
   if (signal?.aborted) throw new Error('subagent request was aborted before the ACP child started')
   const id = brandString<SessionId>(randomUUID())
 
@@ -347,7 +350,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
     child = spec.spawn({
       argv: [spec.command, ...spec.args],
       cwd: spec.cwd,
-      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: open.mode === 'probe' ? 'pipe' : 'inherit' },
       graceMs: spec.disposeGraceMs,
       env: spec.env,
     })
@@ -355,6 +358,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
     try { spec.onError?.(toError(error), 'error') } catch { /* sink cannot replace the failure */ }
     throw connectionError({ stage: 'initialize', category: 'process-start' }, error)
   }
+  if (open.mode === 'probe') child.stderr?.resume()
   if (child.stdin === undefined || child.stdout === undefined) {
     const error = new Error('subprocess implementation dropped a piped protocol stream')
     try { spec.onError?.(error, 'error') } catch { /* sink cannot replace the failure */ }
@@ -495,6 +499,10 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: OpenAcpMode,
           protocolVersion: PROTOCOL_VERSION,
           clientCapabilities: {},
         })
+        if (open.mode === 'probe') {
+          remoteSessionId = ''
+          return
+        }
         if (open.mode === 'new') {
           startupStage = 'new-session'
           const session = await agent.request(methods.agent.session.new, { cwd: spec.cwd, mcpServers: [] })

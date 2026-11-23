@@ -29,16 +29,17 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { UsageService } from './usage.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
+import { BackendReadinessService, backendPathEnv, type BackendCandidate } from './backend-readiness.js'
+import { verifyBackend } from './backend-verification.js'
 
-// cordis ships FiberState as an ambient const enum, which verbatimModuleSyntax
-// cannot read at runtime; `satisfies` pins the literal to the declared member.
+// Cordis exposes an ambient const enum; pin its active value at compile time.
 const FIBER_ACTIVE = 2 satisfies FiberState.ACTIVE
 
 export const name = 'acp-resume'
@@ -56,7 +57,7 @@ export interface BackendConfig {
   effort?: string
   permission: PermissionPolicy
   env: Record<string, string>
-  /** Wire protocol of the child: `acp` (default) or Codex `app-server` (D25; `model` required). */
+  /** Wire protocol of the child: `acp` (default) or Codex `app-server`. A known Codex CLI can use its own default model. */
   protocol?: 'acp' | 'codex'
   /** Codex only: `read-only` (default) | `workspace-write` | `danger-full-access`. */
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
@@ -142,6 +143,12 @@ export interface Config {
   registryPath?: string
   /** Optional named ACP backends; top-level settings remain the default backend. */
   backends?: Record<string, BackendConfig>
+  /** Preferred backend for new persistent chats; does not change existing bindings or one-shot. */
+  defaultBackend?: string
+  /** Discover known CLI versions and add Codex and Antigravity backends unless explicitly configured (default true). */
+  discoverBackends?: boolean
+  /** Allow explicitly selecting an auto-discovered CLI outside the verified range (default false). */
+  allowUnverifiedBackends?: boolean
   /** Name prefix for the five persistent-chat tools (default `acp_chat_`). */
   toolPrefix?: string
   /** Register the persistent-chat tools alongside the one-shot provider (default true). */
@@ -193,6 +200,9 @@ export const Config: z<Config> = z.object({
     approvalPolicy: z.union(['never', 'untrusted', 'on-request', 'on-failure'] as const),
     description: z.string(),
   })),
+  defaultBackend: z.string(),
+  discoverBackends: z.boolean().default(true),
+  allowUnverifiedBackends: z.boolean().default(false),
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
   allowChatJobWait: z.boolean().default(false),
@@ -281,18 +291,91 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.modelSelect === undefined ? {} : { modelSelect: config.modelSelect }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
   const named = Object.entries(config.backends ?? {})
   if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
-  for (const [name, value] of named) {
-    if (value.protocol === 'codex' && (value.model === undefined || value.model === '')) throw new Error(`acp-resume: backend ${name} uses protocol codex and requires an explicit model`)
-  }
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
     name,
     {
       name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value),
-      ...(value.protocol === 'codex' ? { protocol: 'codex' as const, codex: { model: value.model as string, ...(value.sandbox === undefined ? {} : { sandbox: value.sandbox }), ...(value.approvalPolicy === undefined ? {} : { approvalPolicy: value.approvalPolicy }), ...(value.effort === undefined ? {} : { effort: value.effort }) } } : {}),
+      ...(value.protocol === 'codex' ? { protocol: 'codex' as const, codex: {
+        ...(value.model?.trim() ? { model: value.model.trim() } : {}),
+        ...(value.sandbox === undefined ? {} : { sandbox: value.sandbox }),
+        ...(value.approvalPolicy === undefined ? {} : { approvalPolicy: value.approvalPolicy }),
+        ...(value.effort === undefined ? {} : { effort: value.effort }),
+      } } : {}),
     },
   ])
   entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: defaultBackend.command.split('/').at(-1) ?? defaultBackend.command, specBase: base(defaultBackend) }])
+  if (config.discoverBackends && !entries.some(([name, backend]) => name === 'codex' || backend.protocol === 'codex' || commandKind(backend.specBase.command) === 'codex')) {
+    const auto: BackendConfig = {
+      command: 'codex', args: ['app-server'], protocol: 'codex', agentEngine: 'none', permission: 'reject', env: {},
+    }
+    // Discovery is not consent to reuse another backend's credentials or elevate permissions.
+    entries.push(['codex', { name: 'codex', description: 'Codex (auto-discovered, read-only)', automatic: true,
+      specBase: { ...base(auto), env: backendPathEnv(config.env) }, protocol: 'codex',
+      codex: { sandbox: 'read-only', approvalPolicy: 'never' },
+    }])
+  }
+  if (config.discoverBackends && !entries.some(([name, backend]) => name === 'agy' || commandKind(backend.specBase.command) === 'agy')) {
+    const auto: BackendConfig = {
+      command: 'agy', args: ['acp'], agentEngine: 'none', permission: 'reject', env: {},
+    }
+    entries.push(['agy', { name: 'agy', description: 'Antigravity CLI (auto-discovered)', automatic: true,
+      specBase: { ...base(auto), env: backendPathEnv(config.env) },
+    }])
+  }
+  if (config.discoverBackends && !entries.some(([name, backend]) => name === 'kiro' || commandKind(backend.specBase.command) === 'kiro-cli')) {
+    const auto: BackendConfig = {
+      command: 'kiro-cli', args: ['acp'], agentEngine: 'v3', permission: 'reject', env: {},
+    }
+    entries.push(['kiro', { name: 'kiro', description: 'Kiro CLI (auto-discovered)', automatic: true,
+      specBase: { ...base(auto), env: backendPathEnv(config.env) },
+    }])
+  }
   return new Map(entries)
+}
+
+function commandKind(command: string): 'kiro-cli' | 'agy' | 'codex' | undefined {
+  const base = command.split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.(?:exe|cmd|bat|com)$/, '')
+  return base === 'kiro-cli' || base === 'agy' || base === 'codex' ? base : undefined
+}
+
+function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config: ResolvedConfig): BackendCandidate[] {
+  const candidates = [...backends.values()].map((backend): BackendCandidate => {
+    const spec = backend.specBase
+    const cli = commandKind(spec.command)
+    const base = { id: backend.name, label: cli === 'codex' ? 'Codex' : cli === 'agy' ? 'Antigravity CLI (agy)' : cli ?? 'Custom ACP', command: spec.command,
+      env: spec.env ?? {}, configured: backend.automatic !== true, ...(backend.automatic === true ? { automatic: true as const } : {}),
+    }
+    const args = spec.args
+    const has = (flag: string): boolean => args.some(arg => arg === flag || arg.startsWith(`${flag}=`))
+    if (cli === 'kiro-cli') {
+      const index = args.findIndex(arg => arg === '--agent-engine' || arg.startsWith('--agent-engine='))
+      const engine = index < 0 ? undefined : args[index]?.split('=')[1] ?? args[index + 1]
+      const kind = engine === 'v2' ? 'kiro-v2' : engine === 'v3' ? 'kiro-v3' : null
+      const invalid = backend.protocol === 'codex' || !args.includes('acp') || (engine === 'v3' && (has('--model') || has('--effort')))
+      return { ...base, kind, ...(invalid ? { configurationIssue: 'unsupported-mode' as const } : {}) }
+    }
+    if (cli === 'agy') {
+      const invalid = backend.protocol === 'codex' || !args.includes('acp') || has('--agent-engine') || has('--model') || has('--effort')
+      return { ...base, kind: 'agy', ...(invalid ? { configurationIssue: 'unsupported-mode' as const } : {}) }
+    }
+    if (cli === 'codex') {
+      const invalid = backend.protocol !== 'codex' || !args.includes('app-server')
+      return { ...base, kind: 'codex', ...(invalid ? { configurationIssue: 'unsupported-mode' as const } : {}) }
+    }
+    return { ...base, label: backend.protocol === 'codex' ? 'Custom Codex' : base.label, kind: undefined,
+      ...(backend.protocol === 'codex' && backend.codex?.model === undefined ? { configurationIssue: 'model-required' as const } : {}) }
+  })
+  if (!config.discoverBackends) return candidates
+  const seen = new Set(candidates.map(candidate => commandKind(candidate.command)))
+  const used = new Set(candidates.map(candidate => candidate.id))
+  for (const [id, command, kind] of [['kiro', 'kiro-cli', 'kiro-v3'], ['agy', 'agy', 'agy']] as const) {
+    if (seen.has(command)) continue
+    let key: string = id
+    while (used.has(key)) key = `detected-${key}`
+    used.add(key)
+    candidates.push({ id: key, label: command === 'agy' ? 'Antigravity CLI (agy)' : command, command, kind, configured: false, env: config.env })
+  }
+  return candidates
 }
 
 /** Minimal face of the host `workingDirectory` service (optional; not injected). */
@@ -332,6 +415,24 @@ export function apply(ctx: Context, config: Config): void {
   // on the first tools arrival, so a host without a tools service touches no registry file.
   let pool: AcpSessionPool | undefined
   let usage: UsageService | undefined
+  // A configured Kiro command remains the default unless DSH cannot resolve it.
+  const allowMissingKiroFallback = resolved.discoverBackends && commandKind(resolved.command) === 'kiro-cli'
+  const preferred = resolved.defaultBackend ?? (allowMissingKiroFallback ? undefined : DEFAULT_BACKEND)
+  const readiness = new BackendReadinessService({
+    candidates: readinessCandidates(backends, resolved), preferred,
+    allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: ctx.subprocess,
+    onWarn: message => { ctx.logger.warn(message) },
+    verify: (candidate, executable, signal) => {
+      const spec = backends.get(candidate.id)!
+      return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal,
+        (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
+    },
+  })
+  if (resolved.defaultBackend !== undefined && !backends.has(resolved.defaultBackend)) {
+    throw new Error(`acp-resume: defaultBackend must name an available backend definition or default`)
+  }
+  let checkedAtStartup = false
+  ctx.effect(() => () => readiness.dispose())
   // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled
   // and every live chat process released; the registry file survives (D14).
   ctx.effect(() => () => pool?.disposeAll())
@@ -342,49 +443,46 @@ export function apply(ctx: Context, config: Config): void {
       registryPath,
       idleTimeoutMs: resolved.idleTimeoutMs,
       onWarn: message => { ctx.logger.warn(message) },
+      dispatch: readiness,
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
     const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) } } : undefined
-    const sendTool = (jobs?: ChatJobsFace) => chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles)
-    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, [...backends.values()].map(backend => ({ name: backend.name, description: backend.description })), roles)
-    scope.effect(() => scope.tools.register(start))
-    scope.effect(() => scope.tools.register(steer))
-    // D28: one usage cache for the tool and the panel; the tool exists only when a Codex backend is configured.
-    usage ??= new UsageService(chatPool)
-    if (chatPool.backendList().some(b => b.protocol === 'codex')) scope.effect(() => scope.tools.register(chatUsageTool(usage as UsageService)))
-    // Send follows the job registry, as the official bash tool does: the inline
-    // variant registers now unless a registry is already composed, the
-    // job-backed variant replaces it while `ctx.jobs` is present, and the inline
-    // one returns when the registry unloads while the tools scope stays.
-    // The workflow tool (D27) follows the job registry exactly as send does.
-    const jobTools = (jobs?: ChatJobsFace) => [sendTool(jobs), ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
-    const registerAll = (definitions: ReturnType<typeof jobTools>): (() => void) => {
-      const revokers = definitions.map(definition => scope.tools.register(definition))
-      return () => { for (const revoke of revokers) revoke() }
+    const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
+    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
+      false, preferred, allowMissingKiroFallback && preferred === undefined)
+    for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix)]) {
+      scope.effect(() => scope.tools.register(tool))
     }
-    let inlineSend = scope.get('jobs') === undefined ? registerAll(jobTools()) : undefined
-    scope.effect(() => () => {
-      inlineSend?.()
-      inlineSend = undefined
-    })
-    scope.effect(() => scope.tools.register(list))
-    scope.effect(() => scope.tools.register(close))
+    usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
+    if (chatPool.backendList().some(backend => backend.protocol === 'codex')) {
+      const usageTool = chatUsageTool(usage)
+      scope.effect(() => scope.tools.register(usageTool))
+    }
+    // Only changes to the jobs service affect send/workflow registration, never readiness.
+    let unregister: (() => void) | undefined
+    let registeredJobs: ChatJobsFace | undefined
+    const registerSend = (jobs?: ChatJobsFace): void => {
+      if (unregister !== undefined && registeredJobs === jobs) return
+      unregister?.()
+      registeredJobs = jobs
+      const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles),
+        ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
+      const revokers = definitions.map(tool => scope.tools.register(tool))
+      unregister = () => { for (const revoke of revokers) revoke() }
+    }
+    scope.effect(() => { registerSend(scope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
     scope.inject(['jobs'], (jobsScope) => {
-      inlineSend?.()
-      inlineSend = undefined
-      const unregister = registerAll(jobTools(jobsScope.jobs))
-      // D22: refuse blocking waits on running chat jobs; collection goes through the completion notice.
+      registerSend(jobsScope.jobs)
       if (!resolved.allowChatJobWait) {
         jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
       }
-      jobsScope.effect(() => () => {
-        unregister()
-        if (scope.fiber.state === FIBER_ACTIVE) inlineSend = registerAll(jobTools())
-      })
+      jobsScope.effect(() => () => { if (scope.fiber.state === FIBER_ACTIVE) registerSend() })
     })
-    // The panel Remote service (D15) shares the pool's arrival point and the
-    // tools scope's lifetime: it is unregistered with that scope.
-    new AcpResumePanelService(scope, pool, usage)
+    new AcpResumePanelService(scope, pool, usage, readiness)
+    if (!checkedAtStartup) {
+      checkedAtStartup = true
+      void readiness.check().catch(() => { ctx.logger.warn('acp-resume: backend detection did not complete') })
+    }
   })
 }

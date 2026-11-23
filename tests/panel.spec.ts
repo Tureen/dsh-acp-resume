@@ -15,12 +15,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import type { BackendStatusService, BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as acp from '../src/index.ts'
 import { AcpResumePanelService, PANEL_SERVICE_KEY } from '../src/panel.ts'
 import { AcpSessionPool, type BackendSpec } from '../src/pool.ts'
@@ -66,9 +67,9 @@ function makePool(env: Record<string, string> = {}, backends?: ReadonlyMap<strin
 }
 
 /** Mount the service under a bare cordis root and return it as the Gateway would resolve it. */
-async function mountPanel(pool: AcpSessionPool): Promise<{ ctx: Context; panel: AcpResumePanelService }> {
+async function mountPanel(pool: AcpSessionPool, backendStatus?: BackendStatusService): Promise<{ ctx: Context; panel: AcpResumePanelService }> {
   const ctx = new Context()
-  const fiber = await ctx.plugin({ name: 'panel-under-test', apply: (c: Context) => { new AcpResumePanelService(c, pool) } })
+  const fiber = await ctx.plugin({ name: 'panel-under-test', apply: (c: Context) => { new AcpResumePanelService(c, pool, undefined, backendStatus) } })
   cleanups.push(() => fiber.dispose())
   return { ctx, panel: ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService }
 }
@@ -86,11 +87,44 @@ async function rejectionCode(promise: Promise<unknown>): Promise<string | undefi
 }
 
 describe('AcpResumePanelService', () => {
-  it('registers under acpResume with the seven Remote markers the Gateway discovers', async () => {
+  it('registers under acpResume with the Remote markers the Gateway discovers', async () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['close', 'list', 'purge', 'turn', 'turns', 'usage', 'workflows'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'checkBackends', 'close', 'list', 'purge', 'turn', 'turns', 'usage', 'workflows'])
+  })
+
+  it('reads readiness with no chats and calls the probe only for the explicit check', async () => {
+    const { pool } = makePool()
+    const untouched: BackendStatusSnapshot = {
+      checking: false, dispatchEnabled: false,
+      backends: [{ id: 'codex', label: 'Codex', configured: true, compatibility: 'unknown', readiness: 'unverified' }],
+    }
+    const checked: BackendStatusSnapshot = {
+      checking: false, dispatchEnabled: true, defaultBackend: 'codex',
+      backends: [{ id: 'codex', label: 'Codex', configured: true, version: '0.170.0', compatibility: 'supported', readiness: 'ready' }],
+    }
+    let current = untouched
+    const snapshot = vi.fn(() => current)
+    const check = vi.fn(async () => { current = checked; return checked })
+    const { panel } = await mountPanel(pool, { snapshot, check })
+    expect(panel.list()).toEqual([])
+    expect(panel.backends()).toBe(untouched)
+    expect(panel.backends()).toBe(untouched)
+    expect(snapshot).toHaveBeenCalledTimes(2)
+    expect(check).not.toHaveBeenCalled()
+    await expect(panel.checkBackends()).resolves.toBe(checked)
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(panel.backends()).toBe(checked)
+    expect(panel.list()).toEqual([])
+  })
+
+  it('returns a disabled empty readiness snapshot without the optional service', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const empty = { backends: [], checking: false, dispatchEnabled: false }
+    expect(panel.backends()).toEqual(empty)
+    await expect(panel.checkBackends()).resolves.toEqual(empty)
   })
 
   it('list reflects started chats, then title and turnCount after a completed turn', async () => {
@@ -371,6 +405,14 @@ describe('apply (panel wiring)', () => {
     await until(() => ctx.get(PANEL_SERVICE_KEY) !== undefined, 'panel registration')
     const panel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
     expect(panel.list()).toEqual([])
+    await until(() => !panel.backends().checking, 'backend discovery')
+    expect(panel.backends()).toMatchObject({
+      dispatchEnabled: true,
+      defaultBackend: 'default',
+      backends: expect.arrayContaining([
+        expect.objectContaining({ id: 'default', compatibility: 'custom', readiness: 'unverified', reason: 'custom-unverified' }),
+      ]),
+    })
 
     await tools.dispose()
     await until(() => ctx.get(PANEL_SERVICE_KEY) === undefined, 'panel withdrawal with the tools service')

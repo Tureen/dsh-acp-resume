@@ -28,6 +28,9 @@
  * - `MOCK_CANCEL_FILE`   — every `turn/interrupt` appends `interrupt <threadId> <turnId>`.
  * - `MOCK_REQUEST_FILE`  — every `thread/*` and `turn/start` request appends its JSON params (one line).
  * - `MOCK_CRASH_ON_INITIALIZE` — exit(1) on `initialize`.
+ * - `MOCK_CODEX_PROTOCOL_FILE` — append every incoming protocol message, including notifications.
+ * - Readiness (D31): `MOCK_CODEX_SIGNED_OUT=1`, `MOCK_CODEX_CONFIG_MODEL`, JSON
+ *   `MOCK_CODEX_MODEL_PAGES` keyed by cursor (first page at `''`), `MOCK_CODEX_MODEL_HANG=1`.
  * - `account/read` / `account/rateLimits/read` (D28): `MOCK_CODEX_PLAN` (default `prolite`),
  *   `MOCK_CODEX_PRIMARY_PERCENT` (12, 300-min window) / `MOCK_CODEX_SECONDARY_PERCENT` (83, 10080-min window),
  *   `MOCK_CODEX_RATE_LIMITS_FAIL=1` fails the rate-limit read; both reads are logged to `MOCK_REQUEST_FILE`.
@@ -158,10 +161,22 @@ const handle = (id: unknown, method: string, params: Json): void => {
   switch (method) {
     case 'initialize':
       if (env['MOCK_CRASH_ON_INITIALIZE'] === '1') process.exit(1)
+      if (env['MOCK_CODEX_INITIALIZE_ERROR'] !== undefined) {
+        process.stderr.write(`${env['MOCK_CODEX_INITIALIZE_ERROR']}\n`)
+        return fail(id, -32603, env['MOCK_CODEX_INITIALIZE_ERROR'])
+      }
       return reply(id, { userAgent: 'mock-codex/0.0.0' })
     case 'account/read':
       log(env['MOCK_REQUEST_FILE'], `account/read ${JSON.stringify(params)}`)
-      return reply(id, { account: { type: 'chatgpt', email: null, planType: env['MOCK_CODEX_PLAN'] ?? 'prolite', workspaceName: null }, userId: null, requiresOpenaiAuth: false })
+      if (env['MOCK_CODEX_ACCOUNT_REPLY'] !== undefined) return reply(id, JSON.parse(env['MOCK_CODEX_ACCOUNT_REPLY']))
+      if (env['MOCK_CODEX_SIGNED_OUT'] === '1') return reply(id, { account: null, requiresOpenaiAuth: true })
+      return reply(id, { account: { type: 'chatgpt', email: null, planType: env['MOCK_CODEX_PLAN'] ?? 'prolite', workspaceName: null }, userId: null, requiresOpenaiAuth: true })
+    case 'config/read':
+      if (env['MOCK_CODEX_CONFIG_ERROR'] !== undefined) {
+        process.stderr.write(`${env['MOCK_CODEX_CONFIG_ERROR']}\n`)
+        return fail(id, -32603, env['MOCK_CODEX_CONFIG_ERROR'])
+      }
+      return reply(id, { config: { model: env['MOCK_CODEX_CONFIG_MODEL'] ?? null }, origins: {} })
     case 'account/rateLimits/read':
       log(env['MOCK_REQUEST_FILE'], `account/rateLimits/read ${JSON.stringify(params)}`)
       if (env['MOCK_CODEX_RATE_LIMITS_FAIL'] === '1') return fail(id, -32603, 'usage backend unavailable')
@@ -175,8 +190,17 @@ const handle = (id: unknown, method: string, params: Json): void => {
         },
         rateLimitsByLimitId: null, rateLimitResetCredits: null, accountId: null, rateLimitUpsell: null,
       })
-    case 'model/list':
-      return reply(id, { data: [{ id: 'mock-model', model: 'mock-model', hidden: false }, { id: 'mock-model-hidden', model: 'mock-model-hidden', hidden: true }] })
+    case 'model/list': {
+      if (env['MOCK_CODEX_MODEL_HANG'] === '1') return
+      const pages = env['MOCK_CODEX_MODEL_PAGES']
+      if (pages !== undefined) {
+        const page = (JSON.parse(pages) as Record<string, unknown>)[String(params['cursor'] ?? '')]
+        return page === undefined ? fail(id, -32602, 'Unknown mock cursor') : reply(id, page)
+      }
+      const data = [{ id: 'mock-model', model: 'mock-model', hidden: false, isDefault: true }]
+      if (params['includeHidden'] === true) data.push({ id: 'mock-model-hidden', model: 'mock-model-hidden', hidden: true, isDefault: false })
+      return reply(id, { data, nextCursor: null })
+    }
     case 'thread/start': {
       log(env['MOCK_REQUEST_FILE'], `thread/start ${JSON.stringify(params)}`)
       const threadId = `thr-${randomUUID()}`
@@ -237,6 +261,7 @@ const lines = createInterface({ input: process.stdin })
 lines.on('line', (line) => {
   let message: Json
   try { message = JSON.parse(line) as Json } catch { return }
+  log(env['MOCK_CODEX_PROTOCOL_FILE'], line)
   const method = message['method']
   const id = message['id']
   if (typeof method === 'string') {

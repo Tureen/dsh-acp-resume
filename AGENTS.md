@@ -15,6 +15,8 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 ```
 src/
   index.ts       插件入口:Config(全字段见 README「配置」)+ provider 与工具注册
+  backend-compatibility.ts D31:发布的 CLI 版本范围；`pnpm check:compatibility` 校验生成文档
+  backend-status.ts / backend-readiness.ts / backend-verification.ts D31:共享状态、启动版本探测、自动无会话验证与派工准入
   command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
   permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
@@ -29,7 +31,7 @@ src/
   workflow-log.ts D29:按会话的工作流运行日志 workflows/<ownerSessionId>.jsonl(run-start + run-end 摘要，不存原文与 params;同 D18 纪律)
   workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
-  panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows` 七个 Remote 方法(D15/D18/D28/D29)
+  panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)
 - `src/client/` 详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
   job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,拒绝对运行中 acp-chat 任务的 job_output wait:true,有运行中 acp-chat 任务时也拒绝 wait_agent(allowChatJobWait 可关)
@@ -70,7 +72,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 绿色回归面 = 各套件绿例之和,当前 504 绿:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 85 + `tools.spec.ts` 35 + `jobs.spec.ts` 12 + `panel.spec.ts` 20 + `client.spec.tsx` 94 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 19 + `workflow.spec.ts` 18 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8;新套件落地时在此登记。
+- 绿色回归面 = 各套件绿例之和,当前 577 例:官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 42 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 48 + `jobs.spec.ts` 12 + `panel.spec.ts` 22 + `client.spec.tsx` 103 + `steer.spec.ts` 5 + `engine.spec.ts` 17 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 19 + `workflow.spec.ts` 18 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-compatibility.spec.ts` 29 + `backend-verification.spec.ts` 17;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

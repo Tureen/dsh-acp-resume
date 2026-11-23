@@ -15,7 +15,9 @@ import { useSyncExternalStore, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as client from '../src/client/index.ts'
+import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, cwdName, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
@@ -24,7 +26,7 @@ import { ChatDetailSource, DETAIL_PAGE } from '../src/client/detail-source.ts'
 import { WorkflowsSource } from '../src/client/workflows-source.ts'
 import { chatEqual, chatsEqual, detailSnapshotEqual, listSnapshotEqual } from '../src/client/snapshot-equal.ts'
 import type {
-  ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
+  BackendStatusView, ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
   PanelChat, RunningItem, TabInfoHook, TurnItem, WorkflowsSnapshot,
 } from '../src/client/face.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
@@ -107,6 +109,224 @@ function props(snapshot: ChatsSnapshot, overrides: Partial<ChatsPanelProps> = {}
 }
 
 const ready = (chats: readonly PanelChat[]): ChatsSnapshot => ({ status: 'ready', chats, fetchedAt: NOW })
+
+const backendFixture: BackendStatusSnapshot = {
+  checking: false, dispatchEnabled: true, defaultBackend: 'codex',
+  backends: [
+    { id: 'codex', label: 'Codex', configured: true, version: '0.170.0', range: '>=0.100.0 <1', compatibility: 'supported', readiness: 'ready' },
+    { id: 'kiro', label: 'Kiro', configured: true, version: '2.0.0', compatibility: 'unverified-version', readiness: 'unverified', reason: 'unsupported-version' },
+    { id: 'agy', label: 'Antigravity', configured: false, compatibility: 'not-found', readiness: 'unavailable', reason: 'missing-executable' },
+    { id: 'review', label: 'Review', configured: true, compatibility: 'custom', readiness: 'unverified', reason: 'custom-unverified' },
+    { id: 'other', label: 'Other', configured: true, compatibility: 'unknown', readiness: 'needs-login', reason: 'login-required' },
+  ],
+}
+
+describe('backend readiness', () => {
+  it('shows CLI versions, compatibility, readiness, selected default and remediation above an empty chat list', () => {
+    const backendStatus = {
+      getSnapshot: () => view,
+      subscribe: () => () => {},
+      check: vi.fn(async () => {}),
+    }
+    const view = { status: 'ready', checking: false, data: backendFixture } as const
+    render(<ChatsPanel {...props(ready([]), { currentSessionId: undefined, backendStatus, t: translator(en) })} />)
+    const region = screen.getByRole('region', { name: 'Backend status' })
+    const toggle = within(region).getByRole('button', { name: 'Backend status Codex ready' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(within(region).queryByRole('list')).toBeNull()
+    const recheck = within(region).getByRole('button', { name: 'Recheck backends' })
+    expect(toggle.contains(recheck)).toBe(false)
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const rows = within(region).getAllByRole('listitem')
+    expect(region.compareDocumentPosition(screen.getByText('No ACP chats')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(region).getByText('Default for new chats: Codex')).toBeTruthy()
+    expect(within(rows[0]!).getByText('CLI version: 0.170.0')).toBeTruthy()
+    expect(within(rows[0]!).getByText('Supported range: >=0.100.0 <1')).toBeTruthy()
+    expect(within(rows[0]!).getByText('Compatibility: Supported')).toBeTruthy()
+    expect(within(rows[0]!).getByText('Readiness: Ready')).toBeTruthy()
+    expect(within(rows[1]!).getByText('Compatibility: Unverified version')).toBeTruthy()
+    expect(within(rows[1]!).getByText('This version is outside the verified range; you can still try the configured backend.')).toBeTruthy()
+    expect(within(rows[2]!).getByText('Compatibility: CLI not found')).toBeTruthy()
+    expect(within(rows[2]!).getByText('Not configured')).toBeTruthy()
+    expect(within(rows[2]!).getByText('No CLI version detected')).toBeTruthy()
+    expect(within(rows[3]!).getByText('Compatibility: Custom')).toBeTruthy()
+    expect(within(rows[3]!).getByText('Readiness: Unverified')).toBeTruthy()
+    expect(within(rows[4]!).getByText('Compatibility: Unknown')).toBeTruthy()
+    expect(within(rows[4]!).getByText('Readiness: Needs sign-in')).toBeTruthy()
+    expect(within(rows[4]!).getByText('Sign in through the CLI, then check again.')).toBeTruthy()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(within(region).queryByRole('list')).toBeNull()
+    expect(within(region).getByRole('button', { name: 'Recheck backends' })).toBe(recheck)
+    expect(backendStatus.check).not.toHaveBeenCalled()
+  })
+
+  it('shows automatic startup without offering a setup click, then presents the discovered ready backend', () => {
+    const pending = {
+      data: { ...backendFixture, checking: true, dispatchEnabled: false, backends: [] },
+      status: 'ready', checking: false,
+    } as const
+    const found = {
+      ...backendFixture,
+      backends: [{ ...backendFixture.backends[0]!, configured: false, automatic: true as const }],
+    }
+    const source = (view: BackendStatusView) => ({ getSnapshot: () => view, subscribe: () => () => {}, check: vi.fn(async () => {}) })
+    const first = render(<ChatsPanel {...props(ready([]), { backendStatus: source(pending), t: translator(en) })} />)
+    expect(screen.getByRole('button', { name: 'Backend status Checking…' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByRole('button', { name: 'Recheck backends' })).toBeNull()
+    expect(screen.queryByText(/acp_chat_start|Expand Backend status/)).toBeNull()
+    first.rerender(<ChatsPanel {...props(ready([]), { backendStatus: source({ status: 'ready', checking: false, data: found }), t: translator(en) })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Backend status Codex ready' }))
+    expect(screen.getByText('Auto-discovered')).toBeTruthy()
+    expect(screen.getByText('Default for new chats: Codex')).toBeTruthy()
+    expect(screen.getByText(/Uses your existing Codex account/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Recheck backends' })).toBeTruthy()
+    const agy = { ...found.backends[0]!, id: 'agy', label: 'Antigravity CLI (agy)' }
+    first.rerender(<ChatsPanel {...props(ready([]), { backendStatus: source({ status: 'ready', checking: false, data: { ...found, defaultBackend: 'agy', backends: [agy] } }), t: translator(en) })} />)
+    expect(screen.getByRole('button', { name: 'Backend status agy handshake passed; sign-in not checked' })).toBeTruthy()
+    expect(screen.getByText(/Uses agy model settings.*Sign-in checked when opening a chat/)).toBeTruthy()
+    expect(screen.queryByText(/Uses your existing Codex account/)).toBeNull()
+  })
+
+  it('distinguishes named configurations for the same CLI and explains an unselected default', () => {
+    const view = { status: 'ready', checking: false, data: {
+      checking: false, dispatchEnabled: true,
+      backends: [
+        { id: 'default', label: 'Codex', configured: true, compatibility: 'supported', readiness: 'ready' },
+        { id: 'review', label: 'Codex', configured: true, compatibility: 'supported', readiness: 'ready' },
+      ],
+    } } as const
+    const backendStatus = { getSnapshot: () => view, subscribe: () => () => {}, check: async () => {} }
+    render(<ChatsPanel {...props(ready([]), { backendStatus, t: translator(en) })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Backend status 2 backends ready' }))
+    expect(screen.getByText('Codex (default)')).toBeTruthy()
+    expect(screen.getByText('Codex (review)')).toBeTruthy()
+    expect(screen.getByText('No default backend selected')).toBeTruthy()
+    expect(screen.getByText('Choose a ready backend explicitly when dispatching.')).toBeTruthy()
+  })
+
+  it('checks only on its own button, keeps rows visible in flight, and announces the new state', async () => {
+    let resolveCheck!: (r: PanelRpcResult) => void
+    const call = vi.fn(async (_channel: string, endpoint: string): Promise<PanelRpcResult> => endpoint === 'acpResume/backends'
+      ? { ok: true, value: backendFixture }
+      : new Promise(resolve => { resolveCheck = resolve }))
+    const backendStatus = new BackendStatusSource({ call })
+    const refresh = vi.fn()
+    render(<ChatsPanel {...props(ready([]), { backendStatus, refresh })} />)
+    fireEvent.click(await screen.findByRole('button', { name: '后端状态 Codex 就绪' }))
+    await screen.findByText('新会话默认后端：Codex')
+    const check = screen.getByRole('button', { name: '重新检测后端' }) as HTMLButtonElement
+    expect(check.disabled).toBe(false)
+    expect(screen.getByText(/无需重启 DSH。不会删除会话、退出登录或修改配置/).id).toBe(check.getAttribute('aria-describedby'))
+    fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(call.mock.calls.map(([, endpoint]) => endpoint)).toEqual(['acpResume/backends'])
+    fireEvent.click(check)
+    expect(screen.getByRole('button', { name: '正在检测后端…' }).getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByText('新会话默认后端：Codex')).toBeTruthy()
+    expect(call).toHaveBeenLastCalledWith('/api', 'acpResume/checkBackends', { args: {} })
+    const { defaultBackend: _old, ...withoutDefault } = backendFixture
+    const backends = withoutDefault.backends.map(backend => backend.id === 'codex'
+      ? { ...backend, readiness: 'needs-login', reason: 'login-required' } : backend)
+    await act(async () => { resolveCheck({ ok: true, value: { ...withoutDefault, backends, dispatchEnabled: false } }) })
+    expect(screen.getByText('未选定默认后端')).toBeTruthy()
+    expect(screen.getByText('没有可用的后端。仍可查看历史；要继续派工，请先准备好一个受支持的后端。')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('检测完成，暂无就绪的后端。')
+    expect(screen.getByText('展开「后端状态」查看无法派工的原因。')).toBeTruthy()
+    expect(screen.queryByText(/acp_chat_start/)).toBeNull()
+  })
+
+  it('names the ready backend when a recheck restores dispatch', async () => {
+    const call: PanelRpc['call'] = async (_channel, endpoint) => endpoint === 'acpResume/backends'
+      ? { ok: true, value: { checking: false, dispatchEnabled: false, backends: [] } }
+      : { ok: true, value: backendFixture }
+    render(<ChatsPanel {...props(ready([]), { backendStatus: new BackendStatusSource({ call }), t: translator(en) })} />)
+    const collapsed = await screen.findByRole('button', { name: 'Backend status No backends ready' })
+    const recheck = screen.getByRole('button', { name: 'Recheck backends' }) as HTMLButtonElement
+    fireEvent.click(recheck)
+    expect(collapsed.getAttribute('aria-expanded')).toBe('false')
+    expect(recheck.getAttribute('aria-disabled')).toBe('true')
+    expect(recheck.disabled).toBe(false)
+    expect(screen.queryByText('No backend status yet. Check backends or review the plugin settings.')).toBeNull()
+    const summary = await screen.findByRole('button', { name: 'Backend status Codex ready' })
+    expect(summary.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('status').textContent).toBe('Codex is ready for dispatch.')
+  })
+
+  it('announces a failed explicit check without exposing error text and leaves a retry available', async () => {
+    const call: PanelRpc['call'] = async (_channel, endpoint) => endpoint === 'acpResume/backends'
+      ? { ok: true, value: backendFixture }
+      : { ok: false, error: { code: 'gateway/internal', message: 'private path or stderr' } }
+    render(<ChatsPanel {...props(ready([]), { backendStatus: new BackendStatusSource({ call }), t: translator(en) })} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Backend status Codex ready' }))
+    const button = screen.getByRole('button', { name: 'Recheck backends' }) as HTMLButtonElement
+    fireEvent.click(button)
+    expect(await screen.findByText('Backend check failed. Any results below are from the previous check.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Backend status Recheck failed' })).toBeTruthy()
+    expect(screen.queryByText(/private path or stderr/)).toBeNull()
+    expect(screen.getByText('Default for new chats: Codex')).toBeTruthy()
+    expect(button.disabled).toBe(false)
+  })
+
+  it('keeps chat discovery useful when an older Host has no readiness Remote', async () => {
+    const call: PanelRpc['call'] = async () => ({ ok: false, error: { code: 'gateway/invocation-unavailable', message: 'No such method' } })
+    render(<ChatsPanel {...props(ready([]), { backendStatus: new BackendStatusSource({ call }), t: translator(en) })} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Backend status Status unavailable' }))
+    expect(screen.getByText('This host does not provide backend status.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Recheck backends' })).toBeNull()
+    expect(screen.getByText(/Ask the model to call acp_chat_start/)).toBeTruthy()
+  })
+})
+
+describe('BackendStatusSource', () => {
+  it('polls only the snapshot while subscribed and preserves equal snapshot references', async () => {
+    vi.useFakeTimers()
+    let value = backendFixture
+    const call = vi.fn(async () => ({ ok: true as const, value: structuredClone(value) }))
+    const source = new BackendStatusSource({ call }, 1_000)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(call).not.toHaveBeenCalled()
+    const listener = vi.fn()
+    const stopFirst = source.subscribe(listener)
+    const stopSecond = source.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(call).toHaveBeenCalledExactlyOnceWith('/api', 'acpResume/backends', { args: {} })
+    const first = source.getSnapshot()
+    expect(first).toMatchObject({ status: 'ready', data: value })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(source.getSnapshot()).toBe(first)
+    expect(listener).toHaveBeenCalledTimes(1)
+    value = { ...value, checking: true }
+    stopSecond()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(source.getSnapshot().data?.checking).toBe(true)
+    stopFirst()
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(call.mock.calls).toHaveLength(3)
+  })
+
+  it('drops an older pending read after a check, collapses duplicate checks and ignores late answers on disposal', async () => {
+    const pending: { endpoint: string; resolve: (result: PanelRpcResult) => void }[] = []
+    const call: PanelRpc['call'] = (_channel, endpoint) => new Promise(resolve => { pending.push({ endpoint, resolve }) })
+    const source = new BackendStatusSource({ call })
+    source.subscribe(() => {})
+    const check = source.check()
+    await source.check()
+    expect(pending.map(p => p.endpoint)).toEqual(['acpResume/backends', 'acpResume/checkBackends'])
+    pending[1]?.resolve({ ok: true, value: backendFixture })
+    await check
+    pending[0]?.resolve({ ok: true, value: { ...backendFixture, dispatchEnabled: false } })
+    await Promise.resolve()
+    expect(source.getSnapshot().data).toBe(backendFixture)
+    const finalCheck = source.check()
+    const beforeDispose = source.getSnapshot()
+    source.dispose()
+    pending[2]?.resolve({ ok: true, value: { ...backendFixture, dispatchEnabled: false } })
+    await finalCheck
+    expect(source.getSnapshot()).toBe(beforeDispose)
+  })
+})
 
 describe('ChatsPanel', () => {
   it('shows the empty state with the start tool named', () => {
@@ -486,7 +706,7 @@ describe('ChatsPanel', () => {
     render(<ChatsPanel {...p} />)
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
     expect(screen.getByRole('alert').textContent).toBe('操作失败:acp-resume/unknown-chat: gone')
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
     expect(p.refresh).toHaveBeenCalledTimes(1)
   })
 })
@@ -563,6 +783,7 @@ function mockRpc(rows: () => unknown = () => [], usage: () => PanelRpcResult = (
         return usage()
       }
       calls.push([channel, endpoint, payload])
+      if (endpoint === 'acpResume/backends') return { ok: true, value: backendFixture }
       return endpoint === 'acpResume/list' ? { ok: true, value: rows() } : { ok: true, value: null }
     }),
   }
@@ -795,9 +1016,17 @@ describe('apply (client wiring)', () => {
     expect(services.bodies[1]?.component).toBe(ChatDetail)
     expect(services.bodies[2]?.component).toBe(ChatDetailTitle)
 
-    renderBody((body.options.inject as (sessionId: string) => ChatsPanelInjected)(TEST_SESSION))
+    const injectPanel = body.options.inject as (sessionId: string) => ChatsPanelInjected
+    const injected = injectPanel(TEST_SESSION)
+    expect(injected.backendStatus).toBeInstanceOf(BackendStatusSource)
+    expect(injectPanel('another-session').backendStatus).toBe(injected.backendStatus)
+    expect(rpc.calls).toEqual([])
+    renderBody(injected)
     expect(await screen.findByText('记住暗号P')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '后端状态 Codex 就绪' })).toBeTruthy()
     expect(rpc.calls[0]).toEqual(['/api', 'acpResume/list', { args: {} }])
+    expect(rpc.calls).toContainEqual(['/api', 'acpResume/backends', { args: {} }])
+    expect(rpc.calls.some(([, endpoint]) => endpoint === 'acpResume/checkBackends')).toBe(false)
     rows = []
     fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
@@ -972,7 +1201,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(container.querySelector('[data-meta]')?.textContent).toBe('2 轮 · 3 分钟前 · tmp')
     // Gone from the body: cwd, remote id, first-turn line, the section's turn count, the refresh button.
     expect(container.textContent).not.toMatch(/cwd|远端|首轮/)
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '刷新会话' })).toBeNull()
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('轮次记录')
   })
 

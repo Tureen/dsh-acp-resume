@@ -18,7 +18,7 @@ DeepSeek Harness（DSH）官方的 ACP 后端采用一次性委派，每次都�
 
 ## 安装
 
-需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本。使用默认后端时，请先安装 `kiro-cli`，确保 DSH 能在 `PATH` 中找到它。
+需要 DSH `>=0.2.2-rc.3`、Node.js 24 或更高版本，以及至少一个可用的后端。自动接入请使用[兼容范围内的 CLI](docs/backend-compatibility.md)。Kiro 不是必装依赖；也可以只用 Codex 或 agy。
 
 从 npm 安装到你的 DSH profile，将 `<name>` 换成实际名称，安装后重启 DSH：
 
@@ -37,27 +37,34 @@ dsh plugin --profile <name> add dsh-acp-resume
 | 后端 | 支持能力 |
 | --- | --- |
 | **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话。 |
-| **Antigravity**（agy） | 通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
-| **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批，只能配置为命名后端。 |
+| **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
+| **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
+
+插件默认开启 `discoverBackends`：启动时用 DSH 的 `PATH` 和显式配置路径检测 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并验证符合条件的内置后端。检测不会创建会话或发送提示词；CLI 自身可能联网。在 **右侧栏 → ACP 会话** 展开 **后端状态**，可查看版本、就绪情况和失败原因。升级 CLI、登录或更换默认模型后，可以直接点击同一行的 **重新检测后端**，无需展开或重启 DSH；不会删除会话、退出登录或修改配置。
 
 ### 只用一个后端
 
-使用 kiro 时，确保 DSH 能从 `PATH` 找到 `kiro-cli`，即可直接快速上手。要换成 agy，在 profile 的 `cordis.patch.yml` 中按同一插件 id 覆盖顶层 `command` 和 `args`，并设 `agentEngine: none` 关闭 kiro 专用的启动参数：
+确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。未显式选择后端或固定默认项时，DSH 找得到配置的 Kiro 就按原配置使用它；版本告警、探测失败或需要登录都不会触发改派。**只有 DSH 确认找不到配置的 Kiro 可执行文件时**，才依次尝试选择就绪的 Codex、Antigravity（`agy`），无需另写 YAML。
+
+自动接入的 Antigravity 使用 `agy acp` 和 CLI 的模型设置，不自动批准权限请求。启动时只握手，不创建会话；若首次建会话返回需要认证，请在 `agy` 中登录，再重新检测。要手动覆盖 Antigravity 的路径、模型或权限，可以定义命名后端：
 
 ```yaml
 - id: subagent-acp-resume
   name: dsh-acp-resume
   config:
-    command: agy
-    args: [acp]
-    agentEngine: none
+    backends:
+      agy:
+        command: agy
+        args: [acp]
+        agentEngine: none
+        permission: ask
 ```
 
-重启 DSH 后，模型新建会话时就会使用 agy。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。只使用 Codex 时也需按下节将其注册为命名后端，建会话时指定 `backend: codex`。
+如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
 
 ### 让模型在多个后端中选择
 
-要用 kiro 作为默认后端、Codex 作为备选，在同一处使用下面这份配置。顶层字段定义默认后端，`backends` 下的键是模型可选择的名称。把 `model` 换成你账号在 Codex `model/list` 中可用的 ID。
+要用 kiro 作为默认后端、Codex 作为备选，在同一处使用下面这份配置。顶层 `command` 和 `args` 定义名为 `default` 的传统后端，`defaultBackend` 选择新会话的默认项。把 `model` 换成你账号在 Codex `model/list` 中可用的 ID。
 
 ```yaml
 - id: subagent-acp-resume
@@ -65,6 +72,7 @@ dsh plugin --profile <name> add dsh-acp-resume
   config:
     command: kiro-cli
     args: [acp]
+    defaultBackend: default # 只用 Codex 时改为 codex
     backends:
       codex:
         protocol: codex
@@ -76,7 +84,15 @@ dsh plugin --profile <name> add dsh-acp-resume
         permission: ask
 ```
 
-重启 DSH 后，`acp_chat_start` 会列出可选后端。模型传入工作目录的绝对路径 `cwd`，省略 `backend` 即用 kiro，指定 `backend: codex` 即用 Codex。侧栏徽标显示每个会话的后端；之后用同一个 `chatId` 续聊即可。
+`acp_backend_status` 只读查询检测结果，不启动 CLI。新会话按以下顺序选后端：
+
+1. 调用 `acp_chat_start` 显式传入 `backend`，优先使用该后端。
+2. 否则使用配置中的 `defaultBackend`；该后端不可用时会报错，不会悄悄换后端。
+3. 否则，使用顶层配置的 `default`。开启发现时，只有 DSH 明确找不到顶层配置的 `kiro-cli`（包括指定路径），才依次选择版本在范围内且已就绪的 Codex、`agy`。找得到 Kiro 就按原来的参数与权限尝试连接；连接失败会报错，不改派。找不到 Kiro 且没有合格的候选时，仍尝试原命令，返回找不到命令的指引。关闭发现或使用自定义包装命令时，保留原来的 `default` 路由。
+
+显式配置的后端（包括自定义命令和包装脚本）即使版本未知或超出范围，也会告警并按原配置尝试连接，不保证兼容。对**自动发现**的范围外 CLI，可设 `allowUnverifiedBackends: true`，再通过 `backend` 手动选择，或用 `defaultBackend` 固定它；该开关不会把它加入自动回退顺序。检查结果和单次启动失败不会撤掉工具或阻断旧 `chatId` 的发送与重连；旧会话始终按原绑定续聊。
+
+设置 `discoverBackends: false` 可关闭额外的 PATH 探测和自动接入，不影响显式配置的后端。自动接入的后端不继承其他后端的显式凭据或权限；Codex 使用 `read-only` 沙箱、`never` 审批策略并拒绝 ACP 权限请求，`agy` 也默认拒绝 ACP 权限请求。如需覆盖路径、模型、环境或权限，请配置命名后端。
 
 Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默认）、`workspace-write` 或 `danger-full-access`。`approvalPolicy` 决定 Codex 何时请求审批，各后端的 `permission` 决定如何答复，可选 `allow` 自动允许、`reject` 拒绝或 `ask` 逐次询问。自带配置为默认后端设置了 `allow`，命名后端省略此字段时使用 `reject`。
 
@@ -133,6 +149,7 @@ templates:
 
 | 工具 | 何时使用 |
 | --- | --- |
+| `acp_backend_status` | 只读查询支持范围、就绪状态、新会话默认项和建议，不启动外部进程。 |
 | `acp_chat_start` | 建立持久会话，返回 `chatId`。配置多个后端后可指定 `backend`。 |
 | `acp_chat_send` | 开始下一轮，自动按需重连。同一会话一次只执行一轮，忙时再次发送会报错。 |
 | `acp_chat_list` | 找回当前 DSH 会话创建的子代理，包括已释放的会话。 |

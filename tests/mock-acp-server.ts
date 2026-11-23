@@ -38,6 +38,7 @@
  *                        an arbitrary timeout (subprocess cold-start is variable).
  * - `MOCK_PROMPT_HOLD` — if set, prompt waits while this file exists; removing
  *                        it releases the response without a timing assumption.
+ * - `MOCK_AUTH_REQUIRED` — return ACP AuthRequired from `session/new`.
  * - `MOCK_MISSING_SESSION_ID` — if `1`, return a malformed empty `session/new`
  *                        response to exercise startup rollback.
  * - `MOCK_LOAD_MISSING` — if `1`, `session/load` ALWAYS fails (unknown-session
@@ -122,6 +123,7 @@ import {
   methods,
   ndJsonStream,
   PROTOCOL_VERSION,
+  RequestError,
   type AgentContext,
   type CancelNotification,
   type AuthenticateRequest,
@@ -233,6 +235,7 @@ function makeAgent() {
       })
     },
     async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+      if (process.env.MOCK_AUTH_REQUIRED === '1') throw RequestError.authRequired()
       sessionCwd = params.cwd
       // Optionally signal "newSession reached" and block until released, so a
       // test can cancel DURING newSession (the early-cancel race window) on a

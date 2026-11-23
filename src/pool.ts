@@ -184,9 +184,11 @@ export interface BackendSpec {
   readonly specBase: Omit<AcpSessionSpec, 'cwd'>
   /** Wire protocol of the child (D25). Absent means `acp`. */
   readonly protocol?: 'acp' | 'codex'
-  /** Codex thread parameters; required when `protocol` is `codex`. */
+  /** Synthesized from installed CLI discovery, rather than authored by the user. */
+  readonly automatic?: true
+  /** Codex thread parameters; model may be resolved by the readiness probe. */
   readonly codex?: {
-    readonly model: string
+    readonly model?: string
     readonly sandbox?: string
     readonly approvalPolicy?: string
     readonly effort?: string
@@ -204,6 +206,13 @@ export interface PoolOptions {
   readonly idleTimeoutMs: number
   /** Non-fatal pool conditions (e.g. a corrupt registry file set aside). */
   readonly onWarn?: (message: string) => void
+  /** Host admission for new chats, independent of existing chats' saved bindings. */
+  readonly dispatch?: {
+    select(backend?: string, signal?: AbortSignal): string | Promise<string>
+    executable?(backend: string): string | undefined
+    model?(backend: string): string | undefined
+    failure?(backend: string, reason: 'login-required'): void
+  }
 }
 
 interface RegistryEntry {
@@ -525,7 +534,9 @@ export class AcpSessionPool {
     // Fail loud at the earliest resolvable point, mirroring the official provider start.
     assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const label = options.label?.trim() ?? ''
-    const backend = options.backend ?? DEFAULT_BACKEND
+    const selected = this.opts.dispatch?.select(options.backend, signal) ?? options.backend ?? DEFAULT_BACKEND
+    const backend = typeof selected === 'string' ? selected : await selected
+    this.assertLive()
     const backendSpec = this.backends.get(backend)
     if (backendSpec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
     const ownerSessionId = options.ownerSessionId?.trim() ?? ''
@@ -533,7 +544,22 @@ export class AcpSessionPool {
     const now = Date.now()
     const controller = new AbortController()
     const opening = (async (): Promise<AcpConnection> => {
-      const conn = await this.connect(backendSpec, cwd, { mode: 'new' }, windowSignal(controller, signal))
+      const startupSignal = windowSignal(controller, signal)
+      let conn: AcpConnection
+      try {
+        conn = await this.connect(backendSpec, cwd, { mode: 'new' }, startupSignal, 'start')
+      } catch (error: unknown) {
+        if (!startupSignal.aborted && error instanceof AcpConnectionError && this.opts.dispatch !== undefined) {
+          const needsLogin = backendSpec.protocol !== 'codex' && error.category === 'protocol' && error.jsonRpcCode === -32000 // ACP AuthRequired
+          if (needsLogin || error.stage === 'initialize') {
+            if (needsLogin) this.opts.dispatch.failure?.(backend, 'login-required')
+            const action = needsLogin ? 'Sign in using the backend CLI, then open Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」).'
+              : 'Retry this backend, or open Right sidebar → ACP chats → Recheck backends next to Backend status (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」) for diagnostics.'
+            throw new Error(`${error.message}\nBackend ${backend} did not open a session. ${action}`, { cause: error })
+          }
+        }
+        throw error
+      }
       if (this.disposed) await this.discard(conn, 'acp-resume: pool already disposed')
       if (controller.signal.aborted) await this.discard(conn, `acp-resume: chat ${chatId} was released before it started`)
       try {
@@ -584,7 +610,9 @@ export class AcpSessionPool {
   async send(chatId: string, message: string, signal?: AbortSignal, hooks: PoolSendHooks = {}): Promise<PoolSendResult> {
     this.assertLive()
     if (isAborted(signal)) throw new Error('acp-resume: send aborted before it started')
-    if (this.registry.get(chatId) === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
+    const entry = this.registry.get(chatId)
+    if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
+    // Existing chats use their saved backend, not the admission policy for new chats.
     const existing = this.live.get(chatId)
     if (existing?.busy === true || this.starting.has(chatId)) {
       throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
@@ -603,7 +631,6 @@ export class AcpSessionPool {
     let freshSession = false
     let freshSessionReason: FreshSessionReason | undefined
     if (existing === undefined) {
-      const entry = this.registry.get(chatId) as RegistryEntry
       try {
         this.assertSameAgent(entry)
       } catch (error: unknown) {
@@ -939,8 +966,7 @@ export class AcpSessionPool {
   }
 
   private async provisionFromBlueprint(blueprint: RoleBlueprint, ownerSessionId: string, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
-    const backend = blueprint.backend ?? DEFAULT_BACKEND
-    const chat = await this.start(blueprint.cwd, signal, { label: blueprint.name, ownerSessionId, backend })
+    const chat = await this.start(blueprint.cwd, signal, { label: blueprint.name, ownerSessionId, backend: blueprint.backend })
     const discard = async (reason: string, cause?: unknown): Promise<never> => {
       // A half-built role is not kept: the next reference provisions it again.
       await this.remove(chat.chatId).catch((error: unknown) => { this.report(error) })
@@ -956,7 +982,7 @@ export class AcpSessionPool {
       if (seeded.stopReason !== 'completed') return discard(`its seeding turn ended ${seeded.stopReason}`)
     }
     try {
-      this.roster.register(blueprint.name, chat.chatId, backend, ownerSessionId)
+      this.roster.register(blueprint.name, chat.chatId, chat.backend, ownerSessionId)
     } catch (error: unknown) {
       return discard(`the roster could not be written: ${toError(error).message}`, error)
     }
@@ -1095,8 +1121,8 @@ export class AcpSessionPool {
     const codex = spec.codex
     const conn = await openCodexConnection({
       ...spec.specBase,
+      command: this.opts.dispatch?.executable?.(backend) ?? spec.specBase.command,
       cwd: homedir(),
-      codexModel: codex.model,
       ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
       ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
     }, { mode: 'usage' })
@@ -1107,15 +1133,20 @@ export class AcpSessionPool {
     }
   }
 
-  /** Open a connection with the backend's wire protocol (D25); ACP is the default. */
-  private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined): Promise<AcpConnection> {
-    if (backend.protocol !== 'codex') return openAcpConnection({ ...backend.specBase, cwd }, open, signal)
+  /** Open the bound backend's wire protocol (D25). Only a new chat uses discovery results. */
+  private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined, source: 'start' | 'continuation'): Promise<AcpConnection> {
+    const checkedCommand = source === 'start' ? this.opts.dispatch?.executable?.(backend.name) : undefined
+    const base = { ...backend.specBase, cwd, command: checkedCommand ?? backend.specBase.command }
+    if (backend.protocol !== 'codex') return openAcpConnection(base, open, signal)
     const codex = backend.codex
-    if (codex === undefined) throw new Error(`acp-resume: backend ${backend.name} uses protocol codex but has no codex model configured`)
+    if (codex === undefined) throw new Error(`acp-resume: missing settings for Codex backend ${backend.name}`)
+    // Resume preserves the thread model unless explicitly overridden. If D6 replaces
+    // a lost thread without an override, app-server uses its own model settings.
+    const model = codex.model ?? (source === 'start' ? this.opts.dispatch?.model?.(backend.name) : undefined)
+    if (source === 'start' && backend.automatic && model === undefined) throw new Error(`acp-resume: no usable default model for Codex backend ${backend.name}`)
     return openCodexConnection({
-      ...backend.specBase,
-      cwd,
-      codexModel: codex.model,
+      ...base,
+      ...(model === undefined ? {} : { codexModel: model }),
       ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
       ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
       ...(codex.effort === undefined ? {} : { codexEffort: codex.effort }),
@@ -1154,17 +1185,17 @@ export class AcpSessionPool {
   private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
     const backend = this.backendFor(entry)
     if (forceFresh) {
-      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
       return { conn, freshSessionReason: 'repeated-errors' }
     }
     try {
-      const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal, 'continuation')
       return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
       // Only a proven missing session is replaced; any other rejection keeps the binding (D6).
       if (!isLoadSessionMissing(error)) throw error
       this.assertLive()
-      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal)
+      const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
       return { conn, freshSessionReason: 'load-rejected', lost: error }
     }
   }

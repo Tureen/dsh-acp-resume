@@ -368,7 +368,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - **取消**:`turn/interrupt {threadId, turnId}`，毫秒级。
 - **流式**:`item/agentMessage/delta`，params 为 `{threadId, turnId, itemId, delta}`。最终输出取 `item/completed` 中 `agentMessage.phase === 'final_answer'` 的 `text`。
 - **审批**:三套 `item/*/requestApproval`(命令/文件/权限)。`availableDecisions` 含 `accept` / `acceptWithExecpolicyAmendment` / `cancel`，不含 `decline`，但服务端接受 `decline` 回复：该条被拒、整轮继续；`cancel` 则整轮 interrupted。
-- **模型**:`model/list` 返回 10 个(含 2 个隐藏)，由 `thread/start` 或 `turn/start` 的 `model` 参数指定。默认模型 `gpt-6.1-terra` 本机不可用，必须显式指定。
+- **模型**:`model/list` 返回 10 个(含 2 个隐藏)，由 `thread/start` 或 `turn/start` 的 `model` 参数指定。默认模型 `gpt-6.1-terra` 在当时的本机环境不可用，原先要求显式指定；D31 现按上游账号与默认模型信息自动验证，不再一律必填。
 - **stopReason 映射**:completed→end_turn、interrupted→cancelled、failed→error、`codexErrorInfo === 'contextWindowExceeded'`→max-tokens。
 
 ### 架构裁定
@@ -382,7 +382,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 
 ### Config
 
-`BackendConfig` 增加 `protocol?: 'acp' | 'codex'`(默认 `'acp'`)。Codex 后端额外字段：`model`(必填，因默认模型不可用)、`sandbox`(`read-only` | `workspace-write` | `danger-full-access`，默认 `read-only`)、`approvalPolicy`(`never` | `untrusted` | `on-request` | `on-failure`，默认 `never`)。Config schema 随池集成轮扩展。
+`BackendConfig` 增加 `protocol?: 'acp' | 'codex'`(默认 `'acp'`)。Codex 后端额外字段：`model`(当时因默认模型不可用设为必填；D31 改为可选)、`sandbox`(`read-only` | `workspace-write` | `danger-full-access`，默认 `read-only`)、`approvalPolicy`(`never` | `untrusted` | `on-request` | `on-failure`，默认 `never`)。Config schema 随池集成轮扩展。
 
 ### 连接层实施细节(第一轮)
 
@@ -396,7 +396,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 ### 已知风险
 
 - `decline` 不在 `availableDecisions` 里却被接受，依赖未文档化行为，Codex 升级可能失效；失效时 reject 策略退回 `cancel`(整轮 interrupted)。
-- 默认模型不可用属环境问题(Codex 版本或账号)，适配器通过必填 `model` 规避。
+- 默认模型不可用属环境问题(Codex 版本或账号)，适配器原先通过必填 `model` 规避；D31 改为验证 Codex 提供的明确默认值。
 - 官方包针对 0.147.0，本机为 0.160.0，协议可能有小变化。
 - 私有协议无稳定性承诺，升级 Codex 后须重跑真机探针。
 
@@ -704,3 +704,15 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - 异常轮加左侧竖条，样式同连接事件:`error` 红色;未正常完成(`aborted`、`max-tokens`、`refusal` 等)或由新会话作答的轮橙色;正常完成的轮无竖条。
 - 进行中条目显示已发送消息的前 2 行。
 - 元信息行末尾追加 cwd 的最后一级目录名(如 `kiro-cli · 12 轮 · 3 分钟前 · dsh-acp-resume`),进行中时同样追加;完整路径仍在名称的悬停提示里。
+
+## D31 派工后端的版本支持、就绪检查与准入(2026-11-22)
+
+- **发布支持而非逐版实测**：[兼容范围与证据](docs/backend-compatibility.md)按 CLI + 协议或引擎记录边界；支持范围来自版本化的上游文档、发行说明和源码，证据不足时只补关键边界。`src/backend-compatibility.ts` 是运行时和发布表的唯一版本来源，`pnpm check:compatibility` 检查同步。范围之外是插件的支持策略，不等于已证实不兼容。
+- **补丁版策略（2026-11-22 修订）**：已核对的次版本线默认接纳后续正式补丁版。范围上限为下一条尚未纳入的次版本线，且不包含该版本；下限保留已知协议和修复要求。已知回归可单独排除。版本通过不替代协议和就绪检查，预发行版不进入自动选择。
+- **启动自动验证**：使用宿主 subprocess 的环境与查找语义读取 CLI 版本，对符合条件的候选做有时限的连接检查。自动发现的范围外 CLI 默认不握手；`allowUnverifiedBackends: true` 允许探测并显式尝试，但不改变自动选择的范围。「重新检测后端」复用同一流程，不是初次启用的条件，不清理会话、登录或配置。侧栏默认只显示一行「后端状态」摘要与独立的「重新检测后端」按钮；无需展开即可检测，版本范围与修复提示仍在详情内。宿主和面板保留未找到的内置 CLI 行并显示支持范围；发现不等于就绪。ACP 握手不凭 `authMethods` 猜登录；Codex 只读 `account/read`（显式不请求刷新 token）、`config/read` 和 `model/list`，不触发登录、不创建会话、不发提示词。上游 CLI 自己可能访问网络。面板轮询和模型状态工具只读缓存。
+- **Codex 零配置**：若没有显式 Codex 后端，从 PATH 发现 `codex` 后使用 `read-only` / `never` / `reject`，只继承查找路径覆写，不带入其他后端的显式凭据。显式设置优先；省略模型时验证 Codex 用户级配置，若未设置才采用唯一公布的可用默认；不替用户猜模型。重连自动发现的线程不传新默认模型，保留原线程选择。
+- **Antigravity 零配置（2026-11-22 修订）**：未显式配置时，从 PATH 添加命名后端 `agy`，仅用 `agy acp`，沿用 CLI 的模型设置，拒绝 ACP 权限请求，不复用其他后端的显式凭据或授权。与 Codex 共享 `discoverBackends` 开关；显式配置优先。启动只握手，不猜测登录；若握手或首次建会话明确收到 ACP `AuthRequired`，提示 CLI 登录并重新检测。
+- **新建路由（2026-11-23 二轮审阅后修订）**：显式 `backend` 优先，其次是固定的 `defaultBackend`；指定目标不可用时明确报错，不自动改派。否则默认按顶层 `default` 配置启动。发现开启且顶层命令识别为 `kiro-cli`（包括指定可执行文件路径）时，仅在宿主查找明确返回找不到该可执行文件的情况下，才从范围内且就绪的 Codex、`agy` 中依次选择。版本未知或超出范围只告警；版本读取、握手、认证失败或临时探测错误都不算找不到命令，不触发改派。此规则不要求 argv、引擎或模型设置与内置配方相同；自定义包装命令或关闭发现时保留原路由。没有合格的回退候选时尝试原命令，保留固定的 ENOENT 指引。自动发现的范围外 CLI 可通过 `allowUnverifiedBackends: true` 后显式选择或固定为默认项，不纳入自动回退。
+- **状态不拦截续聊**：工具注册不随就绪结果增减。已有 `chatId` 的发送、重连和既有角色绑定不查就绪门，按原后端和 D6 处理；仅新建和首次供给角色需要选路。注册表中的 `default` 含义、历史绑定和 D6 的降级条件均不变。单次启动失败只作诊断，不锁住后端，不要求手动复查才能重试。
+- **默认发现（2026-11-23 二轮审阅后修订）**：保留 `discoverBackends: true`，以保留零 YAML 体验。与 [PR #1 首轮审阅第 ⑤ 条](https://github.com/Tureen/dsh-acp-resume/pull/1#issuecomment-7090561573) 不同，二轮审阅接受默认开启的前提是仅在明确找不到配置的 Kiro 可执行文件时才回退。用户可设 `discoverBackends: false` 关闭额外发现和回退，不影响已配置后端。
+- **模式与边界**：修订 D26，保留 `acp-dispatcher` 预设标识（宿主重启后恢复历史需要它）；没有可用的自动候选时返回诊断，不启用 bash 或切到标准模式。`acp_backend_status` 与面板读取同一状态。官方 one-shot 和 `src/run.ts` 按 D11 不动。
