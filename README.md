@@ -44,7 +44,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 ### 只用一个后端
 
-确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。未指定其他默认项且未自定义顶层后端时，新会话按 **Kiro → Codex → Antigravity（`agy`）** 的顺序选择第一个就绪后端。Kiro 就绪时仍优先使用 Kiro；没有可用的 Kiro 时，Codex 或 `agy` 也可自动接入，无需另写 YAML。
+确保 DSH 能找到受支持的 CLI，并按需在 CLI 中登录。未显式选择后端或固定默认项时，DSH 找得到配置的 Kiro 就按原配置使用它；版本告警、探测失败或需要登录都不会触发改派。**只有 DSH 确认找不到配置的 Kiro 可执行文件时**，才依次尝试选择就绪的 Codex、Antigravity（`agy`），无需另写 YAML。
 
 自动接入的 Antigravity 使用 `agy acp` 和 CLI 的模型设置，不自动批准权限请求。启动时只握手，不创建会话；若首次建会话返回需要认证，请在 `agy` 中登录，再重新检测。要手动覆盖 Antigravity 的路径、模型或权限，可以定义命名后端：
 
@@ -88,7 +88,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 1. 调用 `acp_chat_start` 显式传入 `backend`，优先使用该后端。
 2. 否则使用配置中的 `defaultBackend`；该后端不可用时会报错，不会悄悄换后端。
-3. 否则，仅在发现开启且顶层使用内置 `command: kiro-cli`、`args: [acp]`、`agentEngine: v3`，且没有模型或推理强度覆盖时，才按 Kiro → Codex → `agy` 的顺序选择就绪后端，跳过超出版本范围或未就绪的候选。关闭发现或使用自定义顶层后端时，保留原来的 `default` 路由。
+3. 否则，使用顶层配置的 `default`。开启发现时，只有 DSH 明确找不到顶层配置的 `kiro-cli`（包括指定路径），才依次选择版本在范围内且已就绪的 Codex、`agy`。找得到 Kiro 就按原来的参数与权限尝试连接；连接失败会报错，不改派。找不到 Kiro 且没有合格的候选时，仍尝试原命令，返回找不到命令的指引。关闭发现或使用自定义包装命令时，保留原来的 `default` 路由。
 
 显式配置的后端（包括自定义命令和包装脚本）即使版本未知或超出范围，也会告警并按原配置尝试连接，不保证兼容。对**自动发现**的范围外 CLI，可设 `allowUnverifiedBackends: true`，再通过 `backend` 手动选择，或用 `defaultBackend` 固定它；该开关不会把它加入自动回退顺序。检查结果和单次启动失败不会撤掉工具或阻断旧 `chatId` 的发送与重连；旧会话始终按原绑定续聊。
 

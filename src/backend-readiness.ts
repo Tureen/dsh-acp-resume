@@ -29,7 +29,7 @@ interface ProbeHost {
 
 export interface BackendReadinessOptions {
   readonly candidates: readonly BackendCandidate[]
-  /** Pinned default; never fall back if it fails. Otherwise use built-in priority. */
+  /** Pinned default; when omitted, fall back to Codex or agy only if configured Kiro is missing. */
   readonly preferred?: string
   /** Permit explicit attempts on detected, out-of-range CLI versions, never automatic fallback. */
   readonly allowUnverifiedBackends?: boolean
@@ -76,8 +76,10 @@ function initialRow(candidate: BackendCandidate): BackendStatus {
     ...(candidate.kind == null ? {} : { range: backendSupportRange(candidate.kind) }), compatibility: 'unknown', readiness: 'unverified', reason: 'backend-unready' }
 }
 
-function errorCode(error: unknown): unknown {
-  return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined
+function isExecutableMissing(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const code = Reflect.get(error, 'code')
+  return code === 'ENOENT' || code === 'SUBPROCESS_EXECUTABLE_NOT_FOUND'
 }
 
 export function resultWithin<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -154,14 +156,47 @@ export class BackendReadinessService implements BackendStatusService {
   }
 
   private automaticDefault(): string | undefined {
-    for (const family of [['kiro-v2', 'kiro-v3'], ['codex'], ['agy']] as const) {
-      const candidates = this.options.candidates.filter(candidate => family.some(kind => candidate.kind === kind))
+    const primary = this.rows.find(row => row.id === 'default')
+    if (primary?.reason !== 'missing-executable') return primary?.id
+    return this.missingKiroFallback() ?? primary.id
+  }
+
+  private missingKiroFallback(): string | undefined {
+    for (const kind of ['codex', 'agy'] as const) {
+      const candidates = this.options.candidates.filter(candidate => candidate.kind === kind)
       const isVerified = ({ id }: BackendCandidate): boolean => this.rows.some(row => row.id === id && row.readiness === 'ready' && row.compatibility === 'supported')
-      const selected = candidates.find(candidate => candidate.id === 'default' && isVerified(candidate))
-        ?? candidates.find(candidate => candidate.configured && isVerified(candidate)) ?? candidates.find(isVerified)
+      const selected = candidates.find(candidate => candidate.configured && isVerified(candidate)) ?? candidates.find(isVerified)
       if (selected !== undefined) return selected.id
     }
     return undefined
+  }
+
+  private async selectUnspecified(signal?: AbortSignal): Promise<string> {
+    const primary = this.options.candidates.find(candidate => candidate.id === 'default' && candidate.configured)
+    if (primary === undefined) throw new Error('acp-resume: configured default backend is missing')
+    const lifetime = signal === undefined ? this.life.signal : AbortSignal.any([this.life.signal, signal])
+    const resolution = AbortSignal.any([lifetime, AbortSignal.timeout(this.timeoutMs)])
+    try {
+      await resultWithin(this.options.host.resolveExecutable(primary.command, primary.env, resolution), resolution)
+      return primary.id
+    } catch (error) {
+      signal?.throwIfAborted()
+      this.life.signal.throwIfAborted()
+      // Permission errors, timeouts and other ambiguous failures are not proof of absence.
+      if (!isExecutableMissing(error)) return primary.id
+    }
+    const fallback = this.missingKiroFallback()
+    if (fallback !== undefined) return fallback
+    if (this.shouldCheck()) {
+      await resultWithin(this.check(), lifetime)
+      return this.automaticDefault() ?? primary.id
+    }
+    // Without a substitute, let start report the normal actionable executable error.
+    return primary.id
+  }
+
+  private shouldCheck(): boolean {
+    return this.active !== undefined || this.checkedAt === undefined || Date.now() - this.checkedAt >= 1_000
   }
 
   private canStart(row: BackendStatus): boolean {
@@ -174,20 +209,18 @@ export class BackendReadinessService implements BackendStatusService {
     signal?.throwIfAborted()
     if (this.life.signal.aborted) throw new Error('acp-resume: backend detection is disposed')
     const explicit = requested ?? this.options.preferred
-    const candidate = explicit === undefined ? undefined : this.options.candidates.find(row => row.id === explicit)
-    if (explicit !== undefined && candidate === undefined) throw new Error(`acp-resume: selected backend is not available: ${explicit}`)
-    if (candidate?.configured === true) return candidate.id
+    if (explicit === undefined) return this.selectUnspecified(signal)
+    const candidate = this.options.candidates.find(row => row.id === explicit)
+    if (candidate === undefined) throw new Error(`acp-resume: selected backend is not available: ${explicit}`)
+    if (candidate.configured) return candidate.id
     const pick = (): string => {
-      const id = explicit ?? this.automaticDefault()
-      const row = this.rows.find(item => item.id === id)
-      if (row?.readiness === 'ready') return row.id
-      if (row !== undefined) throw new Error(`acp-resume: cannot dispatch: ${describeBackendStatus(row)}`)
-      throw new Error(`acp-resume: cannot dispatch${explicit === undefined ? '' : ': selected backend is not available'}. ${describeBackendSnapshot(this.snapshot())}`)
+      const row = this.rows.find(item => item.id === explicit)!
+      if (row.readiness === 'ready') return row.id
+      throw new Error(`acp-resume: cannot dispatch: ${describeBackendStatus(row)}`)
     }
-    const selected = explicit ?? this.automaticDefault()
-    const ready = this.rows.some(row => row.id === selected && row.readiness === 'ready')
-    // Retries are bounded and single-flight; the cached explicit choice is never silently replaced.
-    if (!ready && (this.active !== undefined || this.checkedAt === undefined || Date.now() - this.checkedAt >= 1_000)) {
+    const ready = this.rows.some(row => row.id === explicit && row.readiness === 'ready')
+    // Retries are bounded and single-flight; the explicit choice is never silently replaced.
+    if (!ready && this.shouldCheck()) {
       const check = this.check()
       return (signal === undefined ? check : resultWithin(check, signal)).then(pick)
     }
@@ -230,8 +263,7 @@ export class BackendReadinessService implements BackendStatusService {
     try {
       executable = await resultWithin(this.options.host.resolveExecutable(candidate.command, candidate.env, signal), signal)
     } catch (error) {
-      const code = errorCode(error)
-      const missing = code === 'ENOENT' || code === 'SUBPROCESS_EXECUTABLE_NOT_FOUND'
+      const missing = isExecutableMissing(error)
       return { ...row, compatibility: missing ? 'not-found' : 'unknown', readiness: 'unavailable', reason: missing ? 'missing-executable' : 'version-unreadable' }
     }
     if (candidate.kind === undefined) {

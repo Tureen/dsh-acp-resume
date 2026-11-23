@@ -16,7 +16,7 @@
 > - 正确方式:用 npm 包名 `dsh plugin --profile <name> add dsh-acp-resume`,或从 Discover 市场安装。
 > - 确需离线安装时，可用 `npm pack dsh-acp-resume` 下载 tgz 后 `dsh plugin --profile <name> add <tgz 路径>` 本地安装;不推荐，这样装的插件没有更新按钮。
 
-安装后重启 DSH。默认开启后端发现；在右侧栏 **ACP 会话** 展开 **后端状态**，可查看各 CLI 的版本和就绪情况。升级、登录或更换默认模型后，可直接点同一行的 **重新检测后端**；不需要重启，也不会删除会话、退出登录或修改配置。使用内置配置时，新会话按 Kiro → Codex → Antigravity（`agy`）的顺序选择就绪后端；Codex 和 Antigravity 均可零配置接入，按需在 CLI 中登录。可用 `discoverBackends: false` 关闭额外发现。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
+安装后重启 DSH。默认开启后端发现；在右侧栏 **ACP 会话** 展开 **后端状态**，可查看各 CLI 的版本和就绪情况。升级、登录或更换默认模型后，可直接点同一行的 **重新检测后端**；不需要重启，也不会删除会话、退出登录或修改配置。未显式选择后端或固定默认项时，能找到配置的 Kiro 就仍用 Kiro；版本、握手或登录问题不会改派。只有 DSH 确认找不到该 Kiro 可执行文件，才依次选择就绪的 Codex、Antigravity（`agy`），这两个后端均可零配置接入。可用 `discoverBackends: false` 关闭额外发现。见[支持的 CLI 版本](backend-compatibility.md)和 [README](../README.md)。
 
 ## 会话工具与面板
 
@@ -106,7 +106,7 @@
 
 ## 已知限制
 
-- 内置后端的自动选择受[发布的版本范围](backend-compatibility.md)和就绪状态限制；通用 ACP 后端仍需按其协议能力自行验证。
+- 自动回退的候选受[发布的版本范围](backend-compatibility.md)和就绪状态限制；已配置后端的版本检测只作诊断。通用 ACP 后端仍需按其协议能力自行验证。
 - `acp_chat_steer` 在 kiro 上使用专属的 `_session/steer` 扩展，在 Codex 上使用原生 `turn/steer`。其他 agent 未实现时会明确报错。
 - 持久会话依赖远端 agent 支持 `session/load`。会话丢失或连续失败时，插件会新开会话并提示重新提供必要上下文。
 

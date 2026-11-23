@@ -44,7 +44,7 @@ With `discoverBackends` on by default, the plugin checks CLIs on DSH’s `PATH` 
 
 ### Use a single backend
 
-Make sure DSH can find a supported CLI, and sign in through the CLI as needed. With the bundled settings and no override, new chats use the first ready backend in this order: **Kiro → Codex → Antigravity (`agy`)**. Kiro still takes priority when ready. Codex and Antigravity can be discovered automatically without Kiro or YAML.
+Make sure DSH can find a supported CLI, and sign in through the CLI as needed. Without an explicit selection or pinned default, DSH uses the configured Kiro whenever it can find the executable. A version warning, failed check, or sign-in requirement does not cause a switch. **Only when DSH confirms that the configured Kiro executable is missing** does it pick the first ready backend in order: Codex, then Antigravity (`agy`). No extra YAML is required.
 
 Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and denies permission requests. Startup only performs a handshake; if opening a chat requests authentication, sign in through `agy`, then recheck. To override Antigravity’s path, model, or permissions, configure a named backend:
 
@@ -88,7 +88,7 @@ To keep kiro as the default and offer Codex as an alternative, use the following
 
 1. A `backend` explicitly passed to `acp_chat_start` takes precedence.
 2. Otherwise, use the configured `defaultBackend`. If unavailable, return an error instead of switching backends.
-3. Otherwise, with discovery enabled, the bundled top-level `command: kiro-cli`, `args: [acp]`, and `agentEngine: v3`, with no model or effort override, use Kiro → Codex → `agy` priority. Automatic selection skips out-of-range or unready candidates. A custom top-level backend, or discovery being disabled, retains the legacy `default` route.
+3. Otherwise, use the configured top-level `default`. With discovery enabled, fall back only if DSH confirms that the configured `kiro-cli` executable cannot be found, including when a path is specified. Pick a ready Codex or, failing that, a ready `agy`, both within the published version ranges. If Kiro is found, keep its configured arguments and permissions; report connection failures without switching. If Kiro is missing and neither fallback qualifies, try the original command so the user still gets the command-not-found guidance. Custom wrapper commands and configurations with discovery disabled retain the legacy `default` route.
 
 An explicitly configured backend, including a custom command or wrapper, can still be tried when its version is unknown or out of range. The plugin warns but does not guarantee compatibility. For an **auto-discovered** CLI outside the range, set `allowUnverifiedBackends: true` and choose it with `backend` or pin it with `defaultBackend`; it will not become an automatic fallback. Check results and one-off start failures do not remove tools or block sends and reconnects to existing chat IDs, which retain their original backend.
 

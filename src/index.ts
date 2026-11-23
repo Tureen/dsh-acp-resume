@@ -415,11 +415,9 @@ export function apply(ctx: Context, config: Config): void {
   // on the first tools arrival, so a host without a tools service touches no registry file.
   let pool: AcpSessionPool | undefined
   let usage: UsageService | undefined
-  // Only the stock Kiro recipe adopts priority routing. Custom legacy commands remain pinned.
-  const automaticPriority = resolved.discoverBackends && resolved.command === 'kiro-cli'
-    && resolved.args.length === 1 && resolved.args[0] === 'acp'
-    && resolved.agentEngine === 'v3' && resolved.model === undefined && resolved.effort === undefined
-  const preferred = resolved.defaultBackend ?? (automaticPriority ? undefined : DEFAULT_BACKEND)
+  // A configured Kiro command remains the default unless DSH cannot resolve it.
+  const allowMissingKiroFallback = resolved.discoverBackends && commandKind(resolved.command) === 'kiro-cli'
+  const preferred = resolved.defaultBackend ?? (allowMissingKiroFallback ? undefined : DEFAULT_BACKEND)
   const readiness = new BackendReadinessService({
     candidates: readinessCandidates(backends, resolved), preferred,
     allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: ctx.subprocess,
@@ -452,7 +450,7 @@ export function apply(ctx: Context, config: Config): void {
     const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) } } : undefined
     const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
-      false, preferred, automaticPriority && preferred === undefined)
+      false, preferred, allowMissingKiroFallback && preferred === undefined)
     for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix)]) {
       scope.effect(() => scope.tools.register(tool))
     }

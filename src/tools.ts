@@ -455,7 +455,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
         backend: { type: 'string', ...(exposeBackend && defaultBackend === undefined ? { required: true as const } : {}), description: exposeBackend && defaultBackend === undefined
           ? `Select a ready backend explicitly: ${backends.map(backend => backend.name).join(', ')}`
           : automaticPriority
-            ? `Optional backend name; omit for Kiro → Codex → Antigravity priority. Candidate names: ${backends.map(backend => backend.name).join(', ')}`
+            ? `Optional backend name. Omit to use configured Kiro; only if its executable is missing does the plugin try ready Codex, then Antigravity. Candidate names: ${backends.map(backend => backend.name).join(', ')}`
             : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
       },
       output: {

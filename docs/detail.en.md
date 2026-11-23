@@ -16,7 +16,7 @@ This feature is off by default; set `workflow: true` in the plugin config. Write
 > - Install by npm package name with `dsh plugin --profile <name> add dsh-acp-resume`, or from the Discover market.
 > - If you must install offline, download the tgz with `npm pack dsh-acp-resume`, then install it locally with `dsh plugin --profile <name> add <tgz path>`. This is not recommended: a plugin installed that way has no update button.
 
-Restart DSH after installation. Backend discovery is on by default. Open **Right sidebar → ACP chats** and expand **Backend status** to see CLI versions and readiness. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without restarting. This does not delete chats, sign you out, or change settings. With the bundled configuration, new chats use the first ready backend in Kiro → Codex → Antigravity (`agy`) order. Codex and Antigravity can work without YAML; sign in through the CLI as needed. Set `discoverBackends: false` to turn off additional discovery. See the [version ranges](backend-compatibility.md) and [README](../README.en.md).
+Restart DSH after installation. Backend discovery is on by default. Open **Right sidebar → ACP chats** and expand **Backend status** to see CLI versions and readiness. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without restarting. This does not delete chats, sign you out, or change settings. Without an explicit selection or pinned default, new chats keep using the configured Kiro whenever DSH can find it. Version warnings, handshake failures, and sign-in failures do not cause a switch. Only when DSH confirms that the configured Kiro executable is missing does it select a ready Codex or, failing that, Antigravity (`agy`), without requiring YAML. Set `discoverBackends: false` to turn off additional discovery. See the [version ranges](backend-compatibility.md) and [README](../README.en.md).
 
 ## Chat tools and panel
 
@@ -106,7 +106,7 @@ See the [README](../README.en.md#acp-dispatcher-mode) for the full comparison an
 
 ## Known limitations
 
-- Automatic selection of built-in backends depends on the [published version ranges](backend-compatibility.md) and readiness checks. Verify generic ACP backends against their own protocol capabilities.
+- Automatic fallbacks depend on the [published version ranges](backend-compatibility.md) and readiness checks. Version checks are advisory for configured backends. Verify generic ACP backends against their own protocol capabilities.
 - `acp_chat_steer` uses kiro's private `_session/steer` extension, and Codex's native `turn/steer`. Other agents report a clear error when they do not implement it.
 - Persistent chats need the remote agent to support `session/load`. When a session is lost or repeatedly fails, the plugin starts a fresh chat and tells the model to restate the needed context.
 
