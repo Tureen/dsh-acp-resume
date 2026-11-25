@@ -61,9 +61,9 @@ templates:
 
 /** What the plugin sends as the reviewer's seeding (D32): the team context, a blank line, then the user's seeding verbatim. */
 const REVIEWER_CONTEXT = 'You are the team role "reviewer" in this workspace\'s ACP team.\n'
-  + 'Your teammates (reached through the dispatcher; workers do not talk to each other directly):\n'
+  + 'Your teammates (reached through the agent that dispatches you; workers do not talk to each other directly):\n'
   + '- scout\n'
-  + 'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.\n\n'
+  + 'When you need something from a teammate, state the request explicitly in your answer; the agent that dispatches you relays it.\n\n'
 
 function makePool(env: Record<string, string> = {}, registryPath?: string): { pool: AcpSessionPool; registryPath: string; warnings: string[] } {
   const path = registryPath ?? join(tempDir('acp-resume-team-reg-'), 'registry.json')
@@ -158,10 +158,10 @@ describe('team context (D32)', () => {
   it('names the role, lists every other role with its summary (name only without one), and ends with the relay rule', () => {
     expect(teamContext('调研员', roles)).toBe([
       'You are the team role "调研员" in this workspace\'s ACP team.',
-      'Your teammates (reached through the dispatcher; workers do not talk to each other directly):',
+      'Your teammates (reached through the agent that dispatches you; workers do not talk to each other directly):',
       '- 审核员: Checks the findings.',
       '- 报告员',
-      'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.',
+      'When you need something from a teammate, state the request explicitly in your answer; the agent that dispatches you relays it.',
     ].join('\n'))
     expect(teamContext('报告员', roles)).toContain('- 调研员: Finds facts with file paths.\n- 审核员: Checks the findings.')
     expect(teamContext('报告员', roles)).not.toContain('- 报告员')
@@ -170,7 +170,7 @@ describe('team context (D32)', () => {
   it('drops the teammates lines for a one-role team, and keeps the user seeding verbatim after a blank line', () => {
     const [solo] = parseTeamConfig('roles:\n  - name: solo\n    seeding: "  原文\\n第二行  "\n', '/ws').roles as [Parameters<typeof seedingWithTeam>[0]]
     expect(seedingWithTeam(solo, [solo])).toBe('You are the team role "solo" in this workspace\'s ACP team.\n'
-      + 'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.\n\n  原文\n第二行  ')
+      + 'When you need something from a teammate, state the request explicitly in your answer; the agent that dispatches you relays it.\n\n  原文\n第二行  ')
   })
 })
 
@@ -293,7 +293,7 @@ describe('AcpSessionPool roles (D27)', () => {
     expect(pool.listRoster('session-a')).toEqual([])
     rmSync(crash)
     expect(() => { pool.assertRoleSendable('ghost', ctx(root)) }).toThrow(/unknown role ghost; roles defined in .*: reviewer, scout/)
-    expect(() => { pool.assertRoleSendable('reviewer', ctx(tempDir('acp-resume-team-empty-'))) }).toThrow(/unknown role reviewer: no workspace team config \(\.agents\/acp-team\.yml\) found from /)
+    expect(() => { pool.assertRoleSendable('reviewer', ctx(tempDir('acp-resume-team-empty-'))) }).toThrow(/unknown role reviewer: no workspace team config \(\.agents\/acp-team\.yml\) found from .*; pass chatId instead; roles need an \.agents\/acp-team\.yml in the workspace$/)
     const running = pool.sendByRole('reviewer', 'p', ctx(root))
     await expect(pool.sendByRole('reviewer', 'p2', ctx(root))).rejects.toThrow(/role reviewer is still being set up/)
     expect(() => { pool.assertRoleSendable('reviewer', ctx(root)) }).toThrow(/still being set up/)
@@ -339,7 +339,7 @@ describe('acp_team_list (D32)', () => {
       process.chdir(previous)
     }
     const empty = tempDir('acp-resume-team-none-')
-    expect(await run(teamListTool(pool, { workspaceDirFor: () => empty }), 'session-a')).toBe(`no workspace team config (.agents/acp-team.yml) found from ${empty}`)
+    expect(await run(teamListTool(pool, { workspaceDirFor: () => empty }), 'session-a')).toBe(`no workspace team config (.agents/acp-team.yml) found from ${empty}; pass chatId instead; roles need an .agents/acp-team.yml in the workspace`)
     const bad = workspace('roles:\n  - name: a\n    seed: x\n')
     expect(await run(teamListTool(pool, { workspaceDirFor: () => bad }), 'session-a')).toMatch(/^workspace config error: .*roles\[0\] has unknown field seed/)
   })
@@ -348,12 +348,12 @@ describe('acp_team_list (D32)', () => {
 describe('chat tools with roles (D27)', () => {
   type Definition = Parameters<ToolsRegistryFace['register']>[0]
 
-  function mount(root: string, withRoles = true) {
+  function mount(root: string, withRoles = true, templates?: boolean) {
     const tools = new Map<string, Definition>()
     const { pool } = makePool()
     const fakeCtx = { effect: (fn: () => () => void) => { fn() } }
     registerChatTools(fakeCtx as unknown as Context, { register: (d) => { tools.set(d.name, d); return () => {} } }, pool, 'acp_chat_', undefined,
-      withRoles ? { workspaceDirFor: () => root } : undefined)
+      withRoles ? { workspaceDirFor: () => root, ...(templates === undefined ? {} : { templates }) } : undefined)
     /** `agentId: null` makes a headless call (no calling session). */
     const call = async (name: string, args: Record<string, unknown>, agentId: string | null = 'session-a'): Promise<{ text: string }> =>
       await (tools.get(`acp_chat_${name}`) as Definition).execute(args, { signal: new AbortController().signal, ...(agentId === null ? {} : { agent: { id: agentId } }) } as unknown as ToolRunContext) as { text: string }
@@ -380,6 +380,12 @@ describe('chat tools with roles (D27)', () => {
   it('ends the list with the workspace roles and templates, and adds nothing without a team file', async () => {
     const { call } = mount(workspace())
     expect((await call('list', {})).text).toBe('no persistent chats\nworkspace roles: reviewer, scout; templates: double-review(target)')
+    // D33: with the workflow tool off (Config workflow: false) the line names roles only, and so does the description.
+    const rolesOnly = mount(workspace(), true, false)
+    expect((await rolesOnly.call('list', {})).text).toBe('no persistent chats\nworkspace roles: reviewer, scout')
+    expect(rolesOnly.tools.get('acp_chat_list')?.description).toMatch(/names the workspace roles defined in/)
+    expect(rolesOnly.tools.get('acp_chat_list')?.description).not.toMatch(/templates/)
+    expect(mount(workspace()).tools.get('acp_chat_list')?.description).toMatch(/names the workspace roles and templates \(with their params\) defined in/)
     const bare = mount(tempDir('acp-resume-team-bare-'))
     expect((await bare.call('list', {})).text).toBe('no persistent chats')
     expect((await mount(workspace(), false).call('list', {})).text).toBe('no persistent chats')
@@ -393,7 +399,7 @@ describe('chat tools with roles (D27)', () => {
     await expect(call('close', { role: 'reviewer' })).rejects.toThrow(/role reviewer has no chat in this session/)
   })
 
-  it('keeps the pre-D27 send and close schemas when the workflow feature is off', () => {
+  it('keeps the pre-D27 send and close schemas when the roles feature is off', () => {
     const on = mount(workspace()).tools
     const off = mount(workspace(), false).tools
     type Schema = { properties: Record<string, unknown>; required: string[] }

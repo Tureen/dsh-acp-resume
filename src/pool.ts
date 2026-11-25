@@ -1040,10 +1040,10 @@ export class AcpSessionPool {
     const read = readTeamConfig(context.workspaceDir)
     if (read.kind === 'ok') return read.config
     if (read.kind === 'none') {
-      throw new Error(`acp-resume: unknown ${what}: no workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}`)
+      throw new Error(`acp-resume: unknown ${what}: no workspace team config (${TEAM_CONFIG_FILE}) found from ${context.workspaceDir}; pass chatId instead; roles need an ${TEAM_CONFIG_FILE} in the workspace`)
     }
     this.opts.onWarn?.(`acp-resume: workspace team config ${read.path} is not usable (${read.error})`)
-    throw new Error(`acp-resume: cannot resolve ${what}: workspace team config ${read.path} is invalid: ${read.error}`)
+    throw new Error(`acp-resume: cannot resolve ${what}: workspace team config ${read.path} is invalid: ${read.error}; fix the file, or pass chatId instead`)
   }
 
   /** The workspace template `name` seen from the caller's working directory; throws a model-facing reason when there is none. */

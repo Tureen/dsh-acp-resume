@@ -143,10 +143,10 @@ export function teamContext(role: string, roles: readonly RoleBlueprint[]): stri
   return [
     `You are the team role "${role}" in this workspace's ACP team.`,
     ...(others.length === 0 ? [] : [
-      'Your teammates (reached through the dispatcher; workers do not talk to each other directly):',
+      'Your teammates (reached through the agent that dispatches you; workers do not talk to each other directly):',
       ...others.map(r => r.summary === undefined ? `- ${r.name}` : `- ${r.name}: ${r.summary}`),
     ]),
-    'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.',
+    'When you need something from a teammate, state the request explicitly in your answer; the agent that dispatches you relays it.',
   ].join('\n')
 }
 
@@ -157,15 +157,18 @@ export function seedingWithTeam(blueprint: RoleBlueprint & { readonly seeding: s
 
 /**
  * One line naming what the workspace offers, for `acp_chat_list`:
- * `workspace roles: a, b; templates: t1(p1, p2), t2()`, or
- * `workspace config error: <reason>`; undefined when there is no team file.
+ * `workspace roles: a, b`, plus `; templates: t1(p1, p2), t2()` when the
+ * workflow tool is on (D33), or `workspace config error: <reason>`;
+ * undefined when there is no team file.
+ * @param templates - whether to name the templates (Config `workflow`).
  */
-export function describeTeamConfig(read: TeamConfigRead): string | undefined {
+export function describeTeamConfig(read: TeamConfigRead, templates: boolean): string | undefined {
   if (read.kind === 'none') return undefined
   if (read.kind === 'invalid') return `workspace config error: ${read.path}: ${read.error}`
   const roles = read.config.roles.map(r => r.name).join(', ') || '(none)'
-  const templates = read.config.templates.map(t => `${t.name}(${t.params.join(', ')})`).join(', ') || '(none)'
-  return `workspace roles: ${roles}; templates: ${templates}`
+  if (!templates) return `workspace roles: ${roles}`
+  const named = read.config.templates.map(t => `${t.name}(${t.params.join(', ')})`).join(', ') || '(none)'
+  return `workspace roles: ${roles}; templates: ${named}`
 }
 
 /**

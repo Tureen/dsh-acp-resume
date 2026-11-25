@@ -210,7 +210,7 @@ function targetOf(args: { readonly chatId?: string | undefined; readonly role?: 
   const role = args.role === undefined || args.role === '' ? undefined : args.role
   if (chatId !== undefined && role !== undefined) throw new Error('pass either chatId or role, not both')
   if (role !== undefined) {
-    if (roles === undefined) throw new Error('role is not available: the workflow feature is off')
+    if (roles === undefined) throw new Error('role is not available: the roles feature is off (Config roles: false); pass chatId instead')
     if (agent === undefined) throw new Error('role needs a calling DSH session (rosters are per session); pass chatId instead')
     return { kind: 'role', role, context: { ownerSessionId: agent.id, workspaceDir: roles.workspaceDirFor(agent) } }
   }
@@ -218,11 +218,23 @@ function targetOf(args: { readonly chatId?: string | undefined; readonly role?: 
   return { kind: 'chat', chatId }
 }
 
-const ROLE_PARAMETER = {
-  type: 'string',
-  description: 'A role defined in the workspace .agents/acp-team.yml, instead of chatId. The first reference in this session '
-    + 'creates the role\'s chat from its blueprint (and sends its seeding message); later references reuse that chat.',
-} as const
+/** The team list tool's name for a chat tool prefix (`acp_team_list` by default). */
+function teamListName(toolPrefix: string): string {
+  return `${toolPrefix.replace(/chat_$/, '')}team_list`
+}
+
+/** Appended to every `role` parameter description: roles exist only with a workspace team file (D33). */
+function roleScope(toolPrefix: string): string {
+  return ` Only when the workspace defines roles (see ${teamListName(toolPrefix)}).`
+}
+
+function roleParameter(toolPrefix: string) {
+  return {
+    type: 'string',
+    description: 'A role defined in the workspace .agents/acp-team.yml, instead of chatId. The first reference in this session '
+      + 'creates the role\'s chat from its blueprint (and sends its seeding message); later references reuse that chat.' + roleScope(toolPrefix),
+  } as const
+}
 
 /** Send parameters; with roles, `chatId` becomes optional and `role` is added (exactly one of them per call). */
 function sendParameters(toolPrefix: string, roles: RoleSupport | undefined) {
@@ -236,7 +248,7 @@ function sendParameters(toolPrefix: string, roles: RoleSupport | undefined) {
   }
   return {
     chatId: { type: 'string', description: `The chatId returned by ${toolPrefix}start; omit when passing role.` },
-    role: ROLE_PARAMETER,
+    role: roleParameter(toolPrefix),
     message,
   } as const
 }
@@ -259,7 +271,7 @@ function steerParameters(toolPrefix: string, roles: RoleSupport | undefined): St
   }
   return {
     chatId: { type: 'string', description: `The chatId of a chat with a turn in flight (from ${toolPrefix}start); omit when passing role.` },
-    role: { type: 'string', description: 'A workspace role of this session whose turn is in flight, instead of chatId.' },
+    role: { type: 'string', description: 'A workspace role of this session whose turn is in flight, instead of chatId.' + roleScope(toolPrefix) },
     message,
   }
 }
@@ -272,12 +284,12 @@ type SteerParameters = {
 }
 
 /** Close parameters; with roles, `chatId` becomes optional and `role` is added (exactly one of them per call). */
-function closeParameters(roles: RoleSupport | undefined): CloseParameters {
+function closeParameters(toolPrefix: string, roles: RoleSupport | undefined): CloseParameters {
   const purge = { type: 'boolean', description: 'Also delete the local chat record (default false: keep it for reconnect).' } as const
   if (roles === undefined) return { chatId: { type: 'string', required: true, description: 'The chatId to release.' }, purge } as unknown as CloseParameters
   return {
     chatId: { type: 'string', description: 'The chatId to release; omit when passing role.' },
-    role: { type: 'string', description: 'A workspace role of this session to release and unbind, instead of chatId.' },
+    role: { type: 'string', description: 'A workspace role of this session to release and unbind, instead of chatId.' + roleScope(toolPrefix) },
     purge,
   }
 }
@@ -494,7 +506,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
     description: `List persistent ACP chats created by the current DSH session: ${roles === undefined ? '' : 'role (for chats set up for a workspace role), '}chatId, label (if any), backend, state `
       + '(running with elapsed time, idle with a live process, or released), remote session id, last activity, '
       + `and working directory. Released chats reconnect on their next ${toolPrefix}send.`
-      + (roles === undefined ? '' : ' A last line names the workspace roles and templates (with their params) defined in .agents/acp-team.yml, or the reason that file is invalid.'),
+      + (roles === undefined ? '' : ` A last line names the workspace roles${roles.templates === false ? '' : ' and templates (with their params)'} defined in .agents/acp-team.yml, or the reason that file is invalid.`),
     parameters: {},
     output: {
       schema: {
@@ -520,7 +532,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
         ? 'no persistent chats'
         : chats.map(chat => describeChat(chat, now, roles === undefined ? undefined : pool.roleOf(chat.chatId, ownerSessionId))).join('\n')
       // D27: name what the workspace offers, so the model need not guess role and template names.
-      const workspace = roles === undefined || exec.agent === undefined ? undefined : describeTeamConfig(readTeamConfig(roles.workspaceDirFor(exec.agent)))
+      const workspace = roles === undefined || exec.agent === undefined ? undefined : describeTeamConfig(readTeamConfig(roles.workspaceDirFor(exec.agent)), roles.templates !== false)
       return { text: workspace === undefined ? rows : `${rows}\n${workspace}` }
     },
   })
@@ -534,7 +546,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       + '(the remote session record, if any, lives in the external agent\'s own store — e.g. kiro-cli chat --list-sessions / --delete-session).'
       + (roles === undefined ? '' : ' Passing role instead of chatId also unbinds the role in this session, so its next reference sets up a new chat '
         + 'from the current workspace blueprint (use it after the blueprint changed).'),
-    parameters: closeParameters(roles),
+    parameters: closeParameters(toolPrefix, roles),
     output: {
       schema: {
         type: 'object',
@@ -773,12 +785,12 @@ export function chatWorkflowTool(
  * unknown (rosters are per session), so every state is `unknown`. The name
  * follows the tool prefix as `acp_backend_status` does (`acp_team_list` by default).
  * @param pool - roster and in-flight state.
- * @param roles - workspace access; the tool exists only with the workflow feature on.
+ * @param roles - workspace access; the tool exists only with the roles feature on (Config roles, D33).
  * @param toolPrefix - the chat tools' prefix.
  */
 export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefix = 'acp_chat_'): ToolDefinitionOf {
   return defineTool({
-    name: `${toolPrefix.replace(/chat_$/, '')}team_list`,
+    name: teamListName(toolPrefix),
     description: 'List the workspace ACP team from .agents/acp-team.yml, read-only: one line per role with its summary and whether it can take work now '
       + '(not provisioned: its chat is set up on first use; idle: send to it; running: it has a turn in flight, so steer it or wait for its completion notice). '
       + 'Use it before choosing a role. Workers do not talk to each other directly: when one needs another\'s result, put it in your dispatch message.',
@@ -793,9 +805,9 @@ export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefi
       const agent = exec.agent
       const dir = agent === undefined ? process.cwd() : roles.workspaceDirFor(agent)
       const read = readTeamConfig(dir)
-      if (read.kind === 'none') return { text: `no workspace team config (.agents/acp-team.yml) found from ${dir}` }
+      if (read.kind === 'none') return { text: `no workspace team config (.agents/acp-team.yml) found from ${dir}; pass chatId instead; roles need an .agents/acp-team.yml in the workspace` }
       if (read.kind === 'invalid') return { text: `workspace config error: ${read.path}: ${read.error}` }
-      if (read.config.roles.length === 0) return { text: `no roles defined in ${read.path}` }
+      if (read.config.roles.length === 0) return { text: `no roles defined in ${read.path}; define roles there, or pass chatId instead` }
       const roster = agent === undefined ? undefined : pool.listRoster(agent.id)
       const now = Date.now()
       const state = (role: string): string => {
