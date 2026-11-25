@@ -52,7 +52,7 @@ import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import type { DispatchRoute } from './backend-readiness.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
-import { readTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
+import { readTeamConfig, seedingWithTeam, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
 import { WorkflowLog, type WorkflowRunRecord, type WorkflowStepSummary } from './workflow-log.js'
 import type { WorkflowObserver, WorkflowResult } from './workflow-engine.js'
 import type { MemberOutcome } from './workflow-record.js'
@@ -996,8 +996,8 @@ export class AcpSessionPool {
   private async provision(role: string, context: RoleCallContext, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
     const key = roleKey(role, context.ownerSessionId)
     if (this.provisioning.has(key)) throw roleInFlight(role)
-    const blueprint = this.blueprintFor(role, context)
-    const pending = this.provisionFromBlueprint(blueprint, context.ownerSessionId, signal, permissionResolver)
+    const { blueprint, roles } = this.roleAndTeam(role, context)
+    const pending = this.provisionFromBlueprint(blueprint, roles, context.ownerSessionId, signal, permissionResolver)
     this.provisioning.set(key, pending)
     try {
       return await pending
@@ -1006,7 +1006,7 @@ export class AcpSessionPool {
     }
   }
 
-  private async provisionFromBlueprint(blueprint: RoleBlueprint, ownerSessionId: string, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
+  private async provisionFromBlueprint(blueprint: RoleBlueprint, roles: readonly RoleBlueprint[], ownerSessionId: string, signal: AbortSignal | undefined, permissionResolver: PermissionRequestResolver | undefined): Promise<PooledChatInfo> {
     const chat = await this.start(blueprint.cwd, signal, { label: blueprint.name, ownerSessionId, backend: blueprint.backend })
     const discard = async (reason: string, cause?: unknown): Promise<never> => {
       // A half-built role is not kept: the next reference provisions it again.
@@ -1016,7 +1016,9 @@ export class AcpSessionPool {
     if (blueprint.seeding !== undefined) {
       let seeded: PoolSendResult
       try {
-        seeded = await this.send(chat.chatId, blueprint.seeding, signal, permissionResolver === undefined ? {} : { permissionResolver })
+        // D32: the team context goes in front of the user's seeding. A role without
+        // seeding keeps D27's zero seeding turns: no turn is added just for the context.
+        seeded = await this.send(chat.chatId, seedingWithTeam({ ...blueprint, seeding: blueprint.seeding }, roles), signal, permissionResolver === undefined ? {} : { permissionResolver })
       } catch (error: unknown) {
         return discard(`its seeding turn failed: ${toError(error).message}`, error)
       }
@@ -1057,6 +1059,11 @@ export class AcpSessionPool {
 
   /** The workspace blueprint of `role`, on a configured backend; throws a model-facing reason otherwise. */
   private blueprintFor(role: string, context: RoleCallContext): RoleBlueprint {
+    return this.roleAndTeam(role, context).blueprint
+  }
+
+  /** The role's blueprint plus every role of its workspace (for the D32 team context), from one read of the team file. */
+  private roleAndTeam(role: string, context: RoleCallContext): { blueprint: RoleBlueprint; roles: readonly RoleBlueprint[] } {
     const config = this.teamConfig(`role ${role}`, context)
     const blueprint = config.roles.find(r => r.name === role)
     if (blueprint === undefined) {
@@ -1065,7 +1072,7 @@ export class AcpSessionPool {
     }
     const backend = blueprint.backend ?? DEFAULT_BACKEND
     if (!this.backends.has(backend)) throw new Error(`acp-resume: role ${role} names unknown backend ${backend}`)
-    return blueprint
+    return { blueprint, roles: config.roles }
   }
 
   /**

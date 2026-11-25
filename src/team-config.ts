@@ -133,6 +133,29 @@ export function readTeamConfig(start: string): TeamConfigRead {
 }
 
 /**
+ * The team context the plugin prepends to a role's seeding (D32): who the
+ * role is, its teammates (every OTHER role, with its summary when set), and
+ * how to ask them for something. English on purpose: system text, whatever
+ * the user's language. A one-role team leaves out the teammates lines.
+ */
+export function teamContext(role: string, roles: readonly RoleBlueprint[]): string {
+  const others = roles.filter(r => r.name !== role)
+  return [
+    `You are the team role "${role}" in this workspace's ACP team.`,
+    ...(others.length === 0 ? [] : [
+      'Your teammates (reached through the dispatcher; workers do not talk to each other directly):',
+      ...others.map(r => r.summary === undefined ? `- ${r.name}` : `- ${r.name}: ${r.summary}`),
+    ]),
+    'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.',
+  ].join('\n')
+}
+
+/** A role's seeding message with the team context in front; the user's seeding follows verbatim after a blank line. */
+export function seedingWithTeam(blueprint: RoleBlueprint & { readonly seeding: string }, roles: readonly RoleBlueprint[]): string {
+  return `${teamContext(blueprint.name, roles)}\n\n${blueprint.seeding}`
+}
+
+/**
  * One line naming what the workspace offers, for `acp_chat_list`:
  * `workspace roles: a, b; templates: t1(p1, p2), t2()`, or
  * `workspace config error: <reason>`; undefined when there is no team file.

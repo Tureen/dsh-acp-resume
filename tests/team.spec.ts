@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { AcpSessionPool, type RoleCallContext } from '../src/pool.ts'
 import { Roster, type RosterTable } from '../src/roster.ts'
-import { findTeamConfig, loadTeamConfig, parseTeamConfig } from '../src/team-config.ts'
+import { findTeamConfig, loadTeamConfig, parseTeamConfig, seedingWithTeam, teamContext } from '../src/team-config.ts'
 import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
@@ -58,6 +58,12 @@ templates:
       - id: merge
         merge: { mode: return_to_model }
 `
+
+/** What the plugin sends as the reviewer's seeding (D32): the team context, a blank line, then the user's seeding verbatim. */
+const REVIEWER_CONTEXT = 'You are the team role "reviewer" in this workspace\'s ACP team.\n'
+  + 'Your teammates (reached through the dispatcher; workers do not talk to each other directly):\n'
+  + '- scout\n'
+  + 'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.\n\n'
 
 function makePool(env: Record<string, string> = {}, registryPath?: string): { pool: AcpSessionPool; registryPath: string; warnings: string[] } {
   const path = registryPath ?? join(tempDir('acp-resume-team-reg-'), 'registry.json')
@@ -146,6 +152,28 @@ describe('team config (D27)', () => {
   })
 })
 
+describe('team context (D32)', () => {
+  const roles = parseTeamConfig('roles:\n  - name: 调研员\n    summary: Finds facts with file paths.\n    seeding: 你是调研员。\n  - name: 审核员\n    summary: Checks the findings.\n  - name: 报告员\n', '/ws').roles
+
+  it('names the role, lists every other role with its summary (name only without one), and ends with the relay rule', () => {
+    expect(teamContext('调研员', roles)).toBe([
+      'You are the team role "调研员" in this workspace\'s ACP team.',
+      'Your teammates (reached through the dispatcher; workers do not talk to each other directly):',
+      '- 审核员: Checks the findings.',
+      '- 报告员',
+      'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.',
+    ].join('\n'))
+    expect(teamContext('报告员', roles)).toContain('- 调研员: Finds facts with file paths.\n- 审核员: Checks the findings.')
+    expect(teamContext('报告员', roles)).not.toContain('- 报告员')
+  })
+
+  it('drops the teammates lines for a one-role team, and keeps the user seeding verbatim after a blank line', () => {
+    const [solo] = parseTeamConfig('roles:\n  - name: solo\n    seeding: "  原文\\n第二行  "\n', '/ws').roles as [Parameters<typeof seedingWithTeam>[0]]
+    expect(seedingWithTeam(solo, [solo])).toBe('You are the team role "solo" in this workspace\'s ACP team.\n'
+      + 'When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.\n\n  原文\n第二行  ')
+  })
+})
+
 describe('Roster (D27)', () => {
   function memoryRoster(initial: unknown = undefined): { roster: Roster; table: () => RosterTable } {
     let stored: unknown = initial
@@ -184,7 +212,7 @@ describe('AcpSessionPool roles (D27)', () => {
     const { pool, registryPath } = makePool()
     const first = await pool.sendByRole('reviewer', '第一问', ctx(root))
     // MOCK_REMEMBER echoes the previous prompt: the seeding turn ran before the message.
-    expect(first).toMatchObject({ role: 'reviewer', provisioned: true, stopReason: 'completed', output: 'remember:你是审阅者' })
+    expect(first).toMatchObject({ role: 'reviewer', provisioned: true, stopReason: 'completed', output: `remember:${REVIEWER_CONTEXT}你是审阅者` })
     expect(pool.chatInfo(first.chatId)).toMatchObject({ label: 'reviewer', ownerSessionId: 'session-a', cwd: root, turnCount: 2 })
     const second = await pool.sendByRole('reviewer', '第二问', ctx(root))
     expect(second).toMatchObject({ chatId: first.chatId, provisioned: false, output: 'remember:第一问' })
@@ -219,7 +247,7 @@ describe('AcpSessionPool roles (D27)', () => {
     // The released chat's record survives (purge false); only the binding is gone.
     expect(pool.knows(first.chatId)).toBe(true)
     const rebuilt = await pool.sendByRole('reviewer', 'q3', ctx(root))
-    expect(rebuilt).toMatchObject({ provisioned: true, output: 'remember:你是新审阅者' })
+    expect(rebuilt).toMatchObject({ provisioned: true, output: `remember:${REVIEWER_CONTEXT}你是新审阅者` })
     expect(rebuilt.chatId).not.toBe(first.chatId)
   })
 
@@ -235,6 +263,15 @@ describe('AcpSessionPool roles (D27)', () => {
     expect(second.chatId).not.toBe(first.chatId)
     expect(pool.chatInfo(first.chatId)?.active).toBe(false)
     expect(pool.listRoster('session-a').map(e => e.chatId)).toEqual([second.chatId])
+  })
+
+  it('adds no seeding turn for a role without seeding (D27 unchanged by D32): its first turn is the message itself', async () => {
+    const root = workspace()
+    const { pool } = makePool()
+    const sent = await pool.sendByRole('scout', '只这一条', ctx(root))
+    // MOCK_REMEMBER answers with the previous prompt: none means this was the chat's first turn.
+    expect(sent).toMatchObject({ provisioned: true, output: 'remember:none' })
+    expect(pool.chatInfo(sent.chatId)?.turnCount).toBe(1)
   })
 
   it('purging a role chat drops its roster entry', async () => {
@@ -283,7 +320,7 @@ describe('chat tools with roles (D27)', () => {
   it('sends by role, lists the role column, and closes by role', async () => {
     const root = workspace()
     const { pool, call } = mount(root)
-    expect((await call('send', { role: 'reviewer', message: 'hi' })).text).toBe('remember:你是审阅者')
+    expect((await call('send', { role: 'reviewer', message: 'hi' })).text).toBe(`remember:${REVIEWER_CONTEXT}你是审阅者`)
     const chatId = pool.resolveRole('reviewer', 'session-a') as string
     expect((await call('list', {})).text).toMatch(new RegExp(`^role reviewer \\| ${chatId} \\| label "reviewer" \\| backend default \\| `))
     expect((await call('close', { role: 'reviewer' })).text).toBe(`role reviewer released (chat ${chatId}) and unbound; its next reference sets up a new chat from the workspace blueprint`)
