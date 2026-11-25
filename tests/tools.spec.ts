@@ -340,6 +340,53 @@ describe('apply (plugin wiring)', () => {
     }
   })
 
+  // D33: one row per switch combination: tools registered, whether send takes role, and the list's last line.
+  const SURFACES = [
+    { config: {}, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
+    { config: { roles: true, workflow: false }, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
+    { config: { roles: true, workflow: true }, tools: ['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer; templates: solo(target)' },
+    { config: { roles: false, workflow: false }, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'], role: false, lastLine: 'no persistent chats' },
+  ] as const
+  for (const surface of SURFACES) {
+    it(`registers the tool surface for ${JSON.stringify(surface.config)} (D33)`, async () => {
+      const ctx = await host()
+      const workspace = tempDir('acp-resume-surface-ws-')
+      mkdirSync(join(workspace, '.agents'))
+      writeFileSync(join(workspace, '.agents', 'acp-team.yml'), 'roles:\n  - name: reviewer\ntemplates:\n  - name: solo\n    params: [target]\n    steps:\n      - id: s\n        parallel: [reviewer]\n        prompt: "{target}"\n')
+      const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
+      const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', ...surface.config })
+      cleanups.push(() => fiber.dispose())
+      await until(() => stubTools(ctx).registered.size === surface.tools.length, 'tool registration')
+      const tools = stubTools(ctx).registered
+      expect([...tools.keys()].sort()).toEqual(surface.tools)
+      const properties = (tools.get('kc_send')?.parameters as { properties: Record<string, unknown> }).properties
+      expect('role' in properties).toBe(surface.role)
+      const run = { ...exec(), agent: { id: 'surface-owner', session: { header: { cwd: workspace } } } } as unknown as ToolRunContext
+      const listed = await tools.get('kc_list')!.execute({}, run) as { text: string }
+      expect(listed.text.split('\n').at(-1)).toBe(surface.lastLine)
+    })
+  }
+
+  it('rejects workflow: true with roles: false at load (D33)', async () => {
+    const ctx = await host()
+    const loading = ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(tempDir('acp-resume-apply-'), 'registry.json'), roles: false, workflow: true })
+    await expect(Promise.resolve(loading)).rejects.toThrow('acp-resume: workflow: true requires roles: true; the workflow engine dispatches to roles. Set roles: true, or set workflow: false')
+  })
+
+  it('points a role send and the team list at chatId when the workspace has no team file (D33)', async () => {
+    const ctx = await host()
+    const workspace = tempDir('acp-resume-noteam-ws-')
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(tempDir('acp-resume-apply-'), 'registry.json') })
+    cleanups.push(() => fiber.dispose())
+    await until(() => stubTools(ctx).registered.size === 8, 'tool registration')
+    const tools = stubTools(ctx).registered
+    const run = { ...exec(), agent: { id: 'noteam-owner', session: { header: { cwd: workspace } } } } as unknown as ToolRunContext
+    await expect(tools.get('acp_chat_send')!.execute({ role: 'reviewer', message: 'm' }, run)).rejects.toThrow(/pass chatId instead/)
+    expect((await tools.get('acp_team_list')!.execute({}, run) as { text: string }).text).toContain('pass chatId instead')
+    expect((tools.get('acp_chat_send')?.parameters as { properties: { role: { description: string } } }).properties.role.description)
+      .toContain('Only when the workspace defines roles (see acp_team_list).')
+  })
+
   it('forwards ask through the registered persistent-chat tool', async () => {
     const ctx = await host()
     await ctx.plugin(UserQuestionService)
