@@ -193,6 +193,12 @@ export interface RoleSupport {
   readonly workspaceDirFor: (agent: Agent) => string
   /** Non-fatal conditions, e.g. a workflow progress record that could not be written. */
   readonly onWarn?: (message: string) => void
+  /**
+   * Workflow templates are on (D33 `workflow`): `acp_workflow` exists and
+   * `<prefix>list` names the templates. The plugin always sets it; absent
+   * (direct callers such as tests) means on.
+   */
+  readonly templates?: boolean
 }
 
 /** A tool call's target: a chat by id, or a role in the calling session's roster. */
@@ -861,7 +867,7 @@ export function registerChatTools(
   permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
 ): void {
   const [start, list, close, steer] = chatStaticTools(pool, toolPrefix, [], roles)
-  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs, permissionResolverFor), teamListTool(pool, roles, toolPrefix)]
+  const workflow = roles === undefined ? [] : [...(roles.templates === false ? [] : [chatWorkflowTool(pool, roles, jobs, permissionResolverFor)]), teamListTool(pool, roles, toolPrefix)]
   for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, permissionResolverFor, roles), list, close, steer, ...workflow]) {
     ctx.effect(() => tools.register(definition))
   }

@@ -328,8 +328,8 @@ describe('apply (plugin wiring)', () => {
     expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'])
   })
 
-  it('registers the five chat tools and backend status, without workflow by default', async () => {
-    for (const extra of [{}, { workflow: false }]) {
+  it('registers exactly the pre-D27 tool surface with roles: false and workflow: false (D33)', async () => {
+    for (const extra of [{ roles: false, workflow: false }, { roles: false }]) {
       const ctx = await host()
       const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
       const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', ...extra })
@@ -413,7 +413,8 @@ describe('apply (plugin wiring)', () => {
       registryPath: join(dir, 'registry.json'),
       env: { MOCK_FLUSH_ON_EOF: flushed },
     })
-    await until(() => stubTools(ctx).registered.size === 7, 'tool registration')
+    // Default config (D33): the five chat tools, backend status and usage, and the team list.
+    await until(() => stubTools(ctx).registered.size === 8, 'tool registration')
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
     const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
     const { chatId } = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string }

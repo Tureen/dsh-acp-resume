@@ -162,11 +162,18 @@ export interface Config {
    */
   allowChatJobWait?: boolean
   /**
-   * Workspace roles and workflows (D27). Off by default: set true to enable
-   * them. When on, the chat tools accept a `role` from the workspace
-   * `.agents/acp-team.yml` instead of a chatId, a role's chat is set up on
-   * first reference, and `acp_workflow` is registered. Off keeps every tool
-   * definition exactly as before D27 and reads no workspace team file.
+   * Workspace roles (D27, D32; split out by D33). On by default: the chat
+   * tools accept a `role` from the workspace `.agents/acp-team.yml` instead of
+   * a chatId, a role's chat is set up on first reference with the team context
+   * in front of its seeding, `<prefix>team_list` is registered, and
+   * `<prefix>list` ends with the workspace roles. With `roles: false` and
+   * `workflow: false` every tool definition is exactly as before D27.
+   */
+  roles?: boolean
+  /**
+   * Workflow templates (D27, D33). Off by default; set true to register
+   * `acp_workflow` and list the workspace templates in `<prefix>list`.
+   * Requires `roles: true`: the workflow engine dispatches to roles.
    */
   workflow?: boolean
 }
@@ -206,6 +213,7 @@ export const Config: z<Config> = z.object({
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
   allowChatJobWait: z.boolean().default(false),
+  roles: z.boolean().default(true),
   workflow: z.boolean().default(false),
 })
 
@@ -399,6 +407,10 @@ export function apply(ctx: Context, config: Config): void {
   if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
     throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
   }
+  // D33: the workflow engine sends to roles; without roles it has nothing to run on.
+  if (resolved.workflow && !resolved.roles) {
+    throw new Error('acp-resume: workflow: true requires roles: true; the workflow engine dispatches to roles. Set roles: true, or set workflow: false')
+  }
   // The connection applies each selected backend's policy. Always supplying the
   // bridge lets a named `permission: ask` backend ask while the default rejects.
   const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined =>
@@ -447,11 +459,14 @@ export function apply(ctx: Context, config: Config): void {
     })
     // Registered in the tools scope: the tools are revoked when the service goes away.
     const chatPool = pool
-    const roles: RoleSupport | undefined = resolved.workflow ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) } } : undefined
+    // D33: `roles` decides role support; `workflow` only adds templates (acp_workflow) on top of it.
+    const roles: RoleSupport | undefined = resolved.roles
+      ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) }, templates: resolved.workflow }
+      : undefined
     const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
       false, preferred, allowMissingKiroFallback && preferred === undefined)
-    // D32: the team list exists with the workflow feature; with it off the tool surface is unchanged.
+    // D32/D33: the team list exists with roles; with roles and workflow off the tool surface is unchanged.
     for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
       scope.effect(() => scope.tools.register(tool))
     }
@@ -468,7 +483,7 @@ export function apply(ctx: Context, config: Config): void {
       unregister?.()
       registeredJobs = jobs
       const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles),
-        ...(roles === undefined ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
+        ...(roles === undefined || !resolved.workflow ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
       const revokers = definitions.map(tool => scope.tools.register(tool))
       unregister = () => { for (const revoke of revokers) revoke() }
     }
