@@ -469,6 +469,8 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - 修订(2026-11-25,随 D32 加团队协作纪律):persona 在既有纪律之后、汇总判断框架之前加三句：选角色前查 `acp_team_list` 看各角色的 summary 与当前状态;一个 worker 的结果改变另一个该做的事时立即转达(对方在跑用 `acp_chat_steer`,否则 `acp_chat_send`);转达写自足的摘要并注明来源角色，不写「见 A 的结果」。
 - 修订(2026-11-25,D33):删掉「选角色前查 `acp_team_list`」一句(`roles: false` 时该工具不存在，同一指引已写在 `acp_team_list` 自身描述里),两句转达纪律保留;「把后端 ID 传给 `acp_chat_start`」改为「用户点名后端且启动工具有 backend 参数时传它的 ID」,单后端版 start 没有这个参数。
 
+修订（2026-11-25，D36）：从静态 persona 移出剩余两句角色转述要求。选用 Dispatcher 且本步骤可使用团队工具时，由全局插件按 D36 注入。共享目录的写入边界和汇总规则仍写在 persona 中，按 chatId 派工同样适用。
+
 ## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施：配置层、花名册、自动供给、工具 role 参数;同日第二轮实施 `acp_workflow` 引擎与 steer 的 role)
 
 ### 动机
@@ -751,7 +753,9 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
   - **文案**:固定一句 `<被替换后端的命令名> was not found; this chat uses <后端名>`;落到沙箱为只读的 Codex 后端(自动发现的 Codex 恒为只读)时末尾加 ` (read-only)`;`agy` 不加。
   - **出现在哪**:`start` 结果的 `fallbackNotice` 字段(只在创建它的那次结果里，不落注册表、不进列表);多后端版 `acp_chat_start` 的输出结构加可选 `fallbackNotice`,回执末尾追加 `. <这句话>`;单后端版工具定义与回执不变(关闭发现时没有改派)。以 role 首次供给落到改派后端时，同步 `acp_chat_send` 的回答首行加 `[<这句话>]`,后台 job 的输出首行同样写入(job 回执在供给前已返回，所以不在回执里)。
   - **「找不到」的实际范围**:判据是宿主 `dsh-subprocess-local` 的 `resolveExecutable` 返回 `SUBPROCESS_EXECUTABLE_NOT_FOUND`(或 `ENOENT`)。宿主在逐个候选路径 `stat` + `access(X_OK)` 时吞掉具体原因，把「文件无执行权限」「同名是目录」「PATH 中的目录无读权限」都报成找不到，所以这三种情况**会**改派;本条早先「权限错误不算找不到」的说法与实际行为相反，以此为准。不改行为:无执行权限的 Kiro 本来也起不来。查找超时与其他解析错误仍不算找不到。
-  - **暂不标注**:`acp_workflow` 的结果 JSON 不标注其中角色是否被改派(角色的首次供给发生在引擎内部);`acp_chat_list` 也不标注。用户可在列表或面板里看到该会话的后端名。
+  - **工作流成员回执（2026-11-25 修订）**：角色首次供给时，池在发送前通过 `onBackendFallback` 提供创建回执。工作流按步骤和角色记录当次通知，在最终 JSON 的对应成员回答或错误前加同一句 `[<改派说明>]`；角色合并步骤记在该步的合并结果上。其他成员和后续步骤引用的原始回答保持原样。直接调用和后台 job 共用这一输出。
+  - **会话列表**：`acp_chat_list` 继续显示实际后端，不标注改派。创建原因没有落盘，注册表投影无法区分用户点名和自动改派。
+  - **候选工具描述与额度（2026-11-25 修订）**：多后端启动工具列出候选，指引先查后端状态。仅当 Config 的命名后端中显式配置了 `protocol: codex` 时注册 `acp_backend_usage`；自动发现的 Codex 即使就绪也不会增加工具。手动重新检测只更新状态。
 
 ## D32 Dispatcher 的团队上下文：角色摘要、播种前置上下文与团队列表(2026-11-25)
 
@@ -868,3 +872,11 @@ rc.5 的浏览器 Loader 按客户端模块名建行，没有将宿主插件 Con
 - 列表正文、详情正文、详情标题共用连接级能力源。首次订阅按需读取，等待能力结果时不挂载业务订阅；后续消费者共享结果。面板重开或手动刷新可重新确认。`connection/reset` 使前代能力响应失效，有订阅时立即重读。
 - `chatToolsEnabled: false` 保留页签与资源地址，正文显示关闭态，可手动刷新；标题使用地址中的短会话号。开启后恢复现有数据源，空状态使用宿主给出的创建工具名。`workflowEnabled: false` 使用 D29 的只读历史模式。
 - 仅 `gateway/invocation-unavailable` 选择旧协议模式：列表、详情和工作流沿用原读取方式，空状态用通用创建提示。连接错误、权限拒绝和无效响应显示读取失败，可重试。旧客户端忽略新方法，原有 Remote 的入参与返回结构保持兼容。
+
+## D36 团队提示词按 preset 与本步工具可用性动态注入（2026-11-25，目标 0.5.0）
+
+Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何转述由宿主插件提供英文 section `acp-resume:team`，位于 `DEPLOYMENT_PERSONA_PREFIX + 1`。正文要求：当结果改变另一角色的下一步行动时，转发自足的摘要，注明来源角色、发现和接收方该做什么。
+
+- 持久会话工具启用且 `roles: true` 时，在已有 tools 子作用域内通过 `ctx.inject(['systemPrompt', 'agentPresets'], …)` 注册。提示服务或 preset 注册表缺席时，一次性 provider 和原有工具仍可加载。
+- 组装时从 `agentPresets.composedPreset(agent.ctx)` 读实际绑定，默认挂载也适用。仅对 `acp-dispatcher` 继续检查 `tools.get(teamListName(toolPrefix), scope, toolSet)`。无 Agent、其他 preset、团队工具缺席或未获本步准入都返回空字符串。section 正文不写工具名，适用于自定义前缀。
+- `workflow` 只控制模板。roles 开启时，两种合法 workflow 设置使用相同的转述规则；roles 关闭仍可按 chatId 派工。`roles: false, workflow: true` 沿用 D33 的配置校验。完整覆盖 preset 配置的用户如保留旧 persona 中的手写转述句，需要自行移除重复文字。

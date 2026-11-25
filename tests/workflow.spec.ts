@@ -104,6 +104,23 @@ describe('workflow engine (D27)', () => {
     expect(pool.prompts.get('merger')).toContain('#### reviewerB\nreviewerB saw: B reviews src/pool.ts')
   })
 
+  it('annotates only rerouted members in the workflow JSON, leaving subsequent worker prompts unchanged', async () => {
+    const notice = 'kiro-cli was not found; this chat uses codex (read-only)'
+    const base = fakePool()
+    const pool: WorkflowPool = {
+      sendByRole(role, message, context, signal, hooks) {
+        if (role !== 'reviewerB') hooks?.onBackendFallback?.(notice)
+        return base.sendByRole(role, message, context, signal, hooks)
+      },
+    }
+    const result = await runWorkflow(pool, template('dual_review'), { target: 'T', dimensions: 'D' }, CONTEXT, new AbortController().signal)
+    expect(result.steps).toEqual([
+      { id: 'independent', results: { reviewerA: `[${notice}]\nreviewerA saw: review T on D`, reviewerB: 'reviewerB saw: B reviews T' } },
+      { id: 'merge', result: `[${notice}]\nmerger saw: merge reviews of T` },
+    ])
+    expect(base.prompts.get('merger')).not.toContain(notice)
+  })
+
   it('injects an earlier step through {stepId}, appends the previous step when none is named, and ends on return_to_model', async () => {
     const pool = fakePool()
     const result = await runWorkflow(pool, template('chain'), { target: 'X' }, CONTEXT, new AbortController().signal)
@@ -211,7 +228,7 @@ describe('acp_workflow and steer by role (D27)', () => {
     const description = mount().tools.get('acp_workflow')?.description ?? ''
     expect(description).toContain('A role that failed shows as {error} inside its step; the run only fails when every role in a step failed.')
     expect(description).toContain('Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset.')
-    expect(description).toContain('Progress is shown to the user as a workflow card.')
+    expect(description).toContain('Progress is shown to the user as a workflow card when you call it directly.')
     // Synchronous variant: no job, so no job_output (D33).
     expect(description).not.toContain('job_output')
     expect(description).not.toMatch(/tool-workflow\/|session_event_/)

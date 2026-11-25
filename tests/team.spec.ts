@@ -334,7 +334,7 @@ describe('acp_team_list (D32)', () => {
     const previous = process.cwd()
     process.chdir(root)
     try {
-      expect(await run(teamListTool(pool, { workspaceDirFor: () => root }), null)).toBe('scout · Maps the code. · unknown\nreviewer · Reviews diffs. · unknown\nwriter · (no summary) · unknown')
+      expect(await run(teamListTool(pool, { workspaceDirFor: () => root }), null)).toBe('scout · Maps the code. · unknown\nreviewer · Reviews diffs. · unknown\nwriter · (no summary) · unknown\nroles need a calling session')
     } finally {
       process.chdir(previous)
     }

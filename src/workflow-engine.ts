@@ -16,7 +16,7 @@
  * @module dsh-acp-resume/workflow-engine
  */
 
-import type { PoolSendResult, RoleCallContext } from './pool.js'
+import type { PoolSendHooks, PoolSendResult, RoleCallContext } from './pool.js'
 import type { Step, Template } from './team-config.js'
 import type { MemberOutcome } from './workflow-record.js'
 import type { PermissionRequestResolver } from './permission-request.js'
@@ -35,7 +35,7 @@ export interface WorkflowObserver {
 
 /** What the engine needs from the pool. */
 export interface WorkflowPool {
-  sendByRole(role: string, message: string, context: RoleCallContext, signal?: AbortSignal, hooks?: { readonly permissionResolver?: PermissionRequestResolver }): Promise<PoolSendResult>
+  sendByRole(role: string, message: string, context: RoleCallContext, signal?: AbortSignal, hooks?: PoolSendHooks): Promise<PoolSendResult>
 }
 
 /** One role's outcome in a parallel step: its answer, or why it has none. */
@@ -145,21 +145,42 @@ export async function runWorkflow(
   observer: WorkflowObserver = {},
   permissionResolver?: PermissionRequestResolver,
 ): Promise<WorkflowResult> {
-  const send = observedSend(pool, observer, context, signal, permissionResolver)
   const done: StepResult[] = []
-  const stop = (status: 'failed' | 'aborted', error: string): WorkflowResult => ({ template: template.name, status, error, steps: done })
+  const reported: StepResult[] = []
+  const stop = (status: 'failed' | 'aborted', error: string): WorkflowResult => ({ template: template.name, status, error, steps: reported })
   for (const step of template.steps) {
     if (signal.aborted) return stop('aborted', 'the workflow was cancelled')
     contained(() => observer.stepStart?.(step.id))
+    const notices = new Map<string, string>()
+    const send = observedSend(pool, observer, context, signal, permissionResolver, notices)
     const outcome = await runStep(send, step, params, done)
-    if (signal.aborted) {
-      if (outcome.result !== undefined) done.push(outcome.result)
-      return stop('aborted', 'the workflow was cancelled')
-    }
     if (outcome.result !== undefined) done.push(outcome.result)
+    const report = memberReport(step, outcome, notices)
+    if (report !== undefined) reported.push(report)
+    if (signal.aborted) return stop('aborted', 'the workflow was cancelled')
     if (outcome.fatal !== undefined) return stop('failed', `step ${step.id}: ${outcome.fatal}`)
   }
-  return { template: template.name, status: 'completed', steps: done }
+  return { template: template.name, status: 'completed', steps: reported }
+}
+
+/** Add creation receipts only to the caller's JSON. Later workers receive the original answers. */
+function memberReport(step: Step, outcome: { result?: StepResult; fatal?: string }, notices: ReadonlyMap<string, string>): StepResult | undefined {
+  const { result } = outcome
+  if (notices.size === 0) return result
+  if (result && 'results' in result) {
+    const results = { ...result.results }
+    for (const [role, notice] of notices) {
+      const value = results[role]
+      results[role] = typeof value === 'string' ? `[${notice}]\n${value}` : { error: `[${notice}]\n${value.error}` }
+    }
+    return { id: step.id, results }
+  }
+  if ('merge' in step && step.merge.mode === 'role') {
+    const receipt = `[${notices.get(step.merge.role)}]`
+    if (result && 'result' in result) return { id: step.id, result: `${receipt}\n${result.result}` }
+    if (outcome.fatal !== undefined) return { id: step.id, results: { [step.merge.role]: { error: `${receipt}\n${outcome.fatal}` } } }
+  }
+  return result
 }
 
 /** One role send in a given step. */
@@ -176,13 +197,15 @@ function outcomeOf(result: PoolSendResult | undefined, signal: AbortSignal): Mem
 }
 
 /** Wrap each role send in the observer's member start and end. */
-function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: RoleCallContext, signal: AbortSignal, permissionResolver: PermissionRequestResolver | undefined): StepSend {
-  const hooks = permissionResolver === undefined ? {} : { permissionResolver }
+function observedSend(pool: WorkflowPool, observer: WorkflowObserver, context: RoleCallContext, signal: AbortSignal, permissionResolver: PermissionRequestResolver | undefined, notices: Map<string, string>): StepSend {
   return async (role, stepId, prompt) => {
     const seq = contained(() => observer.memberStart?.(role, stepId))
     let result: PoolSendResult | undefined
     try {
-      result = await pool.sendByRole(role, prompt, context, signal, hooks)
+      result = await pool.sendByRole(role, prompt, context, signal, {
+        permissionResolver,
+        onBackendFallback: notice => { notices.set(role, notice) },
+      })
       return result
     } finally {
       if (seq !== undefined) contained(() => { observer.memberEnd?.(seq, outcomeOf(result, signal), result?.chatId) })

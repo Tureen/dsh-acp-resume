@@ -219,7 +219,7 @@ function targetOf(args: { readonly chatId?: string | undefined; readonly role?: 
 }
 
 /** The team list tool's name for a chat tool prefix (`acp_team_list` by default). */
-function teamListName(toolPrefix: string): string {
+export function teamListName(toolPrefix: string): string {
   return `${toolPrefix.replace(/chat_$/, '')}team_list`
 }
 
@@ -337,6 +337,7 @@ export function chatSendTool(
   jobs?: ChatJobsFace,
   permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
   roles?: RoleSupport,
+  allowChatJobWait = false,
 ): ToolDefinitionOf {
   const name = `${toolPrefix}send`
   const parameters = sendParameters(toolPrefix, roles) as unknown as SendParameters
@@ -378,7 +379,7 @@ export function chatSendTool(
     description: `Send one message to a persistent chat started with ${toolPrefix}start. Returns at once with a background job id; `
       + 'the agent\'s answer streams into that job. When the turn finishes you are woken in-session; then read the answer with job_output without wait. '
       + 'Ending your turn while the job runs is correct and counts as collecting it. '
-      + 'job_output with wait on a running turn is refused, and reading again before the notification only returns no new output. '
+      + (allowChatJobWait ? '' : 'job_output with wait on a running turn is refused, and reading again before the notification only returns no new output. ')
       + 'A send to a chat whose previous job is still running is rejected; send again after that job\'s completion notice. '
       + 'Stop it with job_kill. The chat keeps full conversation context; different chats may run in parallel. '
       + 'If the remote session was lost, the answer comes from a fresh session and its first line says so. '
@@ -434,7 +435,7 @@ export interface BackendChoice { readonly name: string; readonly description: st
 export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backends: readonly BackendChoice[] = [], roles?: RoleSupport, exposeBackend = false, defaultBackend?: string, automaticPriority = false): ToolDefinitionOf[] {
   const unknownChat = (chatId: string): Error => unknownChatError(toolPrefix, chatId)
 
-  const backendDescription = ` Available backends:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}`
+  const backendDescription = ` Candidate backends; check the backend status tool for which are ready:\n${backends.map(backend => `${backend.name}: ${backend.description}`).join('\n')}`
   // Keep the legacy single-backend definition literal: D24 promises byte-for-byte
   // compatibility for models that cached the 0.1.20 tool schema.
   const start = backends.length <= 1 && !exposeBackend
@@ -476,7 +477,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
           ? `Select a ready backend explicitly: ${backends.map(backend => backend.name).join(', ')}`
           : automaticPriority
             ? `Optional backend name. Omit to use configured Kiro; only if its executable is missing does the plugin try ready Codex, then Antigravity. Candidate names: ${backends.map(backend => backend.name).join(', ')}`
-            : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
+            : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Candidate names: ${backends.map(backend => backend.name).join(', ')}` },
       },
       output: {
         schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true }, backend: { type: 'string', required: true }, cwd: { type: 'string', required: true }, fallbackNotice: { type: 'string' } } },
@@ -728,7 +729,7 @@ export function chatWorkflowTool(
       + 'Pass the template\'s params; every declared param is required. '
       + 'A role that failed shows as {error} inside its step; the run only fails when every role in a step failed. '
       + 'Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset. '
-      + 'Progress is shown to the user as a workflow card. '
+      + 'Progress is shown to the user as a workflow card when you call it directly. '
       + (jobs === undefined
         ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
         : 'Returns at once with a background job id; the result comes with job_output: you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
@@ -803,11 +804,12 @@ export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefi
     async execute(_args, exec) {
       exec.signal.throwIfAborted()
       const agent = exec.agent
+      const answer = (text: string) => ({ text: agent === undefined ? `${text}\nroles need a calling session` : text })
       const dir = agent === undefined ? process.cwd() : roles.workspaceDirFor(agent)
       const read = readTeamConfig(dir)
-      if (read.kind === 'none') return { text: `no workspace team config (.agents/acp-team.yml) found from ${dir}; pass chatId instead; roles need an .agents/acp-team.yml in the workspace` }
-      if (read.kind === 'invalid') return { text: `workspace config error: ${read.path}: ${read.error}` }
-      if (read.config.roles.length === 0) return { text: `no roles defined in ${read.path}; define roles there, or pass chatId instead` }
+      if (read.kind === 'none') return answer(`no workspace team config (.agents/acp-team.yml) found from ${dir}; pass chatId instead; roles need an .agents/acp-team.yml in the workspace`)
+      if (read.kind === 'invalid') return answer(`workspace config error: ${read.path}: ${read.error}`)
+      if (read.config.roles.length === 0) return answer(`no roles defined in ${read.path}; define roles there, or pass chatId instead`)
       const roster = agent === undefined ? undefined : pool.listRoster(agent.id)
       const now = Date.now()
       const state = (role: string): string => {
@@ -817,7 +819,7 @@ export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefi
         const inFlight = pool.chatInfo(entry.chatId)?.inFlight
         return inFlight === undefined ? 'idle' : `running (${formatElapsed(inFlight.startedAt, now)})`
       }
-      return { text: read.config.roles.map(r => `${r.name} · ${r.summary ?? '(no summary)'} · ${state(r.name)}`).join('\n') }
+      return answer(read.config.roles.map(r => `${r.name} · ${r.summary ?? '(no summary)'} · ${state(r.name)}`).join('\n'))
     },
   })
 }

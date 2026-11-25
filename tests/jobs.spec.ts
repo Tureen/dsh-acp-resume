@@ -389,7 +389,8 @@ describe('apply: the send variant follows ctx.jobs', () => {
     ctx.jobs.attachController('jobs-spec')
     await until(() => /background job id/.test(sendDescription(ctx) ?? ''), 'the job-backed send')
     const tools = (ctx.get('tools') as unknown as StubTools).registered
-    expect([...tools.keys()].sort()).toEqual(['acp_backend_status', 'acp_backend_usage', 'acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_team_list', 'acp_workflow'])
+    expect([...tools.keys()].sort()).toEqual(['acp_backend_status', 'acp_chat_close', 'acp_chat_list', 'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_team_list', 'acp_workflow'])
+    expect(sendDescription(ctx)).toContain('job_output with wait on a running turn is refused')
     // acp_workflow follows the registry like send: job-backed now, inline again below.
     expect(tools.get('acp_workflow')!.description).toMatch(/background job id/)
     expect(tools.get('acp_workflow')!.description).toContain('the result comes with job_output')
@@ -410,9 +411,10 @@ describe('apply: the send variant follows ctx.jobs', () => {
     await ctx.plugin(LocalJobRegistry)
     ctx.jobs.attachController('jobs-spec')
     const registryPath = join(tempDir('acp-resume-jobs-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
+    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, allowChatJobWait: true })
     cleanups.push(() => fiber.dispose())
     await until(() => sendDescription(ctx) !== undefined, 'tool registration')
     expect(sendDescription(ctx)).toMatch(/background job id/)
+    expect(sendDescription(ctx)).not.toContain('is refused')
   })
 })

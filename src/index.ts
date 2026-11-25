@@ -29,8 +29,9 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, teamListTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, teamListName, teamListTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { UsageService } from './usage.js'
+import { registerTeamPrompt } from './team-prompt.js'
 import { AcpResumeInfoService, AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
@@ -501,8 +502,11 @@ export function apply(ctx: Context, config: Config): void {
     for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
       scope.effect(() => scope.tools.register(tool))
     }
+    if (roles !== undefined) {
+      scope.inject(['systemPrompt', 'agentPresets'], promptScope => registerTeamPrompt(promptScope, teamListName(resolved.toolPrefix)))
+    }
     usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
-    if (chatPool.backendList().some(backend => backend.protocol === 'codex')) {
+    if (Object.values(resolved.backends ?? {}).some(backend => backend.protocol === 'codex')) {
       const usageTool = chatUsageTool(usage)
       scope.effect(() => scope.tools.register(usageTool))
     }
@@ -513,7 +517,7 @@ export function apply(ctx: Context, config: Config): void {
       if (unregister !== undefined && registeredJobs === jobs) return
       unregister?.()
       registeredJobs = jobs
-      const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles),
+      const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles, resolved.allowChatJobWait),
         ...(roles === undefined || !resolved.workflow ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
       const revokers = definitions.map(tool => scope.tools.register(tool))
       unregister = () => { for (const revoke of revokers) revoke() }

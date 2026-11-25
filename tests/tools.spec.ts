@@ -342,9 +342,9 @@ describe('apply (plugin wiring)', () => {
     const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', workflow: true })
     cleanups.push(() => fiber.dispose())
-    await until(() => stubTools(ctx).registered.size === 9, 'tool registration')
+    await until(() => stubTools(ctx).registered.has('acp_workflow'), 'tool registration')
     // D32: the team list follows the prefix (kc_ → kc_team_list), as backend status does.
-    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'])
+    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'])
   })
 
   it('registers exactly the pre-D27 tool surface with roles: false and workflow: false (D33)', async () => {
@@ -353,18 +353,18 @@ describe('apply (plugin wiring)', () => {
       const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
       const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', ...extra })
       cleanups.push(() => fiber.dispose())
-      await until(() => stubTools(ctx).registered.size === 7, 'tool registration')
-      expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
+      await until(() => stubTools(ctx).registered.has('kc_send'), 'tool registration')
+      expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
       expect(JSON.stringify(stubTools(ctx).registered.get('kc_send')?.parameters)).not.toContain('role')
     }
   })
 
   // D33: one row per switch combination: tools registered, whether send takes role, and the list's last line.
   const SURFACES = [
-    { config: {}, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
-    { config: { roles: true, workflow: false }, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
-    { config: { roles: true, workflow: true }, tools: ['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer; templates: solo(target)' },
-    { config: { roles: false, workflow: false }, tools: ['acp_backend_usage', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'], role: false, lastLine: 'no persistent chats' },
+    { config: {}, tools: ['kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
+    { config: { roles: true, workflow: false }, tools: ['kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer' },
+    { config: { roles: true, workflow: true }, tools: ['acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'], role: true, lastLine: 'workspace roles: reviewer; templates: solo(target)' },
+    { config: { roles: false, workflow: false }, tools: ['kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'], role: false, lastLine: 'no persistent chats' },
   ] as const
   for (const surface of SURFACES) {
     it(`registers the tool surface for ${JSON.stringify(surface.config)} (D33)`, async () => {
@@ -397,7 +397,7 @@ describe('apply (plugin wiring)', () => {
     const workspace = tempDir('acp-resume-noteam-ws-')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath: join(tempDir('acp-resume-apply-'), 'registry.json') })
     cleanups.push(() => fiber.dispose())
-    await until(() => stubTools(ctx).registered.size === 8, 'tool registration')
+    await until(() => stubTools(ctx).registered.has('acp_chat_send'), 'tool registration')
     const tools = stubTools(ctx).registered
     const run = { ...exec(), agent: { id: 'noteam-owner', session: { header: { cwd: workspace } } } } as unknown as ToolRunContext
     await expect(tools.get('acp_chat_send')!.execute({ role: 'reviewer', message: 'm' }, run)).rejects.toThrow(/pass chatId instead/)
@@ -479,8 +479,8 @@ describe('apply (plugin wiring)', () => {
       registryPath: join(dir, 'registry.json'),
       env: { MOCK_FLUSH_ON_EOF: flushed },
     })
-    // Default config (D33): the five chat tools, backend status and usage, and the team list.
-    await until(() => stubTools(ctx).registered.size === 8, 'tool registration')
+    // Default config (D33): the five chat tools, backend status, and the team list.
+    await until(() => stubTools(ctx).registered.has('acp_chat_send'), 'tool registration')
     const start = stubTools(ctx).registered.get('acp_chat_start') as Definition
     const send = stubTools(ctx).registered.get('acp_chat_send') as Definition
     const { chatId } = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string }
@@ -638,7 +638,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const panel = ctx.get('acpResume')!
     const beforeCheck = new Map(tools)
     expect([...beforeCheck.keys()].sort()).toEqual([
-      'acp_backend_status', 'acp_backend_usage', 'acp_chat_close', 'acp_chat_list',
+      'acp_backend_status', 'acp_chat_close', 'acp_chat_list',
       'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_team_list', 'acp_workflow',
     ])
     await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic backend check', WAIT_MS)
@@ -658,6 +658,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     expect(tools.has('acp_workflow')).toBe(true)
     const start = tools.get('acp_chat_start')!
     expect(start).toBe(beforeCheck.get('acp_chat_start'))
+    expect(start.description).toContain('Candidate backends; check the backend status tool for which are ready')
     expect(start.description).toContain('kiro-cli')
     const chat = await start.execute({ cwd: process.cwd() }, exec()) as { backend: string; chatId: string }
     expect(chat).toMatchObject({ backend: 'codex', cwd: process.cwd() })
@@ -715,6 +716,19 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const kiro = await start.execute(args, exec()) as { chatId: string; backend: string }
     expect(kiro).toMatchObject({ backend: 'default' })
     expect(kiro).not.toHaveProperty('fallbackNotice')
+  }, CASE_TIMEOUT_MS)
+
+  it.skipIf(process.platform === 'win32')('lists the actual backend without attributing a previous fallback to a saved chat', async () => {
+    const fixture = autoFixture()
+    const { ctx } = await mount(fixture.config)
+    const tools = stubTools(ctx).registered
+    const start = await tools.get('acp_chat_start')!.execute({ cwd: process.cwd() }, exec()) as { chatId: string; fallbackNotice?: string }
+    expect(start.fallbackNotice).toContain('kiro-cli was not found')
+    const { text } = await tools.get('acp_chat_list')!.execute({}, exec()) as { text: string }
+    expect(text).toContain(start.chatId)
+    expect(text).toContain('codex')
+    expect(text).not.toContain('kiro-cli was not found')
+    expect(readFileSync(fixture.registryPath, 'utf8')).not.toContain('fallbackNotice')
   }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('does not call a pinned defaultBackend a fallback, even with Kiro missing (D31)', async () => {
