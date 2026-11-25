@@ -255,15 +255,19 @@ describe('acp_workflow and steer by role (D27)', () => {
     writeFileSync(hold, 'held')
     const chatId = pool.resolveRole('reviewerA', 'session-a') as string
     const sending = call('acp_chat_send', { role: 'reviewerA', message: 'long task' })
-    const deadline = Date.now() + 5000
-    while (pool.chatInfo(chatId)?.inFlight === undefined && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+    // A real role process starts and runs a turn before this point; under load that alone can pass 5 s.
+    const deadline = Date.now() + 25_000
+    while (pool.chatInfo(chatId)?.inFlight === undefined) {
+      if (Date.now() > deadline) throw new Error('timed out waiting for the role turn to be in flight')
+      await new Promise(r => setTimeout(r, 10))
+    }
     const steered = await call('acp_chat_steer', { role: 'reviewerA', message: 'also check tests' })
     expect(steered).toMatchObject({ queued: true })
     expect(steered.text).toContain(`chat ${chatId}`)
     rmSync(hold)
     await expect(sending).resolves.toEqual({ text: 'echo:long task' })
     expect(existsSync(steers)).toBe(true)
-  })
+  }, 60_000)
 })
 
 describe('workflow progress records (D27, 2026-11-20)', () => {

@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -28,6 +28,25 @@ import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
+
+/**
+ * Probe budget for the plugin's backend readiness checks in this file. The
+ * product default (3 s per resolve / version / handshake step, D31) is a
+ * runtime choice; here it would race real fixture subprocesses on a loaded
+ * machine. apply() builds the service without a timeoutMs and Config has no
+ * such field, so the test wraps the class: when `ms` is set, a service built
+ * without an explicit timeoutMs gets this one. Unset, behavior is unchanged.
+ */
+const probeTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }))
+vi.mock('../src/backend-readiness.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/backend-readiness.ts')>()
+  class BackendReadinessService extends actual.BackendReadinessService {
+    constructor(options: ConstructorParameters<typeof actual.BackendReadinessService>[0]) {
+      super(probeTimeout.ms === undefined || options.timeoutMs !== undefined ? options : { ...options, timeoutMs: probeTimeout.ms })
+    }
+  }
+  return { ...actual, BackendReadinessService }
+})
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
 const codexMock = fileURLToPath(new URL('./mock-codex-server.ts', import.meta.url))
@@ -478,7 +497,18 @@ describe('apply (plugin wiring)', () => {
   })
 })
 
-describe('Codex backend wiring (D25)', () => {
+// The Codex wiring cases run the real readiness check against fixture CLIs
+// (shell scripts exec'ing node mocks). Under load one handshake can pass 3 s,
+// so they get a wide probe budget, wait bound and case timeout; the assertions
+// are the same. None of the fixtures sleeps or relies on a probe timing out.
+const PROBE_TIMEOUT_MS = 20_000
+const WAIT_MS = 25_000
+const CASE_TIMEOUT_MS = 60_000
+
+describe('Codex backend wiring (D25)', { timeout: CASE_TIMEOUT_MS }, () => {
+  beforeEach(() => { probeTimeout.ms = PROBE_TIMEOUT_MS })
+  afterEach(() => { probeTimeout.ms = undefined })
+
   const codexBackends = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
     codex: { command: process.execPath, args: [codexMock], protocol: 'codex', model: 'mock-model', env: { MOCK_TEXT: 'codex via tool' }, ...extra },
   })
@@ -488,13 +518,13 @@ describe('Codex backend wiring (D25)', () => {
     const registryPath = join(tempDir('acp-resume-codex-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, ...config })
     cleanups.push(() => fiber.dispose())
-    await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration')
+    await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration', WAIT_MS)
     return { ctx, registryPath }
   }
 
   it('registers acp_backend_usage when a Codex backend is configured, even with discovery disabled (D28)', async () => {
     const { ctx } = await mount({ backends: codexBackends(), discoverBackends: false })
-    await until(() => stubTools(ctx).registered.has('acp_backend_usage'), 'usage tool registration')
+    await until(() => stubTools(ctx).registered.has('acp_backend_usage'), 'usage tool registration', WAIT_MS)
     const usage = stubTools(ctx).registered.get('acp_backend_usage') as Definition
     expect(usage.isConcurrencySafe?.({})).toBe(true)
     expect(usage.description).toMatch(/read-only/)
@@ -548,13 +578,13 @@ describe('Codex backend wiring (D25)', () => {
     const first = await host()
     const fiberA = await first.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, backends: codexBackends() })
     cleanups.push(() => fiberA.dispose())
-    await until(() => stubTools(first).registered.has('acp_chat_start'), 'tool registration')
+    await until(() => stubTools(first).registered.has('acp_chat_start'), 'tool registration', WAIT_MS)
     const { chatId } = await (stubTools(first).registered.get('acp_chat_start') as Definition).execute({ cwd: process.cwd(), backend: 'codex' }, exec()) as { chatId: string }
     await fiberA.dispose()
     const second = await host()
     const fiberB = await second.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
     cleanups.push(() => fiberB.dispose())
-    await until(() => stubTools(second).registered.has('acp_chat_send'), 'tool registration')
+    await until(() => stubTools(second).registered.has('acp_chat_send'), 'tool registration', WAIT_MS)
     await expect((stubTools(second).registered.get('acp_chat_send') as Definition).execute({ chatId, message: 'p' }, exec())).rejects.toThrow(/unavailable backend codex|saved session belongs to another agent/)
   })
 
@@ -611,7 +641,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
       'acp_backend_status', 'acp_backend_usage', 'acp_chat_close', 'acp_chat_list',
       'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_team_list', 'acp_workflow',
     ])
-    await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic backend check')
+    await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic backend check', WAIT_MS)
     expect(panel.backends()).toMatchObject({ defaultBackend: 'codex', dispatchEnabled: true, checking: false })
     expect(panel.backends().backends).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'default', compatibility: 'not-found', reason: 'missing-executable' }),
@@ -650,7 +680,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     fixture.writeKiro('3.6.0')
     // A fresh dispatch sees an installation made after the last "missing" result.
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default' })
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('names a kiro-not-found fallback in the start receipt and the first role send, but not an explicit or kiro start (D31)', async () => {
     const ctx = await host()
@@ -661,7 +691,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const fiber = await ctx.plugin(acp, fixture.config)
     cleanups.push(() => fiber.dispose())
     const panel = ctx.get('acpResume')!
-    await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic codex check')
+    await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic codex check', WAIT_MS)
     const tools = stubTools(ctx).registered
     const start = tools.get('acp_chat_start')!
     const args = { cwd: process.cwd() }
@@ -685,7 +715,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const kiro = await start.execute(args, exec()) as { chatId: string; backend: string }
     expect(kiro).toMatchObject({ backend: 'default' })
     expect(kiro).not.toHaveProperty('fallbackNotice')
-  }, 15_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('does not call a pinned defaultBackend a fallback, even with Kiro missing (D31)', async () => {
     const ctx = await host()
@@ -693,13 +723,13 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const fiber = await ctx.plugin(acp, { ...fixture.config, defaultBackend: 'codex' })
     cleanups.push(() => fiber.dispose())
     const panel = ctx.get('acpResume')!
-    await until(() => panel.backends().backends.some(row => row.id === 'codex' && row.readiness === 'ready'), 'automatic codex check')
+    await until(() => panel.backends().backends.some(row => row.id === 'codex' && row.readiness === 'ready'), 'automatic codex check', WAIT_MS)
     const start = stubTools(ctx).registered.get('acp_chat_start')!
     const chat = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string; backend: string }
     expect(chat).toMatchObject({ backend: 'codex' })
     expect(chat).not.toHaveProperty('fallbackNotice')
     expect(start.output.render({ cwd: process.cwd() }, chat)[0]?.text).not.toContain('was not found')
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('auto-discovers agy 1.5.14, reports auth failure on first start, and retries after sign-in', async () => {
     const ctx = await host()
@@ -719,7 +749,7 @@ exec "${process.execPath}" "${mockServer}"
     cleanups.push(() => fiber.dispose())
     const panel = ctx.get('acpResume')!
     const tools = stubTools(ctx).registered
-    await until(() => panel.backends().defaultBackend === 'agy' && !panel.backends().checking, 'automatic agy check')
+    await until(() => panel.backends().defaultBackend === 'agy' && !panel.backends().checking, 'automatic agy check', WAIT_MS)
     expect(panel.backends()).toMatchObject({ defaultBackend: 'agy', dispatchEnabled: true })
     expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'agy', version: '1.5.14', readiness: 'ready', automatic: true, configured: false }))
     expect(existsSync(fixture.registryPath)).toBe(false)
@@ -751,7 +781,7 @@ exec "${process.execPath}" "${mockServer}"
     expect((await panel.checkBackends()).defaultBackend).toBe('default')
     expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'agy', version: '1.6.0', compatibility: 'unverified-version', readiness: 'unverified', reason: 'unsupported-version' }))
     expect(panel.list()).toContainEqual(expect.objectContaining({ chatId: chat.chatId, backend: 'agy' }))
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32').each([true, false])('warns but starts configured Kiro 3.6.0 with ready Codex: %s', async (codexReady) => {
     const ctx = await host()
@@ -776,7 +806,7 @@ exec "${process.execPath}" "${mockServer}"
       expect(readFileSync(fixture.requests, 'utf8')).not.toContain('thread/start')
       expect(await start.execute({ cwd: process.cwd(), backend: 'codex' }, exec())).toMatchObject({ backend: 'codex' })
     }
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32').each([false, true])('tries configured Kiro after inconclusive detection (resolver EIO: %s)', async (resolverError) => {
     const ctx = await host()
@@ -801,7 +831,7 @@ exec "${process.execPath}" "${mockServer}"
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default' })
     expect(existsSync(fixture.touchedKiro)).toBe(true)
     expect(readFileSync(fixture.requests, 'utf8')).not.toContain('thread/start')
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('tries configured Kiro again after a transient startup probe failure without manual recheck', async () => {
     const ctx = await host()
@@ -810,14 +840,14 @@ exec "${process.execPath}" "${mockServer}"
     const fiber = await ctx.plugin(acp, fixture.config)
     cleanups.push(() => fiber.dispose())
     const panel = ctx.get('acpResume')!
-    await until(() => !panel.backends().checking && panel.backends().backends.some(row => row.id === 'default' && row.reason === 'handshake-failed'), 'failed Kiro startup probe')
+    await until(() => !panel.backends().checking && panel.backends().backends.some(row => row.id === 'default' && row.reason === 'handshake-failed'), 'failed Kiro startup probe', WAIT_MS)
     expect(existsSync(fixture.failedKiro)).toBe(true)
     expect(panel.backends().defaultBackend).toBe('default')
     expect(panel.backends().backends).toContainEqual(expect.objectContaining({ id: 'codex', readiness: 'ready' }))
     const start = stubTools(ctx).registered.get('acp_chat_start')!
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default' })
     expect(readFileSync(fixture.requests, 'utf8')).not.toContain('thread/start')
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('reports configured Kiro authentication errors without switching to a ready alternative', async () => {
     const ctx = await host()
@@ -835,7 +865,7 @@ exec "${process.execPath}" "${mockServer}"
     expect(readFileSync(fixture.requests, 'utf8')).not.toContain('thread/start')
     fixture.writeKiro('3.5.1')
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default' })
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('provisions roles on configured Kiro and honors explicit and missing-Kiro backend choices', async () => {
     const ctx = await host()
@@ -859,7 +889,7 @@ exec "${process.execPath}" "${mockServer}"
       expect.objectContaining({ label: 'explicit', backend: 'codex' }),
       expect.objectContaining({ label: 'fallback', backend: 'codex' }),
     ]))
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('keeps a preferred auto backend pinned when unverified, without falling back to Kiro', async () => {
     const ctx = await host()
@@ -877,7 +907,7 @@ exec "${process.execPath}" "${mockServer}"
     await expect(start.execute({ cwd: process.cwd() }, exec())).rejects.toThrow(/outside the verified range/)
     expect(existsSync(fixture.registryPath)).toBe(false)
     expect(await start.execute({ cwd: process.cwd(), backend: 'default' }, exec())).toMatchObject({ backend: 'default' })
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('allows an explicit unverified auto backend only with opt-in, not as a startup fallback', async () => {
     const ctx = await host()
@@ -891,7 +921,7 @@ exec "${process.execPath}" "${mockServer}"
     const start = stubTools(ctx).registered.get('acp_chat_start')!
     await expect(start.execute({ cwd: process.cwd() }, exec())).rejects.toThrow(COMMAND_NOT_FOUND_GUIDANCE)
     expect(await start.execute({ cwd: process.cwd(), backend: 'codex' }, exec())).toMatchObject({ backend: 'codex' })
-  }, 10_000)
+  }, CASE_TIMEOUT_MS)
 
   it.skipIf(process.platform === 'win32')('reports Codex signed out automatically and rechecks after the user signs in', async () => {
     const ctx = await host()
@@ -900,7 +930,7 @@ exec "${process.execPath}" "${mockServer}"
     const fiber = await ctx.plugin(acp, fixture.config)
     cleanups.push(() => fiber.dispose())
     const panel = ctx.get('acpResume')!
-    await until(() => panel.backends().backends.some(row => row.reason === 'login-required'), 'automatic login check')
+    await until(() => panel.backends().backends.some(row => row.reason === 'login-required'), 'automatic login check', WAIT_MS)
     const tools = stubTools(ctx).registered
     const start = tools.get('acp_chat_start')!
     expect(start).toBeDefined()
