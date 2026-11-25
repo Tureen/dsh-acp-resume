@@ -203,7 +203,11 @@ export class BackendReadinessService implements BackendStatusService {
     } catch (error) {
       signal?.throwIfAborted()
       this.life.signal.throwIfAborted()
-      // Permission errors, timeouts and other ambiguous failures are not proof of absence.
+      // Only a not-found result counts as absence; timeouts and other resolver errors keep the default.
+      // Note that the host (dsh-subprocess-local resolveExecutable) reports a file without execute
+      // permission, a directory of that name, and an unreadable PATH directory all as
+      // SUBPROCESS_EXECUTABLE_NOT_FOUND, so those cases DO fall back: the error class is flattened
+      // before it reaches us. An unexecutable kiro-cli could not start anyway.
       if (!isExecutableMissing(error)) return keep(primary.id)
     }
     const fallback = this.missingKiroFallback()

@@ -631,16 +631,21 @@ describe('dsh-subagent-acp', () => {
     // assert the sentinel never appears.
     const tmp = mkdtempSync(join(tmpdir(), 'acp-preabort-'))
     const sentinel = join(tmp, 'spawned')
+    // An absolute path: tests/helpers/cli-path-setup.ts empties PATH, so a bare
+    // `touch` could never run and the sentinel check below would pass vacuously.
+    // Off POSIX there is no fixed touch path; that check is skipped there.
+    const touch = process.platform === 'win32' ? undefined : '/usr/bin/touch'
+    if (touch !== undefined) expect(existsSync(touch)).toBe(true)
     try {
       const controller = new AbortController()
       controller.abort()
       await expect(startAcpRun(
         request('p', controller.signal),
         // `touch <sentinel>` — runs only if the process is actually spawned.
-        { command: 'touch', args: [sentinel], cwd: tmp, permission: 'reject', env: {}, disposeEofGraceMs: DEFAULT_DISPOSE_EOF_GRACE_MS, disposeGraceMs: DEFAULT_DISPOSE_GRACE_MS, spawn: spawnSubprocess },
+        { command: touch ?? 'touch', args: [sentinel], cwd: tmp, permission: 'reject', env: {}, disposeEofGraceMs: DEFAULT_DISPOSE_EOF_GRACE_MS, disposeGraceMs: DEFAULT_DISPOSE_GRACE_MS, spawn: spawnSubprocess },
       )).rejects.toThrow('aborted before the ACP child started')
       // The binary was never launched — no sentinel.
-      expect(existsSync(sentinel)).toBe(false)
+      if (touch !== undefined) expect(existsSync(sentinel)).toBe(false)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }

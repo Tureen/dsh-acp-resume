@@ -735,4 +735,5 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
   - **来源**:是否发生改派由就绪服务的选路结果给出，不靠「后端名 ≠ `default`」反推。新增 `BackendReadinessService.route()`,返回 `{ backend, fallbackFrom? }`;只有「未指定、未固定、顶层 Kiro 明确找不到」这一条路径换掉了 `default` 时才带 `fallbackFrom: 'default'`(含先做一次检测后再改派的分支)。显式 `backend`、固定的 `defaultBackend`、找到了 Kiro、或没有可用替代而仍按原命令启动，都不带。池的 `start` 优先调 `route()`,只有 `select()` 的旧调用方按无改派处理。
   - **文案**:固定一句 `<被替换后端的命令名> was not found; this chat uses <后端名>`;落到沙箱为只读的 Codex 后端(自动发现的 Codex 恒为只读)时末尾加 ` (read-only)`;`agy` 不加。
   - **出现在哪**:`start` 结果的 `fallbackNotice` 字段(只在创建它的那次结果里，不落注册表、不进列表);多后端版 `acp_chat_start` 的输出结构加可选 `fallbackNotice`,回执末尾追加 `. <这句话>`;单后端版工具定义与回执不变(关闭发现时没有改派)。以 role 首次供给落到改派后端时，同步 `acp_chat_send` 的回答首行加 `[<这句话>]`,后台 job 的输出首行同样写入(job 回执在供给前已返回，所以不在回执里)。
+  - **「找不到」的实际范围**:判据是宿主 `dsh-subprocess-local` 的 `resolveExecutable` 返回 `SUBPROCESS_EXECUTABLE_NOT_FOUND`(或 `ENOENT`)。宿主在逐个候选路径 `stat` + `access(X_OK)` 时吞掉具体原因，把「文件无执行权限」「同名是目录」「PATH 中的目录无读权限」都报成找不到，所以这三种情况**会**改派;本条早先「权限错误不算找不到」的说法与实际行为相反，以此为准。不改行为:无执行权限的 Kiro 本来也起不来。查找超时与其他解析错误仍不算找不到。
   - **暂不标注**:`acp_workflow` 的结果 JSON 不标注其中角色是否被改派(角色的首次供给发生在引擎内部);`acp_chat_list` 也不标注。用户可在列表或面板里看到该会话的后端名。
