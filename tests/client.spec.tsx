@@ -521,6 +521,23 @@ describe('ChatsPanel', () => {
     source.dispose()
   })
 
+  it('refreshIfSubscribed reads history exactly once per manual refresh without starting a timer', async () => {
+    vi.useFakeTimers()
+    const call = vi.fn<PanelRpc['call']>(async () => ({ ok: true, value: { running: [], recent: [] } }))
+    const source = new WorkflowsSource({ call }, TEST_SESSION, false)
+    const stop = source.subscribe(() => {})
+    expect(call).toHaveBeenCalledTimes(1)
+    source.refreshIfSubscribed()
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(call).toHaveBeenCalledTimes(2)
+    stop()
+    source.refreshIfSubscribed()
+    expect(call).toHaveBeenCalledTimes(2)
+    source.dispose()
+  })
+
   it('counts the session chats by state in the header line', () => {
     render(<ChatsPanel {...props(ready([
       chat({ chatId: 'chat-run', inFlight: { chatId: 'chat-run', message: 'm', startedAt: NOW - 5_000 } }),
