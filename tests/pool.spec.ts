@@ -111,6 +111,27 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
   }
 }
 
+/**
+ * The Codex mock touches MOCK_READY_FILE right after replying to `turn/start`,
+ * but the ready file can become visible before the connection has read that
+ * reply off the child's stdout. Until then the connection holds no turn id and
+ * steer throws the "no turn" error without sending anything; the pool's own
+ * `inFlight` is set before the request and so cannot tell the two apart. Wait
+ * for the turn id by repeating only that error; any other outcome is returned
+ * or thrown as is.
+ */
+async function steerOnceTurnKnown(pool: AcpSessionPool, chatId: string, message: string, timeoutMs = 5000): ReturnType<AcpSessionPool['steer']> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      return await pool.steer(chatId, message)
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes('no Codex turn is in flight') || Date.now() > deadline) throw error
+    }
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
 const exitedHandles = new WeakSet<SubprocessHandle>()
 
 /** Has this child's `done` already settled (as observed by the pool's spawn wrapper)? */
@@ -1501,7 +1522,7 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
     const chat = await pool.start(process.cwd(), undefined, codexStart)
     const first = pool.send(chat.chatId, 'hang')
     await until(() => existsSync(ready), 'turn in flight')
-    expect((await pool.steer(chat.chatId, '改成 B 方案')).queued).toBe(true)
+    expect((await steerOnceTurnKnown(pool, chat.chatId, '改成 B 方案')).queued).toBe(true)
     expect(readFileSync(steerLog, 'utf8')).toContain('改成 B 方案')
     await pool.close(chat.chatId)
     await first
