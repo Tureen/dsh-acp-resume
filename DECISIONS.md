@@ -471,6 +471,8 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 
 修订（2026-11-25，D36）：从静态 persona 移出剩余两句角色转述要求。选用 Dispatcher 且本步骤可使用团队工具时，由全局插件按 D36 注入。共享目录的写入边界和汇总规则仍写在 persona 中，按 chatId 派工同样适用。
 
+修订（2026-11-25，D37）：bundle 改为挂载独立声明插件 `dsh-acp-resume/dispatcher-preset`（Loader 行 `acp-dispatcher-settings`）。注册表 id 仍是 `acp-dispatcher`。旧行覆盖会告警并被跳过；请删除旧覆盖，把只读文件配置迁为新行的 `config.dispatcherTools.readOnlyFs: true`。保留完整 persona 或额外子插件时，先禁用新行，再用 `insert` 放入原官方声明及完整 config。旧行原来被禁用时，改为禁用新行。
+
 ## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施：配置层、花名册、自动供给、工具 role 参数;同日第二轮实施 `acp_workflow` 引擎与 steer 的 role)
 
 ### 动机
@@ -880,3 +882,10 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - 持久会话工具启用且 `roles: true` 时，在已有 tools 子作用域内通过 `ctx.inject(['systemPrompt', 'agentPresets'], …)` 注册。提示服务或 preset 注册表缺席时，一次性 provider 和原有工具仍可加载。
 - 组装时从 `agentPresets.composedPreset(agent.ctx)` 读实际绑定，默认挂载也适用。仅对 `acp-dispatcher` 继续检查 `tools.get(teamListName(toolPrefix), scope, toolSet)`。无 Agent、其他 preset、团队工具缺席或未获本步准入都返回空字符串。section 正文不写工具名，适用于自定义前缀。
 - `workflow` 只控制模板。roles 开启时，两种合法 workflow 设置使用相同的转述规则；roles 关闭仍可按 chatId 派工。`roles: false, workflow: true` 沿用 D33 的配置校验。完整覆盖 preset 配置的用户如保留旧 persona 中的手写转述句，需要自行移除重复文字。
+
+## D37 Dispatcher 工具面按 Config 勾选（2026-11-25，目标 0.5.0）
+
+- **声明所有者。** bundle 全局挂载主插件与独立的 `acp-dispatcher-settings` 行。后者只注入 `agentPresets`，由 Cordis fiber 持有 `register()` 返回的注销函数。更新该行会替换同 id 的当前定义，已绑定 Agent 保留引用的旧版本。主插件与 ACP 池属于另一行。
+- **默认组合。** 保留 D36 后的 id、展示名、order 10、description、完整 persona 和全部子行顺序与参数。基础行是 persona、agent-instructions、time-context、tool-jobs。web、present、todo、askUser、compaction 默认开；压缩组保持两个隔离服务与三个子项。ACP 工具继承自全局插件。
+- **边界。** readOnlyFs 默认关；打开后生成文件行并显式关闭 readImage、write、edit、applyPatch，再配合 fs-search 提供 read、glob、grep。工具开关同源生成 description 和 persona。团队转述延续 D36。主 Agent 的可选项不含 bash 或可写文件工具。
+- **升级。** Loader 行 id 与会话持久化的 preset id 独立。合法 profile 中的旧行覆盖找不到目标时，rc.5 记录警告并继续加载。保留原来的 `config.id` 能延续会话引用，但不会搬迁覆盖内容。只读文件、禁用状态和完整自定义的迁移方法见 D26 与中英文 README。

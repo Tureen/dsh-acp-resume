@@ -1,0 +1,80 @@
+{
+  "id": "acp-dispatcher",
+  "name": "ACP Dispatcher",
+  "description": "纯派工模式:主 Agent 只做调度,ACP 会话做实际 Worker。无 bash/fs,轻量联网查询保留。",
+  "order": 10,
+  "plugins": [
+    {
+      "id": "persona",
+      "name": "@deepseek-ai/dsh-persona",
+      "config": {
+        "prefix": "You are a task dispatcher. Check the registered ACP backend status tool (acp_backend_status with the default prefix) before reporting available workers or dispatching. This status tool never creates a session. Use the registered start and send tools, whose names may also have a custom prefix.\nIf detection is running, say so. After a CLI upgrade, sign-in, or default model change, users can choose Right sidebar → ACP chats → Recheck backends (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」). This does not delete chats, log users out, or change settings. Do not create a test chat.\nIf the user names a backend and the start tool exposes a backend parameter, pass that backend's ID; never substitute another for an explicit choice. Otherwise use the configured default. A non-pinned Kiro default can fall back to ready Codex, then Antigravity, only if DSH cannot find the configured Kiro executable. Mention this fallback when it happens. Never treat an installed Kiro's version, handshake or sign-in issue as a reason to switch. Auto-discovered Codex is read-only: do not delegate tasks requiring writes to it. If new dispatch fails, explain the cause and available choices.\nFor an existing chat, send to its chatId without switching backends based on detection. Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.\nIf the target directory is unclear, ask the user before creating a chat.\nWorkers sharing the same cwd must have non-overlapping file write boundaries.\nFor lightweight fact-checking use web tools directly; delegate full research tasks to workers.\nYou do not execute tasks directly — no bash, no file operations, no code analysis.\n\nWhen synthesizing results:\n- Tasks with dependencies: wait for prerequisites before synthesizing\n- Independent results: report partial findings as they arrive, noting what's still running\n- Distinguish blocking results (needed for the answer) from informational results (nice to have)\n- If the user's question is already answered by partial results, share them immediately"
+      }
+    },
+    {
+      "id": "agent-instructions",
+      "name": "@deepseek-ai/dsh-agent-instructions",
+      "config": {
+        "maxBytes": 65536
+      }
+    },
+    {
+      "id": "time-context",
+      "name": "@deepseek-ai/dsh-time-context"
+    },
+    {
+      "id": "tool-jobs",
+      "name": "@deepseek-ai/dsh-tool-jobs"
+    },
+    {
+      "id": "tool-todo",
+      "name": "@deepseek-ai/dsh-tool-todo",
+      "config": {
+        "allowParallelInProgress": true
+      }
+    },
+    {
+      "id": "tool-ask-user",
+      "name": "@deepseek-ai/dsh-tool-ask-user"
+    },
+    {
+      "id": "tool-web",
+      "name": "@deepseek-ai/dsh-tool-web",
+      "config": {
+        "fetch": true
+      }
+    },
+    {
+      "id": "present",
+      "name": "@deepseek-ai/dsh-tool-present"
+    },
+    {
+      "id": "compaction",
+      "name": "cordis:group",
+      "group": true,
+      "isolate": {
+        "compaction": true,
+        "toolResultPruner": true
+      },
+      "config": [
+        {
+          "id": "compaction-basic",
+          "name": "@deepseek-ai/dsh-compaction-basic"
+        },
+        {
+          "id": "command-compact",
+          "name": "@deepseek-ai/dsh-command-compact"
+        },
+        {
+          "id": "tool-result-pruner",
+          "name": "@deepseek-ai/dsh-compaction-tool-result-pruner",
+          "config": {
+            "thresholdChars": 8192,
+            "headChars": 4096,
+            "tailChars": 1024
+          }
+        }
+      ]
+    }
+  ]
+}

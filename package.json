@@ -10,6 +10,10 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./dispatcher-preset": {
+      "types": "./lib/types/dispatcher-preset.d.ts",
+      "default": "./lib/dispatcher-preset.js"
+    },
     "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
@@ -79,6 +83,7 @@
     "@deepseek-ai/dsh-agent": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-agent-loop-testkit": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-agent-preset-registry": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.5",
     "@deepseek-ai/dsh-brand": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-client-ui-primitives": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-home-paths": "~0.2.2-rc.5",
@@ -94,6 +99,8 @@
     "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.5",
     "@deepseek-ai/dsh-timeout": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-tool-executor-native": "~0.2.2-rc.5",
+    "@deepseek-ai/dsh-tool-fs": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-tool-fs-search": "0.2.2-rc.5",
     "@deepseek-ai/dsh-tools": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-typert-protocol": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-user-questions": "~0.2.2-rc.5",

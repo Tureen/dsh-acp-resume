@@ -1,7 +1,7 @@
 /** Render D36 against the published rc.5 Agent, registry, persona, tools and system prompt.
  * @module dsh-acp-resume/tests/team-prompt
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -15,16 +15,14 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import Subs from '@deepseek-ai/dsh-subagent'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { parse } from 'yaml'
+import { buildDispatcherPreset } from '../src/dispatcher-preset.ts'
 import { afterEach, expect, it } from 'vitest'
 import * as acp from '../src/index.ts'
 import { TEAM_INSTRUCTIONS } from '../src/team-prompt.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
-const bundle = parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
-const dispatcher = bundle.flatMap((patch: { insert: unknown[] }) => patch.insert)
-  .find((row: { id: string }) => row.id === 'preset-acp-dispatcher').config
-const persona = dispatcher.plugins.find((row: { name: string }) => row.name === '@deepseek-ai/dsh-persona')
+const dispatcher = buildDispatcherPreset()
+const persona = dispatcher.plugins.find(row => row.name === '@deepseek-ai/dsh-persona')!
 let ctx: Context
 let directory: string
 

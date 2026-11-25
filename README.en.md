@@ -10,7 +10,7 @@ The official ACP backend in DeepSeek Harness (DSH) starts a fresh session for ea
 
 ### ACP Dispatcher · Coordinate several subagents from one conversation
 
-The plugin makes ACP tools available in every mode, and ACP Dispatcher is an optional preset for delegation. In that mode, the main agent breaks down work, assigns it, and collects results in one conversation, while individual ACP sessions carry out the work because the main agent has no shell or file tools. You can have kiro write code while Codex reasons through edge cases, ask two engines to independently verify a conclusion, or delegate a long-running task and follow its progress in the same window.
+The plugin makes ACP tools available in every mode, and ACP Dispatcher is an optional preset for delegation. With the default settings, the main agent breaks down work, assigns it, and collects results in one conversation, while individual ACP sessions carry out the work because the main agent has no shell or file tools. You can have kiro write code while Codex reasons through edge cases, ask two engines to independently verify a conclusion, or delegate a long-running task and follow its progress in the same window.
 
 ### ACP Workflow · Turn repeatable collaboration into a template
 
@@ -115,7 +115,32 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 
 ### ACP Dispatcher mode
 
-Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode menu in a new session**. The main agent has ACP tools for delegation, web tools for quick lookups, and jobs tools for tracking work. It has no shell or file tools, so it delegates commands and file operations to workers through `acp_chat_send`. When a job finishes, the main agent receives a notification and retrieves the result with `job_output`. Use this mode to run independent tasks in parallel, cross-check a review with two engines, or follow a long-running task from one conversation. ACP tools are also available in standard mode (D26).
+Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode menu in a new session**. By default the main agent has ACP tools for delegation, web tools for quick lookups, and jobs tools for tracking work. It has no shell or file tools, so it delegates commands and file operations to workers through `acp_chat_send`. When a job finishes, the main agent receives a notification and retrieves the result with `job_output`. Use this mode to run independent tasks in parallel, cross-check a review with two engines, or follow a long-running task from one conversation. ACP tools are also available in standard mode (D26).
+
+**Choose the main agent’s tools.** Override the declaration row in your profile’s `cordis.patch.yml`. For example, let the main agent verify worker results with `read`, `grep`, and `glob`:
+
+```yaml
+- id: acp-dispatcher-settings
+  name: dsh-acp-resume/dispatcher-preset
+  config:
+    dispatcherTools:
+      readOnlyFs: true
+```
+
+| `dispatcherTools` field | Default | Capability |
+|---|---|---|
+| `readOnlyFs` | `false` | Read and search files. Image reads, writes, edits, and patches stay disabled. |
+| `web` | `true` | Lightweight web lookups, including fetch. |
+| `present` | `true` | Present deliverables. |
+| `todo` | `true` | Maintain a task list. |
+| `askUser` | `true` | Ask for clarification with a tool. The agent can still ask in conversation when disabled. |
+| `compaction` | `true` | Enable context compaction, the compact command, and tool-result pruning together. |
+
+Omitted fields use their defaults. The preset description and persona follow the same selections. Newly bound agents use the updated composition. Agents already bound in the running host keep their revision. Changing the declaration does not reload the ACP pool.
+
+**Migrating an old `preset-acp-dispatcher` override.** Users who never overrode that row can keep their configuration. Remove any override targeting the old row. If it only enabled read-only file tools, replace it with the example above. For an unmatched row rc.5 logs `patch: entry "preset-acp-dispatcher" not found`, skips the override, and continues loading the profile. Ignoring the warning drops the customization. If you previously disabled the old row, set `disabled: true` on `acp-dispatcher-settings`.
+
+To keep a custom persona or additional plugins, disable the new declaration row and use a top-level `- insert:` to add your own complete `@deepseek-ai/dsh-agent-preset` declaration in the same profile edit. You can move your old row and its entire `config` into that list. Keep `config.id: acp-dispatcher` so existing sessions retain their preset identity and only one declaration registers it. Restart DSH after migrating and select ACP Dispatcher in a new session.
 
 ### ACP Workflow · Run a workspace template
 

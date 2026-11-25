@@ -97,7 +97,7 @@ See the [README](../README.en.md#let-the-model-choose-between-backends) for defa
 
 ## ACP Dispatcher mode
 
-An optional session mode, "ACP Dispatcher": one session is a multi-worker workbench. The user stays in one conversation window while the main agent acts as a foreman, splitting work across parallel ACP worker sessions, collecting results, and writing the final answer; it has no bash or file tools.
+An optional session mode, "ACP Dispatcher": one session is a multi-worker workbench. The user stays in one conversation window while the main agent acts as a foreman, splitting work across parallel ACP worker sessions, collecting results, and writing the final answer; by default it has no shell or file tools. Read-only file verification can be enabled separately.
 
 - **Good for**: parallel sub-tasks; cross-checking one question across backends; long-running work; keeping the main agent's context lean.
 - **Switching**: pick **ACP Dispatcher** in the mode menu of a new session. If you don't, nothing changes, and `acp_chat_*` stays available in the standard mode.

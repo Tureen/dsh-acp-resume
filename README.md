@@ -10,7 +10,7 @@ DeepSeek Harness（DSH）官方的 ACP 后端采用一次性委派，每次都�
 
 ### ACP Dispatcher · 在一个对话窗口调度多个子代理
 
-插件让所有模式都能使用 ACP 工具，ACP Dispatcher 则是可选的纯派工预设。在这个模式下，主 Agent 没有 bash 和文件操作工具，它在一个对话窗口里拆任务、分派给各个 ACP 会话执行，再收回结果。你可以让 kiro 写代码，同时让 Codex 推演边界条件，也可以让两个引擎独立核查同一结论，或把长任务交给子代理，在原窗口跟进。
+插件让所有模式都能使用 ACP 工具，ACP Dispatcher 则是可选的纯派工预设。在这个模式的默认配置下，主 Agent 没有 bash 和文件操作工具，它在一个对话窗口里拆任务、分派给各个 ACP 会话执行，再收回结果。你可以让 kiro 写代码，同时让 Codex 推演边界条件，也可以让两个引擎独立核查同一结论，或把长任务交给子代理，在原窗口跟进。
 
 ### ACP Workflow · 把反复使用的协作步骤写成模板
 
@@ -115,7 +115,32 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 
 ### ACP Dispatcher 模式
 
-启用 bundle 并重启 DSH，在**新会话的模式菜单**选择 **ACP Dispatcher**。主 Agent 可用 ACP 工具派工、用 web 轻量查证、用 jobs 跟踪任务；它没有 bash 或文件工具，命令执行和文件操作都通过 `acp_chat_send` 派给子代理。任务完成后，主 Agent 收到通知，用 `job_output` 取回结果。适合在一个窗口并行分工、让两个引擎交叉审核，或跟进耗时任务；标准模式同样能用 ACP 工具（D26）。
+启用 bundle 并重启 DSH，在**新会话的模式菜单**选择 **ACP Dispatcher**。默认配置下，主 Agent 可用 ACP 工具派工、用 web 轻量查证、用 jobs 跟踪任务；它没有 bash 或文件工具，命令执行和文件操作都通过 `acp_chat_send` 派给子代理。任务完成后，主 Agent 收到通知，用 `job_output` 取回结果。适合在一个窗口并行分工、让两个引擎交叉审核，或跟进耗时任务；标准模式同样能用 ACP 工具（D26）。
+
+**选择主 Agent 可用的工具。** 在当前 profile 的 `cordis.patch.yml` 中覆盖独立声明行。例如，允许主 Agent 用 `read`、`grep` 和 `glob` 核对 Worker 的结果：
+
+```yaml
+- id: acp-dispatcher-settings
+  name: dsh-acp-resume/dispatcher-preset
+  config:
+    dispatcherTools:
+      readOnlyFs: true
+```
+
+| `dispatcherTools` 字段 | 默认值 | 控制的能力 |
+|---|---|---|
+| `readOnlyFs` | `false` | 读取、搜索文件。保持图片读取、写入、编辑、补丁关闭。 |
+| `web` | `true` | 轻量联网查证（含 fetch）。 |
+| `present` | `true` | 展示交付物。 |
+| `todo` | `true` | 维护任务清单。 |
+| `askUser` | `true` | 用工具向用户澄清问题。关闭后仍可在对话中提问。 |
+| `compaction` | `true` | 整组启用上下文压缩、手动压缩命令与工具结果裁剪。 |
+
+省略字段使用默认值。Dispatcher 按同一组选择生成模式说明和 persona。改动生效后，新绑定的 Agent 使用新组合，当前进程内已绑定的 Agent 保留原组合。该声明拥有独立的加载生命周期，调整时无需重载 ACP 会话池。
+
+**从旧的 `preset-acp-dispatcher` 行迁移。** 原先没有覆盖这行的用户无需改配置。用过旧行覆盖的用户，请删除旧覆盖；如果只是增加了只读文件工具，换成上面这段即可。rc.5 遇到找不到的旧行会记录 `patch: entry "preset-acp-dispatcher" not found` 并跳过这条覆盖，profile 继续加载。忽略这条警告会使旧定制失效。原先禁用旧行的用户改为对 `acp-dispatcher-settings` 设置 `disabled: true`。
+
+如需保留自定义 persona 或额外插件，在同一次 profile 修改中对新行设置 `disabled: true`，再用顶层 `- insert:` 插入自己完整的 `@deepseek-ai/dsh-agent-preset` 声明。可将原行连同完整 `config` 移入 insert 列表，保留 `config.id: acp-dispatcher`。这样只有一个有效声明者，已有会话引用的 preset id 仍可解析。完成迁移后重启 DSH，在新会话选择 ACP Dispatcher。
 
 ### ACP Workflow · 按工作区模板派工
 
