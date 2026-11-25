@@ -716,10 +716,10 @@ export function chatWorkflowTool(
       + 'Pass the template\'s params; every declared param is required. '
       + 'A role that failed shows as {error} inside its step; the run only fails when every role in a step failed. '
       + 'Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset. '
-      + 'Progress is shown to the user as a workflow card; the result comes with job_output. '
+      + 'Progress is shown to the user as a workflow card. '
       + (jobs === undefined
         ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
-        : 'Returns at once with a background job id; you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
+        : 'Returns at once with a background job id; the result comes with job_output: you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
           + 'Ending your turn while it runs is correct. Stop it with job_kill.'),
     parameters: {
       template: { type: 'string', required: true, description: 'Template name from the workspace team file.' },

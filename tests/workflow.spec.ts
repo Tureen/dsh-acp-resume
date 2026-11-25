@@ -211,7 +211,9 @@ describe('acp_workflow and steer by role (D27)', () => {
     const description = mount().tools.get('acp_workflow')?.description ?? ''
     expect(description).toContain('A role that failed shows as {error} inside its step; the run only fails when every role in a step failed.')
     expect(description).toContain('Roles keep their chats (and memory) after the run; follow up with acp_chat_send role=…, or acp_chat_close role=… to reset.')
-    expect(description).toContain('Progress is shown to the user as a workflow card; the result comes with job_output.')
+    expect(description).toContain('Progress is shown to the user as a workflow card.')
+    // Synchronous variant: no job, so no job_output (D33).
+    expect(description).not.toContain('job_output')
     expect(description).not.toMatch(/tool-workflow\/|session_event_/)
   })
 
