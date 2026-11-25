@@ -400,6 +400,9 @@ describe('openAcpConnection / AcpConnection', () => {
     controller.abort()
     await expect(pending).resolves.toMatchObject({ stopReason: 'aborted' })
     await until(() => lines(decisions).length === 1, 'cancelled permission response')
+    // The mock records the ACP cancel separately from the permission decision;
+    // the decision being on disk does not mean the cancel is yet.
+    await until(() => lines(cancels).length === 1, 'ACP session/cancel')
     expect(lines(decisions)).toEqual(['cancelled'])
     expect(lines(cancels)).toHaveLength(1)
     deferred.resolve('Allow (allow_once, option 1)')
