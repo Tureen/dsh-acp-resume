@@ -4,7 +4,9 @@
 
 ## 工作区角色与工作流
 
-该功能默认关闭，需在插件配置里设 `workflow: true`。在工作区根目录写 `.agents/acp-team.yml`,定义角色蓝图(名称、后端、工作目录、播种消息)和流程模板。模型可以按角色名派发任务：调用 `acp_chat_send` 时传 `role`,本会话首次引用某个角色会自动建会话并发送播种消息，之后直接复用。`acp_workflow` 按模板编排多个角色，如双审核、双路调研：同一步的角色并行执行，后一步能拿到前一步的结果，最后由模型或指定角色合并。示例见 [docs/acp-team.example.yml](acp-team.example.yml)。
+按角色派工默认开启（`roles: true`）。在工作区的 `.agents/acp-team.yml` 中定义角色和可选的 `summary`，模型就能用 `acp_team_list` 查看分工和状态，再用 `acp_chat_send` 的 `role` 派工。首次创建配置了 `seeding` 的角色会话时，Worker 会先读到自己的角色名和队友分工。
+
+`workflow` 默认是 `false`。按模板执行多角色任务时，开启 `workflow: true` 即可使用 `acp_workflow`；与 `roles: false` 同时配置会在加载时报错。[角色与模板示例](acp-team.example.yml)
 
 ## 安装
 
@@ -20,7 +22,7 @@
 
 ## 会话工具与面板
 
-模型可使用五个工具：
+五个持久会话工具分别用于：
 
 - `acp_chat_start`：建立持久会话并返回 `chatId`。
 - `acp_chat_send`：发送消息。宿主支持后台任务时会立即返回 job id；否则同步等待回答。
@@ -28,7 +30,9 @@
 - `acp_chat_close`：释放进程；使用 `purge` 同时删除本地记录。
 - `acp_chat_steer`：向正在执行的一轮插入后续指令。
 
-右侧栏的“持久会话”面板可查看会话状态、轮次和详情，并可释放或删除会话。点击卡片可查看每一轮的问题、回答和重连事件。
+模型可用 `acp_backend_status` 查看后端就绪状态。显式配置了 `protocol: codex` 的后端时，还可用 `acp_backend_usage` 查询额度。
+
+右侧栏的「ACP 会话」面板可查看轮次和重连记录，也可释放或删除会话。关闭工作流时，打开工作流区块只读一次历史，随后停止轮询；关闭持久会话时，列表和详情页显示「持久会话已关闭」。
 
 ## 关键配置
 
@@ -37,7 +41,7 @@
 - `allowUnverifiedBackends: true`：允许显式尝试自动发现的范围外 CLI，但不会把它加入自动选择。已配置后端的版本检查只告警；已有会话发送和重连不受检测状态影响。
 - `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
-- `model` / `effort`：默认（`modelSelect: flag`）通过 `--model` / `--effort` CLI 旗标生效，仅对接受这些旗标的 agent 有效（kiro v2 引擎）；agy 与 kiro v3 会拒绝它们，直接设置会启动失败。这两类后端请设 `modelSelect: session`，两项都改走会话级方法、不再追加旗标；kiro v3 的 `effort` 此时限 `low` / `medium` / `high` / `xhigh` / `max`，其他值加载即报错。
+- `model` / `effort`：kiro v2 可通过 CLI 旗标设置。kiro v3 的持久会话使用 `modelSelect: session`，在建会话或重连时设置强度，不追加 `--effort`。可填 `low`、`medium`、`high`、`xhigh`、`max`，具体档位随模型而异。agy 的强度由模型 ID 决定，请省略 `effort`。
 
 ### 后端支持等级
 
@@ -102,7 +106,7 @@
 - **好用场景**:多任务并行;同一问题派给不同后端交叉验证;长任务托管;让主 Agent 上下文保持精简。
 - **切换**:新会话的模式菜单里选 **ACP Dispatcher**;不选则一切照旧,标准模式下 `acp_chat_*` 照常可用。
 
-详细对比与不适用场景见 [README](../README.md#acp-dispatcher-模式)。
+在 `acp-dispatcher-settings` 行设置 `dispatcherTools`：只读文件核对默认关，web、交付物展示、任务清单、澄清提问和压缩组默认开。升级前覆盖过 `preset-acp-dispatcher` 的用户需迁移旧行。[配置示例与迁移指引](../README.md#acp-dispatcher-模式)
 
 ## 已知限制
 

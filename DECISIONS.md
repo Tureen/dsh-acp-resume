@@ -847,7 +847,9 @@ Config 新增 `roles`(`z.boolean().default(true)`),与 `workflow` 分工如下:
 - 注册表结构不变;已有 `rosters` 节在 `roles: false` 下保留,重新开启后照常可用。
 - 测试:tools.spec 按四种组合各断言一次注册的工具名、`kc_send` 是否有 `role`、`kc_list` 末行;另有配置冲突报错、默认配置下无团队文件时的 `pass chatId instead` 出路。
 
-## D34 kiro v3 会话级思考强度:`modelSelect: session` 延伸到 `effort`(2026-11-25,目标 0.4.1)
+## D34 kiro v3 会话级思考强度：`modelSelect: session` 延伸到 `effort`（发布版本 0.5.0）
+
+修订（2026-11-25）：原计划随 0.4.1 交付，现并入 0.5.0。
 
 背景:`modelSelect` 此前没有单独的 D 条目，只在 Config 注释里说明:`'flag'`(默认)追加 `--model`;`'session'` 不追加，建会话/重连后调 `session/set_model`,遇 -32601/-32603 回退 `session/set_config_option(model)`。`effort` 在两种模式下都被拼成 `--effort` 旗标(D19 2026-11-05 修订)。kiro v3 不接受 `--model` / `--effort`(带了会被就绪检查判为 `unsupported-mode`),所以 README 要求 v3 用户省略 `effort`,`effort` 对 kiro v3 等于不可用。
 

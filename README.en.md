@@ -18,7 +18,7 @@ If every review calls for two independent reviewers and an editor to combine the
 
 ## Installation
 
-You need DSH `>=0.2.2-rc.3`, Node.js 24 or later, and at least one usable backend. Automatic setup expects a CLI in the [published version ranges](docs/backend-compatibility.md). Kiro is optional.
+You need DSH `>=0.2.2-rc.3`, Node.js 24 or later, and at least one usable backend. Automatic setup expects a CLI in the [published version ranges](docs/backend-compatibility.md). Kiro is optional. You can use Codex or agy on its own.
 
 Replace `<name>` with your DSH profile name and install the package from npm. Restart DSH after installation.
 
@@ -26,7 +26,7 @@ Replace `<name>` with your DSH profile name and install the package from npm. Re
 dsh plugin --profile <name> add dsh-acp-resume
 ```
 
-To upgrade, append `@<version>` to the package name. You can also pin a version this way if `minimumReleaseAge` filters out a new release. In the desktop app, you can install through Discover. For offline installation, use a local tgz file. [Marketplace installation instructions (Chinese)](docs/detail.zh.md#安装)
+To upgrade, append `@<version>` to the package name. You can also pin a version this way if `minimumReleaseAge` filters out a new release. In the desktop app, you can install through Discover. For offline installation, use a local tgz file. [Marketplace installation instructions](docs/detail.en.md#install)
 
 > ⚠️ **Do not install from a GitHub URL.** The repository omits compiled files and has no `prepare` script to build them at install time. DSH will fail to load the plugin because `lib/index.js` is missing.
 
@@ -60,7 +60,7 @@ Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and den
         permission: ask
 ```
 
-Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model`. On kiro v3 you can also set `effort` in the same mode to choose the reasoning effort. It must be `low`, `medium`, `high`, `xhigh`, or `max`; any other value is a configuration error at load, and a level the chosen model does not offer only logs a warning. agy encodes effort in the model ID, so omit `effort` there. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
+Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model`. In this mode, persistent kiro v3 chats apply `effort` when the session opens or reconnects, without appending the `--effort` CLI flag. The configuration accepts `low`, `medium`, `high`, `xhigh`, or `max`. Other values cause a configuration error at load time. Support varies by model, and a configured level the model does not offer produces a warning. agy encodes effort in the model ID, so omit `effort` there. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
 
 ### Let the model choose between backends
 
@@ -109,7 +109,8 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 
 - **Track progress.** The list shows subagent chats created in the current DSH session. A spinner and elapsed time mark a turn in progress. A green dot means the latest turn completed normally, red signals a turn or reconnection error, and amber means the agent started a fresh session. A solid gray dot marks an idle process and a hollow gray dot marks a released one. Open a chat to read its questions, answers, and reconnection history.
 - **Release or delete a chat.** Releasing the process keeps the chat record so the next message can reconnect. If a turn is running, the panel asks for confirmation because releasing the process stops that turn. Deleting the chat removes both its local record and its turn log.
-- **Check Codex usage.** The top of the panel shows how much quota each configured Codex backend has left in its most constrained rate-limit window. Hover to see the window length and reset time. The model can also use the read-only `acp_backend_usage` tool to check the plan, percentage used, and reset time. Successful reads are cached for five minutes. Set `refresh: true` to fetch fresh data (D28).
+- **Check Codex usage.** When quota data is available, the panel shows the percentage remaining in each Codex backend’s most constrained rate-limit window. Hover to see the window length and reset time. Successful reads are cached for five minutes.
+- **When features are off.** With `workflow: false`, opening the workflow section reads its history once without polling. With `enableChatTools: false`, the chat list and detail tabs show “Persistent chats are disabled.”
 
 ## Advanced usage
 
@@ -144,12 +145,14 @@ To keep a custom persona or additional plugins, disable the new declaration row 
 
 ### ACP Workflow · Run a workspace template
 
-Role dispatch is on by default (Config `roles`, default `true`): once the workspace has an `.agents/acp-team.yml`, `acp_chat_send` and the other chat tools accept a `role`. For templates, also set `workflow: true` in the plugin’s top-level `config`, restart DSH, and save the following as `.agents/acp-team.yml` at the workspace root. `roles: false` turns off every role feature and cannot be combined with `workflow: true` (D33). The reviewers work independently on the default backend, and the final step returns both reviews to the main model. To assign a role to your configured Codex backend, add `backend: codex` to its blueprint. [More templates, including one with an editor role](docs/acp-team.example.yml)
+Role dispatch is on by default (`roles: true`). Once you define roles in the workspace’s `.agents/acp-team.yml`, pass a `role` to `acp_chat_send` to assign work by name. The `workflow` switch defaults to `false` and controls only the `acp_workflow` template tool. Combining `roles: false` with `workflow: true` causes a configuration error at load time.
+
+To run the template below, set `workflow: true` in the plugin’s top-level `config`, restart DSH, and save the example as `.agents/acp-team.yml` at the workspace root. The reviewers work independently on the default backend, and the final step returns both reviews to the main model. To assign a role to your configured Codex backend, add `backend: codex` to its blueprint. [More templates, including one with an editor role](docs/acp-team.example.yml)
 
 ```yaml
 roles:
-  - { name: reviewerA, cwd: ., seeding: "Review for correctness." }
-  - { name: reviewerB, cwd: ., seeding: "Review for maintainability." }
+  - { name: reviewerA, cwd: ., summary: "Correctness reviewer", seeding: "Review for correctness." }
+  - { name: reviewerB, cwd: ., summary: "Maintainability reviewer", seeding: "Review for maintainability." }
 templates:
   - name: dual_review
     params: [target]
@@ -166,7 +169,7 @@ templates:
 | Role blueprints (`roles`) | Workspace, shared by sessions in that workspace | Who each role is, including its `backend`, working directory (`cwd`), and initial instructions (`seeding`). |
 | Roster instance | DSH parent session, one roster per session | The plugin uses the `ownerSessionId` to track which `chatId` belongs to each role in that session. |
 
-Roles work without templates. A role blueprint can carry a one-sentence `summary` of what the role does, for the main model choosing a role and for teammates. `seeding` stays the role's full brief to itself; when a role has one, the plugin puts a short note about the team and how to reach teammates in front of it (D32). The main model can call the read-only `acp_team_list` to see each role's summary and whether it is not yet set up, idle, or running in this session.
+A blueprint’s optional `summary` describes the role’s responsibility in one sentence. When a role’s chat is first created with `seeding`, the worker receives its role name, its teammates and their responsibilities, then its own instructions. With no `seeding`, it goes straight to the first assignment. The main model can call `acp_team_list` to see each role’s summary and whether it is unprovisioned, idle, or running in this session.
 
 For example, when sessions 1 and 2 run `dual_review` in the same workspace, they read the same template and role blueprints. Reviewer A (`reviewerA`) maps to a different chat in each roster. A follow-up from session 1 using `acp_chat_send` with `role: reviewerA` continues session 1’s review. After editing a blueprint, use `acp_chat_close` with the role name in the current session to clear its binding. The next assignment creates a chat from the updated blueprint (D27).
 
@@ -177,6 +180,7 @@ For example, when sessions 1 and 2 run `dual_review` in the same workspace, they
 | Tool | When to use it |
 | --- | --- |
 | `acp_backend_status` | Read version support, readiness, the new-chat default, and suggested actions without launching a CLI. |
+| `acp_backend_usage` | Registered when a backend is explicitly configured with `protocol: codex`. Read the plan, percentage used, and reset time. Set `refresh: true` to force a fresh read. |
 | `acp_chat_start` | Open a persistent chat and get its `chatId`. Specify `backend` to select among configured backends. |
 | `acp_chat_send` | Start the next turn, reconnecting as needed. A chat runs one turn at a time. Sending again while it is busy returns an error. |
 | `acp_chat_list` | Find subagent chats created in the current DSH session, including chats whose processes have been released. |

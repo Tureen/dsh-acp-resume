@@ -4,7 +4,9 @@
 
 ## Workspace roles and workflows
 
-This feature is off by default; set `workflow: true` in the plugin config. Write `.agents/acp-team.yml` in the workspace root to define role blueprints (name, backend, working directory, seeding message) and workflow templates. The model can then dispatch work by role name: pass `role` to `acp_chat_send`, and the first reference in a session creates the role's chat and sends its seeding message; later references reuse it. `acp_workflow` runs a template across several roles, such as a dual review or two-track research: roles in the same step run in parallel, later steps see earlier results, and the model or a chosen role merges them. See [docs/acp-team.example.yml](acp-team.example.yml) for an example.
+Role dispatch is enabled by default (`roles: true`). Define roles and their optional `summary` in the workspace’s `.agents/acp-team.yml`. The model can use `acp_team_list` to check roles and availability, then pass a `role` to `acp_chat_send`. When a role’s chat is first created with `seeding`, the worker first learns its own role and what its teammates do.
+
+`workflow` defaults to `false`. Enable `workflow: true` to run a multi-role template with `acp_workflow`. Combining it with `roles: false` causes a configuration error at load time. [Role and template examples](acp-team.example.yml)
 
 ## Install
 
@@ -20,7 +22,7 @@ Restart DSH after installation. Backend discovery is on by default. Open **Right
 
 ## Chat tools and panel
 
-The model can use five tools:
+The five persistent chat tools cover the chat lifecycle:
 
 - `acp_chat_start`: Create a persistent chat and return its `chatId`.
 - `acp_chat_send`: Send a message. It returns a job id immediately when the host supports background jobs, otherwise it waits for the answer.
@@ -28,7 +30,9 @@ The model can use five tools:
 - `acp_chat_close`: Release the process; use `purge` to also delete the local record.
 - `acp_chat_steer`: Add a follow-up instruction to a turn that is still running.
 
-The Persistent chats panel in the right sidebar shows each chat's state, turn count, and details, and can release or delete it. Select a card to review every question, answer, and reconnect event.
+The model can check backend readiness with `acp_backend_status`. When a backend is explicitly configured with `protocol: codex`, it can also read quota figures with `acp_backend_usage`.
+
+Use **ACP chats** in the right sidebar to review turns and reconnections, release a process, or delete a chat. With workflows disabled, opening the workflow section reads history once without polling. With persistent chats disabled, the list and detail tabs show “Persistent chats are disabled.”
 
 ## Key configuration
 
@@ -37,7 +41,7 @@ The Persistent chats panel in the right sidebar shows each chat's state, turn co
 - `allowUnverifiedBackends: true`: Permit explicitly selecting an auto-discovered CLI outside the version range without including it in automatic routing. Version checks are advisory for configured backends. Existing chats can send and reconnect without a readiness check.
 - `permission`: `allow` approves automatically, `reject` denies automatically, and `ask` forwards every request to the host user-confirmation interface. The bundle defaults to `allow`; `ask` denies when no confirmation service or valid answer is available.
 - `agentEngine: none`: Set this when the agent does not accept kiro's `--agent-engine` argument, so the plugin does not append it.
-- `model` / `effort`: By default (`modelSelect: flag`) these work through the `--model` / `--effort` CLI flags and only for agents that accept them (kiro v2 engine). agy and kiro v3 reject them, so setting them directly fails startup. For those backends set `modelSelect: session`; both then go through session-level methods and no flags are appended. On kiro v3, `effort` must then be `low` / `medium` / `high` / `xhigh` / `max`; any other value fails at load.
+- `model` / `effort`: kiro v2 accepts CLI flags. For persistent kiro v3 chats, use `modelSelect: session` to apply the effort when a session opens or reconnects, without appending `--effort`. The configuration accepts `low`, `medium`, `high`, `xhigh`, and `max`. Available levels vary by model. For agy, omit `effort` because the model ID determines it.
 
 ### Backend support levels
 
@@ -102,7 +106,7 @@ An optional session mode, "ACP Dispatcher": one session is a multi-worker workbe
 - **Good for**: parallel sub-tasks; cross-checking one question across backends; long-running work; keeping the main agent's context lean.
 - **Switching**: pick **ACP Dispatcher** in the mode menu of a new session. If you don't, nothing changes, and `acp_chat_*` stays available in the standard mode.
 
-See the [README](../README.en.md#acp-dispatcher-mode) for the full comparison and when not to use it.
+Set `dispatcherTools` on the `acp-dispatcher-settings` row. Read-only file verification defaults to off. Web lookups, deliverable presentation, task lists, clarification, and compaction default to on. If your profile overrode the old `preset-acp-dispatcher` row, migrate that override when upgrading. [Configuration and migration guide](../README.en.md#acp-dispatcher-mode)
 
 ## Known limitations
 
