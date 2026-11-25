@@ -37,8 +37,14 @@ import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestR
 export type { PermissionPolicy }
 
 /** Startup step that failed. */
-/** {@link AcpRunSpec} plus the pool-only `sessionModel`, applied after open by `session/set_model` (on -32601/-32603: `session/set_config_option`). */
-export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string }
+/**
+ * {@link AcpRunSpec} plus the pool-only per-session settings applied after
+ * `session/new` / `session/load`: `sessionModel` by `session/set_model` (on
+ * -32601/-32603: `session/set_config_option(model)`), then `sessionEffort` by
+ * `session/set_config_option(effortLevel)` (kiro v3; the value is validated at
+ * config time because the agent ignores unknown values without an error).
+ */
+export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string; sessionEffort?: string }
 
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
 
@@ -92,6 +98,24 @@ export interface AcpSteerResult {
 const METHOD_NOT_FOUND = -32601
 /** JSON-RPC "Internal error"; kiro v3 answers `session/set_model` with it. */
 const INTERNAL_ERROR = -32603
+/**
+ * Attempts and spacing for `set_config_option(effortLevel)`. Right after
+ * `session/new` / `session/load`, kiro v3 answers the set but keeps the old
+ * value until its model settles (probe 2026-11-25: applied on attempt 1–9,
+ * ≤ 240 ms); the reply's `configOptions` shows whether it took.
+ */
+const EFFORT_ATTEMPTS = 20
+const EFFORT_RETRY_MS = 50
+
+/** `currentValue` of config option `id` in a `set_config_option` reply; `null` = the reply lists options without it; `undefined` = the reply lists none. */
+function configOptionValue(reply: unknown, id: string): string | null | undefined {
+  const options: unknown = typeof reply === 'object' && reply !== null ? Reflect.get(reply, 'configOptions') : undefined
+  if (!Array.isArray(options)) return undefined
+  const option: unknown = options.find((o: unknown) => typeof o === 'object' && o !== null && Reflect.get(o, 'id') === id)
+  if (option === undefined) return null
+  const value: unknown = Reflect.get(option as object, 'currentValue')
+  return typeof value === 'string' ? value : null
+}
 
 /** Terminal elements of one settled prompt turn. */
 export interface AcpTurnResult {
@@ -532,11 +556,11 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
             mcpServers: [],
           })
         }
+        const warn = (message: string): void => {
+          try { spec.onError?.(new Error(message), 'error') } catch { /* sink cannot replace the failure */ }
+        }
         if (spec.sessionModel !== undefined && remoteSessionId !== undefined) {
           // agy takes no `--model`; switch per session. A failure leaves the agent's default model.
-          const warn = (message: string): void => {
-            try { spec.onError?.(new Error(message), 'error') } catch { /* sink cannot replace the failure */ }
-          }
           try {
             await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel })
           } catch (error: unknown) {
@@ -551,6 +575,29 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
             } else {
               warn(`session/set_model(${spec.sessionModel}) failed: ${toError(error).message}`)
             }
+          }
+        }
+        if (spec.sessionEffort !== undefined && remoteSessionId !== undefined) {
+          // After the model: kiro v3 lists effortLevel only for a model with hasEffort. No dedicated
+          // method exists. A failure or a value that never takes leaves the model's default effort.
+          const effort = spec.sessionEffort
+          try {
+            let current: string | null | undefined
+            for (let attempt = 1; attempt <= EFFORT_ATTEMPTS; attempt += 1) {
+              if (flags.cancelled) break
+              const reply = await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'effortLevel', value: effort })
+              current = configOptionValue(reply, 'effortLevel')
+              // No configOptions in the reply: nothing to check, take the answer as applied.
+              if (current === undefined || current === effort) break
+              if (attempt < EFFORT_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, EFFORT_RETRY_MS))
+            }
+            if (!flags.cancelled && current !== undefined && current !== effort) {
+              warn(current === null
+                ? `session/set_config_option(effortLevel=${effort}) not applied: the session's model lists no effortLevel option (it may not support effort)`
+                : `session/set_config_option(effortLevel=${effort}) not applied: effortLevel stayed ${current} (the model may not offer that level)`)
+            }
+          } catch (error: unknown) {
+            warn(`session/set_config_option(effortLevel=${effort}) failed: ${toError(error).message}`)
           }
         }
         if (flags.cancelled) throw new Error('subagent cancelled before the ACP session started')

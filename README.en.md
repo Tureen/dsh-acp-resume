@@ -36,7 +36,7 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 
 | Backend | Capabilities |
 | --- | --- |
-| **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. |
+| **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. Set `modelSelect: session` with `effort` to choose the reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). |
 | **Antigravity** (agy) | Connects automatically through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
 | **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and can be discovered automatically or configured as a named backend. |
 
@@ -60,7 +60,7 @@ Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and den
         permission: ask
 ```
 
-Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model` and omit `effort`. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
+Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model`. On kiro v3 you can also set `effort` in the same mode to choose the reasoning effort. It must be `low`, `medium`, `high`, `xhigh`, or `max`; any other value is a configuration error at load, and a level the chosen model does not offer only logs a warning. agy encodes effort in the model ID, so omit `effort` there. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
 
 ### Let the model choose between backends
 

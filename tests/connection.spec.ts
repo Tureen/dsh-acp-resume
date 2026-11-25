@@ -568,3 +568,45 @@ describe('sessionModel (session/set_model)', () => {
     expect(text).not.toContain('session/set_model(x) failed')
   })
 })
+
+describe('sessionEffort (session/set_config_option effortLevel)', () => {
+  it('sets effortLevel once after session/new and once after session/load, after the model', async () => {
+    const errors: Error[] = []
+    const file = join(tempDir(), 'set-config.log')
+    const store = join(tempDir(), 'sessions.json')
+    const env = { MOCK_NO_SET_MODEL: '1', MOCK_SET_CONFIG_FILE: file, MOCK_SESSION_STORE: store }
+    const first = makeSpec(env, undefined, { onError: (e) => { errors.push(e) } })
+    const conn = await open({ ...first.spec, sessionModel: 'claude-opus-5.5', sessionEffort: 'xhigh' })
+    const sid = conn.remoteSessionId
+    await conn.dispose()
+    const again = await open({ ...makeSpec(env, first.dir, { onError: (e) => { errors.push(e) } }).spec, sessionEffort: 'xhigh' }, { mode: 'load', sessionId: sid })
+    expect(again.remoteSessionId).toBe(sid)
+    expect(readFileSync(file, 'utf8').trim().split('\n')).toEqual([
+      `set_config_option ${sid} model claude-opus-5.5`,
+      `set_config_option ${sid} effortLevel xhigh`,
+      `set_config_option ${sid} effortLevel xhigh`,
+    ])
+    expect(errors).toEqual([])
+  })
+
+  it('repeats the set while the reply still shows the old effortLevel, then stops without a warning', async () => {
+    const errors: Error[] = []
+    const file = join(tempDir(), 'set-config.log')
+    const { spec } = makeSpec({ MOCK_SET_CONFIG_FILE: file, MOCK_EFFORT_LAG: '2' }, undefined, { onError: (e) => { errors.push(e) } })
+    const conn = await open({ ...spec, sessionEffort: 'max' })
+    expect(readFileSync(file, 'utf8').trim().split('\n')).toEqual(Array(3).fill(`set_config_option ${conn.remoteSessionId} effortLevel max`))
+    expect(errors).toEqual([])
+  })
+
+  it('warns without blocking when effortLevel is absent (model without effort) or the set fails', async () => {
+    const absentErrors: Error[] = []
+    const absent = await open({ ...makeSpec({ MOCK_EFFORT_ABSENT: '1' }, undefined, { onError: (e) => { absentErrors.push(e) } }).spec, sessionEffort: 'high' })
+    expect(absent.remoteSessionId).toBeTruthy()
+    expect(absentErrors.map(e => e.message)).toEqual(['session/set_config_option(effortLevel=high) not applied: the session\'s model lists no effortLevel option (it may not support effort)'])
+    const failErrors: Error[] = []
+    const failing = await open({ ...makeSpec({ MOCK_SET_CONFIG_FAIL: '1' }, undefined, { onError: (e) => { failErrors.push(e) } }).spec, sessionEffort: 'high' })
+    expect(failing.remoteSessionId).toBeTruthy()
+    expect(failErrors.map(e => e.message).join('\n')).toContain('session/set_config_option(effortLevel=high) failed:')
+  })
+})
+

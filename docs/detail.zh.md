@@ -37,11 +37,11 @@
 - `allowUnverifiedBackends: true`：允许显式尝试自动发现的范围外 CLI，但不会把它加入自动选择。已配置后端的版本检查只告警；已有会话发送和重连不受检测状态影响。
 - `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
-- `model` / `effort`：通过 `--model` / `--effort` CLI 旗标生效，仅对接受这些旗标的 agent 有效（kiro v2 引擎）；agy 与 kiro v3 会拒绝它们，直接设置会启动失败。这两类后端请设 `modelSelect: session` + `model`，走会话级方法。
+- `model` / `effort`：默认（`modelSelect: flag`）通过 `--model` / `--effort` CLI 旗标生效，仅对接受这些旗标的 agent 有效（kiro v2 引擎）；agy 与 kiro v3 会拒绝它们，直接设置会启动失败。这两类后端请设 `modelSelect: session`，两项都改走会话级方法、不再追加旗标；kiro v3 的 `effort` 此时限 `low` / `medium` / `high` / `xhigh` / `max`，其他值加载即报错。
 
 ### 后端支持等级
 
-- **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）选模型用 `modelSelect: session` + `model`（经 `session/set_config_option`），不要直接设 model/effort（会追加 v3 拒绝的 CLI 旗标，导致启动失败）；v2（遗留）才支持 `--model` / `--effort` 旗标。
+- **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）用 `modelSelect: session` + `model` 选模型、+ `effort` 选思考强度（都经 `session/set_config_option`；所选模型不支持该强度时只记告警）；不设 `modelSelect: session` 时直接设 model/effort 会追加 v3 拒绝的 CLI 旗标，导致启动失败。v2（遗留）才支持 `--model` / `--effort` 旗标。
 - **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；可自动接入（使用 CLI 的模型设置，拒绝权限请求）；显式配置时应设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
 - **一等支持：Codex。** 走 `codex app-server` 私有协议（可自动接入；手动配置时用 `protocol: codex` 声明命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。可覆盖 `model`，也可使用 Codex 的默认模型；可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。Codex 模型清单来自 `codex app-server` 的 `model/list`。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
