@@ -37,7 +37,9 @@
  *                        polls for this file to cancel on a CONDITION rather than
  *                        an arbitrary timeout (subprocess cold-start is variable).
  * - `MOCK_PROMPT_HOLD` — if set, prompt waits while this file exists; removing
- *                        it releases the response without a timing assumption.
+ *                        it releases the response without a timing assumption
+ *                        (directory watch plus a 20 ms re-check, since a watch
+ *                        alone can miss an early event on macOS).
  * - `MOCK_AUTH_REQUIRED` — return ACP AuthRequired from `session/new`.
  * - `MOCK_MISSING_SESSION_ID` — if `1`, return a malformed empty `session/new`
  *                        response to exercise startup rollback.
@@ -291,10 +293,16 @@ function makeAgent() {
         const check = (): void => { if (!existsSync(hold)) released.resolve(undefined) }
         const watcher = watch(dirname(hold), check)
         watcher.on('error', released.reject)
+        // macOS can drop directory events that land right after the watcher is
+        // created (seen: the hold file removed 1 ms later, no event ever came,
+        // the prompt hung). Re-check on a short interval as well; the release
+        // still depends only on the file being gone.
+        const poll = setInterval(check, 20)
         try {
           check()
           await released.promise
         } finally {
+          clearInterval(poll)
           watcher.close()
         }
       }

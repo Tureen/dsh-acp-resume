@@ -77,6 +77,26 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
   }
 }
 
+/**
+ * The mock touches MOCK_READY_FILE right after replying to `turn/start`, but
+ * the ready file can become visible before this process has read that reply
+ * off the child's stdout (a busy event loop runs the poll timer first). Until
+ * then the connection has no turn id and steer throws the "no turn" error
+ * without sending anything. Wait for the turn id by repeating only that
+ * error; any other outcome is returned or thrown as is.
+ */
+async function steerOnceTurnKnown(conn: AcpConnection, message: string, timeoutMs = 25_000): ReturnType<AcpConnection['steer']> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      return await conn.steer(message)
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes('no Codex turn is in flight') || Date.now() > deadline) throw error
+    }
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
 async function startupError(promise: Promise<unknown>): Promise<AcpConnectionError> {
   const error = await promise.then(() => undefined, (e: unknown) => e)
   expect(error).toBeInstanceOf(AcpConnectionError)
@@ -225,25 +245,25 @@ describe('codex steer and cancel', () => {
     const conn = await open(makeSpec({ MOCK_HANG: '1', MOCK_STEER_FILE: steerLog, MOCK_READY_FILE: ready, MOCK_CANCEL_FILE: join(dir, 'interrupt.log') }))
     const abort = new AbortController()
     const pending = conn.prompt(ask('p'), abort.signal)
-    await until(() => existsSync(ready), 'turn in flight')
-    const reply = await conn.steer('再加一条')
+    await until(() => existsSync(ready), 'turn in flight', 25_000)
+    const reply = await steerOnceTurnKnown(conn, '再加一条')
     expect(reply.queued).toBe(true)
     expect(reply.messageId).toMatch(/^turn-/)
     expect(lines(steerLog)).toEqual([`steer ${conn.remoteSessionId} 再加一条`])
     abort.abort()
     expect((await pending).stopReason).toBe('aborted')
-  })
+  }, 60_000)
 
   it('maps -32601 from turn/steer to AcpSteerUnsupportedError', async () => {
     const ready = join(tempDir(), 'ready')
     const conn = await open(makeSpec({ MOCK_HANG: '1', MOCK_READY_FILE: ready, MOCK_CODEX_STEER_UNSUPPORTED: '1' }))
     const abort = new AbortController()
     const pending = conn.prompt(ask('p'), abort.signal)
-    await until(() => existsSync(ready), 'turn in flight')
-    await expect(conn.steer('x')).rejects.toBeInstanceOf(AcpSteerUnsupportedError)
+    await until(() => existsSync(ready), 'turn in flight', 25_000)
+    await expect(steerOnceTurnKnown(conn, 'x')).rejects.toBeInstanceOf(AcpSteerUnsupportedError)
     abort.abort()
     await pending
-  })
+  }, 60_000)
 
   it('rejects steer when no turn is in flight', async () => {
     const conn = await open(makeSpec())
