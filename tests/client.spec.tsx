@@ -17,6 +17,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as client from '../src/client/index.ts'
+import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
@@ -95,8 +96,16 @@ function tabInfo(contentId = 'sidebar://acp-resume.chats'): { hook: TabInfoHook;
   return { hook: () => ({ tab: { contentId, actions: { openResource, close: closeTab } } }), openResource, closeTab }
 }
 
+const defaultFeatureView = { status: 'ready', features: {
+  chatToolsEnabled: true, workflowEnabled: true, startToolName: 'acp_chat_start',
+} } as const
+const defaultFeatureStore = {
+  getSnapshot: () => defaultFeatureView, subscribe: () => () => {}, refresh: async () => {},
+}
+
 function props(snapshot: ChatsSnapshot, overrides: Partial<ChatsPanelProps> = {}): ChatsPanelProps {
   return {
+    features: defaultFeatureStore,
     useChats: staticHook(snapshot),
     useTabInfo: tabInfo().hook,
     currentSessionId: TEST_SESSION,
@@ -454,9 +463,9 @@ describe('ChatsPanel', () => {
     }
 
     it('renders nothing for a session without workflows, and lists running then recent rows with the documented dots', () => {
-      const { container, rerender } = render(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows({ status: 'ready', running: [], recent: [] }) })} />)
+      const { container, rerender } = render(<ChatsPanel {...props(ready([chat()]), { workflowsFor: () => staticWorkflows({ status: 'ready', running: [], recent: [] }) })} />)
       expect(container.querySelector('[data-workflows]')).toBeNull()
-      rerender(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows(snapshot) })} />)
+      rerender(<ChatsPanel {...props(ready([chat()]), { workflowsFor: () => staticWorkflows(snapshot) })} />)
       const section = container.querySelector('[data-workflows]') as HTMLElement
       expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe('工作流 · 1 进行中')
       const rows = [...section.querySelectorAll('[data-workflow]')] as HTMLElement[]
@@ -472,7 +481,7 @@ describe('ChatsPanel', () => {
 
     it('expands a row into steps and members, and a member opens its chat detail tab', () => {
       const info = tabInfo()
-      const { container } = render(<ChatsPanel {...props(ready([chat()]), { workflows: staticWorkflows(snapshot), useTabInfo: info.hook })} />)
+      const { container } = render(<ChatsPanel {...props(ready([chat()]), { workflowsFor: () => staticWorkflows(snapshot), useTabInfo: info.hook })} />)
       fireEvent.click(within(container.querySelector('[data-workflow="run-ok"]') as HTMLElement).getByRole('button', { name: '展开工作流 chain' }))
       const expanded = container.querySelector('[data-workflow="run-ok"] [data-workflow-steps]') as HTMLElement
       expect(expanded.textContent).toBe('independent审核员A chat-a1b2c3d4审核员B chat-e5f6a7b8done · 交回模型')
@@ -494,7 +503,7 @@ describe('ChatsPanel', () => {
         return { ok: true, value: { running: [], recent } }
       },
     }
-    const source = new WorkflowsSource(rpc, 'session-x', () => NOW)
+    const source = new WorkflowsSource(rpc, 'session-x', true, () => NOW)
     const stop = source.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(calls).toEqual([['acpResume/workflows', { args: { ownerSessionId: 'session-x' } }]])
@@ -778,6 +787,7 @@ function mockRpc(rows: () => unknown = () => [], usage: () => PanelRpcResult = (
     calls,
     usageCalls: 0,
     call: vi.fn(async (channel: string, endpoint: string, payload: unknown): Promise<PanelRpcResult> => {
+      if (endpoint === 'acpResumeInfo/features') return { ok: true, value: defaultFeatureView.features }
       if (endpoint === 'acpResume/usage') {
         rpc.usageCalls += 1
         return usage()
@@ -977,6 +987,159 @@ function renderBody(injected: ChatsPanelInjected): void {
   render(<Body />)
 }
 
+/** Mount the actual browser plugin with one session seat and a controlled transport. */
+async function panelConnection(rpc: PanelRpc) {
+  const ctx = new Context()
+  const services = stubServices()
+  ctx.provide('slots', services.slots)
+  ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
+  ctx.provide('locale', services.locale)
+  ctx.provide('connection', { rpc })
+  await ctx.plugin(client)
+  const list = (services.bodies[0]!.options.inject as (session: string) => ChatsPanelInjected)(TEST_SESSION)
+  const detail = services.bodies[1]!.options.inject() as ChatDetailInjected
+  const title = services.bodies[2]!.options.inject() as ChatDetailInjected
+  return { ctx, list, detail, title }
+}
+
+describe('D35 capability boundaries', () => {
+  it('shares one read across the list, restored detail and title and makes no business calls when disabled', async () => {
+    vi.useFakeTimers()
+    const call = vi.fn<PanelRpc['call']>(async () => ({ ok: true, value: {
+      ...defaultFeatureView.features, chatToolsEnabled: false,
+    } }))
+    const { ctx, list, detail, title } = await panelConnection({ call })
+    expect(call).not.toHaveBeenCalled()
+    const useTabInfo = tabInfo(chatAddress('chat-12345678-abcd')).hook
+    renderBody(list)
+    render(<ChatDetail {...detail} useTabInfo={useTabInfo} t={translator(en)} />)
+    render(<ChatDetailTitle {...title} useTabInfo={useTabInfo} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.getByText('持久会话已关闭。')).toBeTruthy()
+    expect(screen.getByText('Persistent chats are disabled.')).toBeTruthy()
+    expect(screen.getByText('chat-12345678')).toBeTruthy()
+    expect(call.mock.calls).toEqual([['/api', 'acpResumeInfo/features', { args: {} }]])
+    cleanup()
+    await ctx.fiber.dispose()
+  })
+
+  it('renders the configured start tool, then refreshes into and out of the closed state', async () => {
+    let enabled = true
+    const business = mockRpc()
+    const { ctx, list } = await panelConnection({
+      call: (channel, endpoint, payload) => endpoint === 'acpResumeInfo/features'
+        ? Promise.resolve({ ok: true, value: { chatToolsEnabled: enabled, workflowEnabled: false, startToolName: 'worker_start' } })
+        : business.call(channel, endpoint, payload),
+    })
+    renderBody(list)
+    expect(await screen.findByText(/让模型调用 worker_start/)).toBeTruthy()
+    enabled = false
+    const count = listCalls(business)
+    fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
+    expect(await screen.findByText('持久会话已关闭。')).toBeTruthy()
+    expect(listCalls(business)).toBe(count)
+    enabled = true
+    fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
+    expect(await screen.findByText(/让模型调用 worker_start/)).toBeTruthy()
+    cleanup()
+    await ctx.fiber.dispose()
+  })
+
+  it('uses the legacy list and workflow polling but never guesses a tool prefix for a missing method', async () => {
+    vi.useFakeTimers()
+    let rows: PanelChat[] = []
+    const rpc = mockRpc(() => rows)
+    const { ctx, list } = await panelConnection({
+      call: (ch, endpoint, payload) => endpoint === 'acpResumeInfo/features'
+        ? Promise.resolve({ ok: false, error: { code: 'gateway/invocation-unavailable', message: 'missing' } })
+        : rpc.call(ch, endpoint, payload),
+    })
+    renderBody(list)
+    await act(async () => {})
+    expect(screen.getByText('让模型创建一个持久会话。')).toBeTruthy()
+    rows = [chat()]
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    const count = () => rpc.calls.filter(([, endpoint]) => endpoint === 'acpResume/workflows').length
+    expect(count()).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(count()).toBe(2)
+    cleanup()
+    await ctx.fiber.dispose()
+  })
+
+  it.each(['disconnect', 'remote-access/denied'])('retries %s without admitting a legacy panel', async code => {
+    let failing = true
+    const call = vi.fn<PanelRpc['call']>(async () => {
+      if (!failing) return { ok: true, value: defaultFeatureView.features }
+      if (code === 'disconnect') throw new Error(code)
+      return { ok: false, error: { code, message: 'access denied' } }
+    })
+    const features = new FeaturesSource({ call })
+    const readChats = vi.fn(() => ready([]))
+    const useChats: ChatsPanelProps['useChats'] = selector => selector(readChats())
+    render(<ChatsPanel {...props(ready([]), { features, useChats })} />)
+    expect(await screen.findByText(new RegExp(code))).toBeTruthy()
+    expect(readChats).not.toHaveBeenCalled()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
+    expect(await screen.findByText(/让模型调用 acp_chat_start/)).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates an outstanding feature read on connection/reset even with the same connection service', async () => {
+    const replies: ((result: PanelRpcResult) => void)[] = []
+    const call = vi.fn<PanelRpc['call']>(() => new Promise(resolve => { replies.push(resolve) }))
+    const { ctx, list } = await panelConnection({ call })
+    renderBody(list)
+    act(() => { ctx.emit('connection/reset') })
+    expect(replies).toHaveLength(2)
+    await act(async () => { replies[1]!({ ok: true, value: { ...defaultFeatureView.features, chatToolsEnabled: false } }) })
+    await act(async () => { replies[0]!({ ok: true, value: defaultFeatureView.features }) })
+    expect(screen.getByText('持久会话已关闭。')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
+    cleanup()
+    await ctx.fiber.dispose()
+  })
+
+  it('reads only recent workflows on opening and explicit refresh when execution is off', async () => {
+    vi.useFakeTimers()
+    let runs = true
+    const business = mockRpc(() => [chat()])
+    const history = vi.fn(() => ({ ok: true as const, value: {
+      running: [], recent: runs ? [{ runId: 'r', template: 'saved', startedAt: 1, status: 'completed',
+        steps: [{ id: 'review', members: [{ role: 'A', chatId: 'chat-1', outcome: 'completed' }] }] }] : [],
+    } }))
+    const { ctx, list } = await panelConnection({
+      call: async (ch, endpoint, payload) => {
+        if (endpoint === 'acpResumeInfo/features') return { ok: true, value: { ...defaultFeatureView.features, workflowEnabled: false } }
+        if (endpoint === 'acpResume/workflows') return history()
+        return business.call(ch, endpoint, payload)
+      },
+    })
+    const info = tabInfo()
+    const { hooks, ...rest } = list
+    const useChats: ChatsPanelProps['useChats'] = selector => selector(useSyncExternalStore(hooks.chats.subscribe, hooks.chats.getSnapshot))
+    const body = <ChatsPanel {...rest} useChats={useChats} useTabInfo={info.hook} t={t} />
+    const opened = render(body)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(history).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '展开工作流 saved' }))
+    fireEvent.click(screen.getByRole('button', { name: /打开 A/ }))
+    expect(info.openResource).toHaveBeenCalledWith(chatAddress('chat-1'))
+    runs = false
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新会话' })) })
+    expect(history).toHaveBeenCalledTimes(2)
+    expect(opened.container.querySelector('[data-workflows]')).toBeNull()
+    opened.unmount()
+    render(body)
+    await act(async () => {})
+    expect(history).toHaveBeenCalledTimes(3)
+    cleanup()
+    await ctx.fiber.dispose()
+  })
+})
+
 describe('apply (client wiring)', () => {
   it('exports only apply and inject', () => {
     expect(Object.keys(client).sort()).toEqual(['apply', 'inject'])
@@ -1166,7 +1329,7 @@ function fakeSource(snapshot: DetailSnapshot, full: (seq: number) => Promise<Ful
 
 function detailProps(source: DetailSource, overrides: Partial<ChatDetailProps> = {}, info = tabInfo(chatAddress(`chat-${UUID_A}`))) {
   const injected: ChatDetailProps = {
-    useTabInfo: info.hook, sourceFor: () => source, close: vi.fn(async () => {}), purge: vi.fn(async () => {}), t, ...overrides,
+    features: defaultFeatureStore, useTabInfo: info.hook, sourceFor: () => source, close: vi.fn(async () => {}), purge: vi.fn(async () => {}), t, ...overrides,
   }
   return { injected, info }
 }
@@ -1508,11 +1671,11 @@ describe('ChatDetail (D18, D30 density)', () => {
 describe('ChatDetailTitle', () => {
   it('shows the label when there is one, else the short id', () => {
     const labelled = detailProps(fakeSource(detailSnapshot()))
-    const { container, unmount } = render(<ChatDetailTitle useTabInfo={labelled.injected.useTabInfo} sourceFor={labelled.injected.sourceFor} />)
+    const { container, unmount } = render(<ChatDetailTitle features={defaultFeatureStore} useTabInfo={labelled.injected.useTabInfo} sourceFor={labelled.injected.sourceFor} />)
     expect(container.textContent).toBe('审阅')
     unmount()
     const bare = detailProps(fakeSource(detailSnapshot({ chat: chat() })))
-    const second = render(<ChatDetailTitle useTabInfo={bare.injected.useTabInfo} sourceFor={bare.injected.sourceFor} />)
+    const second = render(<ChatDetailTitle features={defaultFeatureStore} useTabInfo={bare.injected.useTabInfo} sourceFor={bare.injected.sourceFor} />)
     expect(second.container.textContent).toBe('chat-a1b2c3d4')
   })
 })
@@ -1523,6 +1686,7 @@ function detailRpc(handlers: { turns?: (args: Record<string, unknown>) => PanelR
   const rpc: PanelRpc & { calls: typeof calls } = {
     calls,
     call: vi.fn(async (channel: string, endpoint: string, payload: unknown): Promise<PanelRpcResult> => {
+      if (endpoint === 'acpResumeInfo/features') return { ok: true, value: defaultFeatureView.features }
       const body = payload as { args: Record<string, unknown> }
       calls.push([channel, endpoint, body])
       if (endpoint === 'acpResume/turns') {

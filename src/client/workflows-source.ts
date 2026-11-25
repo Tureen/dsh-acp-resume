@@ -21,12 +21,14 @@ export class WorkflowsSource implements Observable<WorkflowsSnapshot> {
   /**
    * @param rpc - Connection RPC caller.
    * @param ownerSessionId - the session whose workflows to show.
+   * @param poll - false reads only recent history on open and manual refresh.
    * @param now - clock for `fetchedAt`.
    * @param intervalMs - poll period while subscribed.
    */
   constructor(
     private readonly rpc: PanelRpc,
     private readonly ownerSessionId: string,
+    private readonly poll = true,
     private readonly now: () => number = Date.now,
     private readonly intervalMs: number = POLL_INTERVAL_MS,
   ) {}
@@ -38,13 +40,18 @@ export class WorkflowsSource implements Observable<WorkflowsSnapshot> {
     if (this.listeners.size === 1 && !this.disposed) {
       void this.refresh()
       clearInterval(this.timer)
-      this.timer = setInterval(() => { void this.refresh() }, this.intervalMs)
+      if (this.poll) this.timer = setInterval(() => { void this.refresh() }, this.intervalMs)
     }
     return () => {
       if (!this.listeners.delete(listener) || this.listeners.size > 0) return
       clearInterval(this.timer)
       this.timer = undefined
     }
+  }
+
+  /** A manual panel refresh reads history only while this owner's block is mounted. */
+  refreshIfSubscribed(): void {
+    if (this.listeners.size) void this.refresh()
   }
 
   /** Fetch now; never rejects. A failure (e.g. an older host) keeps the last data. */
@@ -55,7 +62,7 @@ export class WorkflowsSource implements Observable<WorkflowsSnapshot> {
       const value = await callPanel(this.rpc, 'workflows', { ownerSessionId: this.ownerSessionId }) as Partial<WorkflowsSnapshot> | null
       if (this.disposed || id !== this.latest) return
       if (value === null || !Array.isArray(value.running) || !Array.isArray(value.recent)) throw new Error('acpResume/workflows returned no workflows')
-      const next: WorkflowsSnapshot = { status: 'ready', running: value.running, recent: value.recent, fetchedAt: this.now() }
+      const next: WorkflowsSnapshot = { status: 'ready', running: this.poll ? value.running : [], recent: value.recent, fetchedAt: this.now() }
       const { fetchedAt: _old, ...was } = this.snapshot
       const { fetchedAt: _new, ...is } = next
       // Unchanged content keeps the reference, except while a run is going (its time display follows fetchedAt).

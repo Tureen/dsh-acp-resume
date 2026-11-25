@@ -28,6 +28,7 @@
 
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import { parseChatAddress } from './chat-address.ts'
 import { ChatStateDot, chatDotState, LiveElapsed, relativeTime, shortChatId } from './ChatsPanel.tsx'
 import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, PanelChat, RunningItem, TabInfoHook, TurnItem } from './face.ts'
@@ -404,14 +405,16 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
  * @param props - the data-source factory, commands, the tab-info hook, and copy.
  * @returns the detail body.
  */
-export function ChatDetail({ useTabInfo, sourceFor, close, purge, t }: ChatDetailProps): ReactNode {
+export function ChatDetail({ useTabInfo, features, sourceFor, close, purge, t }: ChatDetailProps): ReactNode {
   const { tab } = useTabInfo()
   const chatId = parseChatAddress(tab.contentId)
   if (chatId === undefined) {
     return <section style={styles.root}><p role="alert" style={styles.error}>{t('goneTitle')}</p></section>
   }
-  return <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} close={close} purge={purge}
-    closeTab={() => { tab.actions.close() }} t={t} />
+  return <PanelFeatureGate source={features} t={t}>{() =>
+    <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} close={close} purge={purge}
+      closeTab={() => { tab.actions.close() }} t={t} />
+  }</PanelFeatureGate>
 }
 
 /**
@@ -419,11 +422,13 @@ export function ChatDetail({ useTabInfo, sourceFor, close, purge, t }: ChatDetai
  * @param props - the data-source factory and the tab-info hook.
  * @returns the title text.
  */
-export function ChatDetailTitle({ useTabInfo, sourceFor }: Pick<ChatDetailProps, 'useTabInfo' | 'sourceFor'>): ReactNode {
+export function ChatDetailTitle({ useTabInfo, sourceFor, features }: Pick<ChatDetailProps, 'useTabInfo' | 'sourceFor' | 'features'>): ReactNode {
   const { tab } = useTabInfo()
   const chatId = parseChatAddress(tab.contentId)
   if (chatId === undefined) return tab.contentId
-  return <ChatDetailTitleText chatId={chatId} source={sourceFor(chatId)} />
+  return <PanelFeatureGate source={features} fallback={shortChatId(chatId)}>{() =>
+    <ChatDetailTitleText chatId={chatId} source={sourceFor(chatId)} />
+  }</PanelFeatureGate>
 }
 
 function ChatDetailTitleText({ chatId, source }: { readonly chatId: string; readonly source: DetailSource }): ReactNode {

@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
+import type { PanelFeatures } from './panel-features.js'
 import type { LogEntry } from './turn-log.js'
 import type { BackendUsage, UsageService } from './usage.js'
 
@@ -110,6 +111,19 @@ function summarize(entry: LogEntry): TurnSummary | EventSummary {
     outputMore: output.more || entry.outputTruncated === true,
     stopReason: entry.stopReason, freshSession: entry.freshSession,
     ...(entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic }),
+  }
+}
+
+/** Configuration-only Remote available for the entire host plugin lifetime (D35). */
+export class AcpResumeInfoService extends TypertRemoteService {
+  constructor(ctx: Context, private readonly panelFeatures: PanelFeatures) {
+    super(ctx, 'acpResumeInfo')
+  }
+
+  /** Read effective feature switches without allocating a pool or probing a backend. */
+  @Remote
+  features(): PanelFeatures {
+    return { ...this.panelFeatures }
   }
 }
 

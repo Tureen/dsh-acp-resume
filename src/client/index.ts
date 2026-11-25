@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { ChatsPanel, shortChatId } from './ChatsPanel.tsx'
 import { ChatDetail, ChatDetailTitle } from './ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, parseChatAddress } from './chat-address.ts'
+import { FeaturesSource } from './features-source.ts'
 import { BackendStatusSource } from './backend-status-source.ts'
 import { ChatsSource, type PanelRpc } from './chats-source.ts'
 import { ChatDetailSource } from './detail-source.ts'
@@ -40,6 +41,9 @@ type Disposer = () => void
  * Cordis Context (no official Client package types are imported; §3.6.2).
  */
 declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'connection/reset'(): void
+  }
   interface Context {
     /** Connection carrier: generic logical RPC over the current transport. */
     connection: { readonly rpc: PanelRpc }
@@ -70,6 +74,9 @@ export function apply(ctx: Context): void {
     console.warn('dsh-acp-resume: no connection service; the persistent-chat panel is not registered until one appears')
   }
   ctx.inject(['connection'], (scope) => {
+    const features = new FeaturesSource(scope.connection.rpc)
+    scope.on('connection/reset', () => features.reset())
+    scope.effect(() => () => features.dispose(), 'dsh-acp-resume.panel-features')
     const source = new ChatsSource(scope.connection.rpc)
     scope.effect(() => () => { source.dispose() }, 'dsh-acp-resume.panel-source')
     const backendStatus = new BackendStatusSource(scope.connection.rpc)
@@ -80,22 +87,32 @@ export function apply(ctx: Context): void {
       for (const workflows of workflowSources.values()) workflows.dispose()
       workflowSources.clear()
     }, 'dsh-acp-resume.workflow-sources')
-    const workflowsFor = (sessionId: string): WorkflowsSource => {
-      let workflows = workflowSources.get(sessionId)
+    const workflowsFor = (sessionId: string, poll: boolean): WorkflowsSource => {
+      const key = `${poll ? 'live' : 'history'}:${sessionId}`
+      let workflows = workflowSources.get(key)
       if (workflows === undefined) {
-        workflows = new WorkflowsSource(scope.connection.rpc, sessionId)
-        workflowSources.set(sessionId, workflows)
+        workflows = new WorkflowsSource(scope.connection.rpc, sessionId, poll)
+        workflowSources.set(key, workflows)
       }
       return workflows
     }
     const injectedFor = (sessionId: string | undefined): ChatsPanelInjected => ({
+      features,
       hooks: { chats: source },
       backendStatus,
-      ...(sessionId === undefined ? {} : { workflows: workflowsFor(sessionId) }),
+      ...(sessionId === undefined ? {} : { workflowsFor: (poll: boolean) => workflowsFor(sessionId, poll) }),
       // The seat is session-scoped: `inject(sessionId)` names the on-screen
       // session, used only for the panel's "this session" filter (D20).
       currentSessionId: sessionId,
-      refresh: () => { void source.refresh() },
+      refresh: async () => {
+        await features.refresh()
+        const view = features.getSnapshot()
+        if (view.status !== 'legacy' && !(view.status === 'ready' && view.features.chatToolsEnabled)) return
+        void source.refresh()
+        if (sessionId !== undefined && view.status === 'ready' && !view.features.workflowEnabled) {
+          workflowsFor(sessionId, false).refreshIfSubscribed()
+        }
+      },
       close: chatId => source.close(chatId),
       purge: chatId => source.purge(chatId),
     })
@@ -107,6 +124,7 @@ export function apply(ctx: Context): void {
       details.clear()
     }, 'dsh-acp-resume.detail-sources')
     const detailInjected: ChatDetailInjected = {
+      features,
       sourceFor: (chatId): DetailSource => {
         let detail = details.get(chatId)
         if (detail === undefined) {

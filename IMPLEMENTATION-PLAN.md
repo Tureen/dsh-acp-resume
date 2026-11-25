@@ -32,6 +32,7 @@
 | 17 | D31 PR #1 二轮审阅修订 | 仍默认开启发现；仅顶层 Kiro 可执行文件明确找不到时回退到 Codex、`agy`，不因版本、握手或认证问题改派；显式选择和旧会话不变 | 覆盖旧配置升级、瞬时失败不改派、角色供给及建会话 ENOENT 固定指引；隔离 PATH 后全量 553 例通过，24 例按 D8 跳过 | ◐ 自动化通过，D8 与 Desktop 实测待补 |
 | 18 | D32 Dispatcher 的团队上下文 | 角色蓝图 `summary`、首次播种前置英文团队上下文(无 seeding 不加轮)、`acp_team_list`、persona 三句、示例模板 | `team.spec` 覆盖 summary 解析、上下文文本、无 seeding 零轮、三态与 headless、真池回显;`workflow: false` 工具面不变;全量 585 绿 | ☑ |
 | 19 | D33 开关拆分 | Config `roles`(默认 true)管 role 参数、`acp_team_list`、团队上下文与列表角色末行;`workflow` 只管 `acp_workflow` 与模板末行;`roles: false` + `workflow: true` 加载报错;persona、报错出路、注入措辞随之调整 | `tools.spec` 四种组合各断言工具名、`role` 参数与列表末行，另测配置冲突与无团队文件时的出路;`roles: false, workflow: false` 工具面与 D27 之前逐字节一致;全量 591 绿 | ☑ |
+| 20 | D35 能力查询与面板开关 | 连接级共享能力读取、三处关闭态、工作流只读历史与旧宿主兼容 | 本机按文件单次验证 panel 23/23、client 110/110；全量回归留给 CI | ☑ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

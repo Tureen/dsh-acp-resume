@@ -31,7 +31,7 @@ import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS,
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
 import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, teamListTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { UsageService } from './usage.js'
-import { AcpResumePanelService } from './panel.js'
+import { AcpResumeInfoService, AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
@@ -442,7 +442,15 @@ export function apply(ctx: Context, config: Config): void {
   const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined =>
     userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
   const backends = backendSpecs(ctx, resolved)
+  if (resolved.enableChatTools && resolved.defaultBackend !== undefined && !backends.has(resolved.defaultBackend)) {
+    throw new Error(`acp-resume: defaultBackend must name an available backend definition or default`)
+  }
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
+  new AcpResumeInfoService(ctx, {
+    chatToolsEnabled: resolved.enableChatTools,
+    workflowEnabled: resolved.workflow,
+    startToolName: `${resolved.toolPrefix}start`,
+  })
   if (!resolved.enableChatTools) return
 
   const registryPath = resolved.registryPath === ''
@@ -466,9 +474,6 @@ export function apply(ctx: Context, config: Config): void {
         (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
     },
   })
-  if (resolved.defaultBackend !== undefined && !backends.has(resolved.defaultBackend)) {
-    throw new Error(`acp-resume: defaultBackend must name an available backend definition or default`)
-  }
   let checkedAtStartup = false
   ctx.effect(() => () => readiness.dispose())
   // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled

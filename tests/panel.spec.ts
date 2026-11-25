@@ -23,7 +23,9 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { BackendStatusService, BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as acp from '../src/index.ts'
-import { AcpResumePanelService, PANEL_SERVICE_KEY } from '../src/panel.ts'
+import { WorkflowLog } from '../src/workflow-log.ts'
+import { BackendReadinessService } from '../src/backend-readiness.ts'
+import { AcpResumeInfoService, AcpResumePanelService, PANEL_SERVICE_KEY } from '../src/panel.ts'
 import { AcpSessionPool, type BackendSpec } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
@@ -424,14 +426,45 @@ describe('apply (panel wiring)', () => {
     expect(ctx.get(PANEL_SERVICE_KEY)).toBeUndefined()
   })
 
-  it('registers no panel service when enableChatTools is false', async () => {
+  it('keeps the workflow history DTO readable with workflow execution disabled', async () => {
     const ctx = await host()
+    const dir = tempDir('acp-resume-history-')
+    const log = new WorkflowLog(join(dir, 'workflows'))
+    log.appendRunStart('owner', 'r', 'review', 1)
+    log.appendRunEnd('owner', 'r', 2, 'completed', [])
     await ctx.plugin(StubTools)
-    const registryPath = join(tempDir('acp-resume-panel-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, enableChatTools: false })
+    const fiber = await ctx.plugin(acp, {
+      command: 'fixture-acp', discoverBackends: false, registryPath: join(dir, 'registry.json'), workflow: false,
+    })
     cleanups.push(() => fiber.dispose())
-    await new Promise(r => setTimeout(r, 50))
+    const info = ctx.get('acpResumeInfo') as unknown as AcpResumeInfoService
+    expect(info.features()).toEqual({ chatToolsEnabled: true, workflowEnabled: false, startToolName: 'acp_chat_start' })
+    const panel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
+    expect(panel.workflows('owner')).toEqual({
+      running: [], recent: [{ runId: 'r', template: 'review', startedAt: 1, endedAt: 2, status: 'completed', steps: [] }],
+    })
+    expect(panel.workflows('another-owner')).toEqual({ running: [], recent: [] })
+  })
+
+  it('keeps one-shot and the configuration Remote without starting panel services or detection when disabled', async () => {
+    const ctx = await host()
+    const check = vi.spyOn(BackendReadinessService.prototype, 'check')
+    const registryPath = join(tempDir('acp-resume-panel-apply-'), 'registry.json')
+    const fiber = await ctx.plugin(acp, {
+      command: process.execPath, args: [mockServer], registryPath, enableChatTools: false, toolPrefix: 'worker_',
+    })
+    cleanups.push(() => fiber.dispose())
+    const info = ctx.get('acpResumeInfo') as unknown as AcpResumeInfoService
+    expect(info.typertRemote.namespace).toBe('acpResumeInfo')
+    expect(remoteMethods(info).map(m => m.exportName ?? m.method)).toEqual(['features'])
+    expect(info.features()).toEqual({ chatToolsEnabled: false, workflowEnabled: false, startToolName: 'worker_start' })
+    expect(ctx.subagents.getProvider('acp-resume')).toBeDefined()
+    await ctx.plugin(StubTools)
     expect(ctx.get(PANEL_SERVICE_KEY)).toBeUndefined()
+    expect(check).not.toHaveBeenCalled()
     expect(existsSync(registryPath)).toBe(false)
+    await fiber.dispose()
+    expect(ctx.get('acpResumeInfo')).toBeUndefined()
+    check.mockRestore()
   })
 })

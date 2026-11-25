@@ -7,6 +7,7 @@
  * @module dsh-acp-resume/client/face
  */
 
+import type { PanelFeatures } from '../panel-features.ts'
 import type { BackendStatusSnapshot } from '../backend-status.ts'
 
 /**
@@ -74,6 +75,17 @@ export interface ChatsSnapshot {
 export interface Observable<T> {
   getSnapshot(): T
   subscribe(listener: () => void): () => void
+}
+
+/** Host capability read result. Only a missing endpoint selects the legacy protocol. */
+export type FeatureView =
+  | { readonly status: 'loading' | 'legacy' }
+  | { readonly status: 'error'; readonly message: string }
+  | { readonly status: 'ready'; readonly features: PanelFeatures }
+
+/** Shared by every sidebar body and title in the connection scope. */
+export interface FeatureStore extends Observable<FeatureView> {
+  refresh(): Promise<void>
 }
 
 /** Structural twin of the official `SnapshotSelectorHook` the renderer binds from a `hooks` source. */
@@ -151,6 +163,7 @@ export interface DetailSource extends Observable<DetailSnapshot> {
 
 /** What the detail body's registration injects. */
 export interface ChatDetailInjected {
+  readonly features: FeatureStore
   /** The data source for a chat; one per chatId, shared by the body and the chip title. */
   readonly sourceFor: (chatId: string) => DetailSource
   readonly close: (chatId: string) => Promise<void>
@@ -212,10 +225,11 @@ export interface BackendStatusSourceFace extends Observable<BackendStatusView> {
 
 /** What the sidebar slot injects before the renderer binds `hooks`. */
 export interface ChatsPanelInjected {
+  readonly features: FeatureStore
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }
   readonly backendStatus?: BackendStatusSourceFace
   /** The viewing session's workflow runs (D29); absent without a session on screen. */
-  readonly workflows?: Observable<WorkflowsSnapshot>
+  readonly workflowsFor?: (poll: boolean) => Observable<WorkflowsSnapshot>
   /** The DSH session viewing the panel (the seat's `inject` sessionId); `undefined` when none is on screen. */
   readonly currentSessionId: string | undefined
   /** Fetch now; the result arrives through `chats`. */

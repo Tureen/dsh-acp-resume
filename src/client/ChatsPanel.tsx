@@ -27,6 +27,8 @@
 import { useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { BackendStatus } from '../backend-status.ts'
+import { PanelFeatureGate } from './PanelFeatureGate.tsx'
+import type { PanelFeatures } from '../panel-features.ts'
 import { chatAddress } from './chat-address.ts'
 import type { BackendStatusSourceFace, BackendStatusView, ChatsPanelInjected, ChatsSnapshot, Observable, PanelChat, PanelUsage, PanelWorkflowStep, SelectorHook, TabInfoHook, WorkflowsSnapshot } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
@@ -70,9 +72,6 @@ let activeExpanded = false
 export function resetChatsPanelViewState(): void {
   activeExpanded = false
 }
-
-/** Tool the empty state points the user to. */
-const START_TOOL = 'acp_chat_start'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -570,7 +569,14 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCa
  * @param props - bound chats hook, commands, and copy.
  * @returns the panel body.
  */
-export function ChatsPanel({ useChats, useTabInfo, currentSessionId, backendStatus, workflows, refresh, close, purge, t }: ChatsPanelProps): ReactNode {
+export function ChatsPanel(props: ChatsPanelProps): ReactNode {
+  return <PanelFeatureGate source={props.features} t={props.t}>
+    {config => <ChatsPanelView {...props} config={config} />}
+  </PanelFeatureGate>
+}
+
+function ChatsPanelView({ useChats, useTabInfo, currentSessionId, backendStatus, workflowsFor, config, refresh, close, purge, t }:
+  ChatsPanelProps & { config?: PanelFeatures }): ReactNode {
   const snapshot = useChats(s => s)
   const backendStore = backendStatus ?? NO_BACKEND_STATUS
   const backendView = useSyncExternalStore(backendStore.subscribe, backendStore.getSnapshot)
@@ -647,7 +653,8 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, backendStat
               <p style={styles.heading}>{snapshot.chats.length === 0 ? t('emptyTitle') : t('countMine', { count: 0, total: snapshot.chats.length })}</p>
               {backendPending ? null : <p style={styles.notice}>{backendView?.data?.dispatchEnabled === false
                 ? t('backendEmptyChatHint')
-                : snapshot.chats.length === 0 ? t('emptyHint', { tool: START_TOOL }) : t('emptySessionHint')}</p>}
+                : snapshot.chats.length > 0 ? t('emptySessionHint')
+                  : config ? t('emptyHint', { tool: config.startToolName }) : t('emptyGenericHint')}</p>}
             </div>
           )
           : (
@@ -663,7 +670,7 @@ export function ChatsPanel({ useChats, useTabInfo, currentSessionId, backendStat
                   {activeOpen ? t('collapseActive') : t('showRest', { count: activeChats.length - ACTIVE_FOLD_SHOWN })}
                 </Button>
               )}
-              <WorkflowsSection source={workflows ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
+              <WorkflowsSection source={workflowsFor?.(config?.workflowEnabled ?? true) ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
               {releasedChats.length === 0 ? null : (
                 <>
                   <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={releasedOpen}
