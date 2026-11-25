@@ -58,6 +58,8 @@
 - 后台模式下工具调用自身的取消信号不再作用于这一轮(工具在返回 jobId 时已结束,轮归 job 所有);同步降级模式仍按原条执行;
 - 失败轮、降级注记、close 语义不变;降级注记成为 job 输出的第一行。
 
+修订(2026-11-25,与 D31 的关系):D31 的就绪检查与改派只作用于新建会话(`acp_chat_start`)和角色的首次供给。已有 chat 的 send、空闲释放后的重连(`session/load` / `thread/resume`)、steer 都不经过就绪检查，按注册表里记录的后端与本条的降级规则处理;检测结果变化(例如 Kiro 后来装上了)不会把已有 chat 换到别的后端。D6 降级(协议级会话不存在，或连续 3 条 `error`)为 Codex 后端新建线程时，只使用该后端配置里显式写的 `model`;自动发现的 Codex 没有显式模型，因此不传模型，沿用 app-server 的默认，与 D31「重连自动发现的线程不传新默认模型」一致。就绪服务通过检测得到的默认模型只用于 `acp_chat_start` 的新建。
+
 ## D7 session/load 参数形状(2026-11-03 实测)
 
 kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测可用;`session/list` v2 无(v3 才有)。重连必须回放原 cwd。
@@ -352,6 +354,8 @@ D24 已作为一项原子增量实现。验收覆盖：0.1.20 单后端 `acp_cha
 
 修订(2026-11-18,默认后端统一用可回传名):`PooledChatInfo.backend` 一律是 `start` 能接受的名字(默认后端为 `default`),展示用的友好名放独立字段 `backendDisplay`(默认后端取 command 基名，如 `kiro-cli`;命名后端即其名)。此前 `backend` 对默认后端给的是 command 基名，模型把 `kiro-cli` 传回多后端版 `acp_chat_start` 会报 unknown backend。面板徽标用 `backendDisplay`,旧宿主缺该字段时回落 `backend`。`acp_chat_list` 每行改为 `backend <名字> | <状态>`,状态为 `running (<本轮已跑时长>)`、`idle (<距上轮>)`(进程在、无在途轮)或 `released (…)`,不再统一写 idle;去掉 `owner <前8位>` 列(D20 已按本会话过滤，该列全是同一值)。多后端版 `acp_chat_start` 回执改为 `chat started: <chatId> (backend: <名字>, cwd: <cwd>); send messages with …`,输出结构加 `backend`、`cwd`;单后端版工具定义与回执逐字节不变。
 
+修订(2026-11-25,与 D31 自动发现的关系):开启自动发现(`discoverBackends`,默认 `true`)时，候选后端至少有 3 个(默认后端加上自动发现的 Codex 与 `agy`,已配置同类后端的除外),`acp_chat_start` 因此总是多后端版(带可选 `backend` 参数)。本条「单后端版工具定义与 0.1.20 逐字节一致」的承诺，实际只在 `discoverBackends: false` 且没有配置命名后端时成立;对应的逐字节夹具测试也是在这个前提下跑的。
+
 ## D25 Codex app-server 私有协议适配器(2026-11-18,实施完成,mock 全绿,真机探针待做)
 
 ### 动机
@@ -451,6 +455,12 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
 - persona 提示词为英文,与官方 persona 一致;中文用户通常不受影响,不另做本地化。
 - 修订(2026-11-18,调度纪律):persona 去掉「用 acp_chat_list 跟踪进度」(会诱导轮询),改为「用 acp_chat_send 派工(记下 jobId)、等完成通知、用 job_output 收结果」,与 D22 一致;另加三条：目标目录不明确时先问用户再建 chat;同一 cwd 的多个 worker 写文件范围不得重叠;轻量查证直接用 web 工具，完整调研交给 worker。
 - 修订(2026-11-18,结果汇总框架与模式描述):persona 末句「Collect results from completed jobs and synthesize the final answer」换成汇总判断框架(有依赖的等前置完成;独立结果到一条报一条并说明还在跑的;区分阻塞性与参考性结果;部分结果已能回答就立即给出)。prefix 改为 YAML 字面块(`|-`)保留换行，让清单仍是清单;没有放进 persona 的 `suffix`,因为官方 suffix 排在第一方指引之后、与调度身份分离。preset 加 `description`(官方 `dsh-agent-preset` Config 字段，纯字符串、不分语言),修复选模式时描述为空。
+- 修订(2026-11-25,随 D31 调整提示词):PR #1 改写了 persona 开头两句，改为四句:
+  1. 派工或报告可用 worker 之前，先调用后端状态工具(默认前缀下为 `acp_backend_status`);它不会建会话。启动与发送工具名可能带自定义前缀。
+  2. 检测进行中要如实说明;CLI 升级、登录或默认模型变化后，可在「右侧栏 → ACP 会话 → 后端状态旁的『重新检测后端』」重新检测，不删会话、不登出、不改设置;不要建测试会话。
+  3. 用户选定的后端要把它的 ID 传给 `acp_chat_start`,绝不替换;否则用配置的默认。未固定的 Kiro 默认只在 DSH 找不到 Kiro 可执行文件时才回退到就绪的 Codex、再到 Antigravity,发生时要说明;已安装 Kiro 的版本、握手或登录问题不是换后端的理由。自动发现的 Codex 是只读的，不要派需要写文件的任务。新建失败时说明原因与可选项。
+  4. 对已有 chat 按 chatId 续聊，不因检测结果换后端;派工(记 jobId)、等完成通知、用 `job_output` 收结果的纪律不变。
+  其余各句(目录不明先问、同 cwd 写入范围不重叠、轻量查证用 web、不亲自执行、汇总判断框架)不变。preset 标识 `acp-dispatcher` 保持不变(D31「模式与边界」)。
 
 ## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施：配置层、花名册、自动供给、工具 role 参数;同日第二轮实施 `acp_workflow` 引擎与 steer 的 role)
 
@@ -583,6 +593,10 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 ### 修订(2026-11-20,三方审核：未知字段严格校验)
 
 每一层映射(文件顶层、角色、模板、步骤、`merge`、`parallel` 里的对象项)都只接受已知字段，出现未知字段即判整份配置无效，报错写明字段名与允许的字段(如 `roles[0] has unknown field seed; allowed: name, backend, cwd, seeding`)。原因：把 `seeding` 写成 `seed` 时原先静默无播种。顶层允许可选的 `version`,给出时必须为 `1`(真机配置已在用)。同一步骤同时写 `merge` 与 `parallel` 报错(原先 `parallel` 被静默丢弃);merge 步骤的步骤级 `prompt` 也报错，合并指令应写在 `merge.prompt`。
+
+### 修订(2026-11-25,蓝图省略 `backend` 时的取值)
+
+角色蓝图不写 `backend` 时，首次供给按新建会话的路由走(D31):找得到 Kiro 时用 `default`;宿主查找明确找不到配置的 Kiro 可执行文件时，改派到就绪的 Codex(只读)或 `agy`,首次供给的回答首行会写明(D31 2026-11-25 修订)。花名册记录的是 chatId,而 chat 的后端在创建时就定下了，所以该角色会**持续绑定在改派后的后端上**,之后即使 Kiro 能找到了也不会自动换回，直到以 role 调 `acp_chat_close` 解绑，下次引用再按当时的路由重建。这是已知行为，不是缺陷;需要固定后端的角色应在蓝图里写明 `backend`。工作流步骤引用的角色同样适用(它们与 send 的 role 共用花名册与自动供给),且 D31 修订注明工作流结果 JSON 暂不标注改派。
 
 ## D28 后端额度查询：先接 Codex(2026-11-20)
 
