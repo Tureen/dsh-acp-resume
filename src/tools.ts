@@ -759,6 +759,51 @@ export function chatWorkflowTool(
   })
 }
 
+/**
+ * The team list tool (D32): every role of the caller's workspace team file in
+ * written order, with its summary and its live state in the calling session's
+ * roster — `not provisioned`, `idle`, or `running (<elapsed>)`, read from the
+ * pool at call time (never cached). Without a calling session the roster is
+ * unknown (rosters are per session), so every state is `unknown`. The name
+ * follows the tool prefix as `acp_backend_status` does (`acp_team_list` by default).
+ * @param pool - roster and in-flight state.
+ * @param roles - workspace access; the tool exists only with the workflow feature on.
+ * @param toolPrefix - the chat tools' prefix.
+ */
+export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefix = 'acp_chat_'): ToolDefinitionOf {
+  return defineTool({
+    name: `${toolPrefix.replace(/chat_$/, '')}team_list`,
+    description: 'List the workspace ACP team from .agents/acp-team.yml, read-only: one line per role with its summary and whether it can take work now '
+      + '(not provisioned: its chat is set up on first use; idle: send to it; running: it has a turn in flight, so steer it or wait for its completion notice). '
+      + 'Use it before choosing a role. Workers do not talk to each other directly: when one needs another\'s result, put it in your dispatch message.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      exec.signal.throwIfAborted()
+      const agent = exec.agent
+      const dir = agent === undefined ? process.cwd() : roles.workspaceDirFor(agent)
+      const read = readTeamConfig(dir)
+      if (read.kind === 'none') return { text: `no workspace team config (.agents/acp-team.yml) found from ${dir}` }
+      if (read.kind === 'invalid') return { text: `workspace config error: ${read.path}: ${read.error}` }
+      if (read.config.roles.length === 0) return { text: `no roles defined in ${read.path}` }
+      const roster = agent === undefined ? undefined : pool.listRoster(agent.id)
+      const now = Date.now()
+      const state = (role: string): string => {
+        if (roster === undefined) return 'unknown'
+        const entry = roster.find(e => e.role === role)
+        if (entry === undefined) return 'not provisioned'
+        const inFlight = pool.chatInfo(entry.chatId)?.inFlight
+        return inFlight === undefined ? 'idle' : `running (${formatElapsed(inFlight.startedAt, now)})`
+      }
+      return { text: read.config.roles.map(r => `${r.name} · ${r.summary ?? '(no summary)'} · ${state(r.name)}`).join('\n') }
+    },
+  })
+}
+
 /** Name of the backend usage tool (D28); fixed, not under the chat tools' prefix. */
 export const USAGE_TOOL = 'acp_backend_usage'
 
@@ -816,7 +861,7 @@ export function registerChatTools(
   permissionResolverFor?: (agent: Agent | undefined) => PermissionRequestResolver | undefined,
 ): void {
   const [start, list, close, steer] = chatStaticTools(pool, toolPrefix, [], roles)
-  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs, permissionResolverFor)]
+  const workflow = roles === undefined ? [] : [chatWorkflowTool(pool, roles, jobs, permissionResolverFor), teamListTool(pool, roles, toolPrefix)]
   for (const definition of [start, chatSendTool(pool, toolPrefix, jobs, permissionResolverFor, roles), list, close, steer, ...workflow]) {
     ctx.effect(() => tools.register(definition))
   }

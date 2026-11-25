@@ -17,7 +17,7 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { AcpSessionPool, type RoleCallContext } from '../src/pool.ts'
 import { Roster, type RosterTable } from '../src/roster.ts'
 import { findTeamConfig, loadTeamConfig, parseTeamConfig, seedingWithTeam, teamContext } from '../src/team-config.ts'
-import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { registerChatTools, teamListTool, type ToolsRegistryFace } from '../src/tools.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -299,6 +299,49 @@ describe('AcpSessionPool roles (D27)', () => {
     expect(() => { pool.assertRoleSendable('reviewer', ctx(root)) }).toThrow(/still being set up/)
     await expect(running).resolves.toMatchObject({ provisioned: true })
     expect(pool.listChats()).toHaveLength(1)
+  })
+})
+
+describe('acp_team_list (D32)', () => {
+  const TEAM3 = 'roles:\n  - name: scout\n    summary: Maps the code.\n  - name: reviewer\n    summary: Reviews diffs.\n    seeding: 你是审阅者\n  - name: writer\n'
+  const run = async (tool: ReturnType<typeof teamListTool>, agentId: string | null): Promise<string> =>
+    ((await tool.execute({}, { signal: new AbortController().signal, ...(agentId === null ? {} : { agent: { id: agentId } }) } as unknown as ToolRunContext)) as { text: string }).text
+
+  it('lists every role in written order with its summary and live state: not provisioned, idle, running', async () => {
+    const root = workspace(TEAM3)
+    const hold = join(root, 'hold')
+    const { pool } = makePool({ MOCK_PROMPT_HOLD: hold })
+    const tool = teamListTool(pool, { workspaceDirFor: () => root })
+    expect(tool.name).toBe('acp_team_list')
+    expect(teamListTool(pool, { workspaceDirFor: () => root }, 'kc_').name).toBe('kc_team_list')
+    expect(await run(tool, 'session-a')).toBe('scout · Maps the code. · not provisioned\nreviewer · Reviews diffs. · not provisioned\nwriter · (no summary) · not provisioned')
+    await pool.sendByRole('scout', 'p', { ownerSessionId: 'session-a', workspaceDir: root })
+    writeFileSync(hold, 'held')
+    const running = pool.sendByRole('writer', 'long', { ownerSessionId: 'session-a', workspaceDir: root })
+    const deadline = Date.now() + 5000
+    while (!/writer · \(no summary\) · running/.test(await run(tool, 'session-a')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 20))
+    expect(await run(tool, 'session-a')).toMatch(/^scout · Maps the code\. · idle\nreviewer · Reviews diffs\. · not provisioned\nwriter · \(no summary\) · running \(\d+s\)$/)
+    // Rosters are per session: another session sees nothing provisioned.
+    expect(await run(tool, 'session-b')).toContain('scout · Maps the code. · not provisioned')
+    rmSync(hold)
+    await running
+    expect(await run(tool, 'session-a')).toContain('writer · (no summary) · idle')
+  })
+
+  it('reports unknown states without a calling session, and says when there is no or an invalid team file', async () => {
+    const root = workspace(TEAM3)
+    const { pool } = makePool()
+    const previous = process.cwd()
+    process.chdir(root)
+    try {
+      expect(await run(teamListTool(pool, { workspaceDirFor: () => root }), null)).toBe('scout · Maps the code. · unknown\nreviewer · Reviews diffs. · unknown\nwriter · (no summary) · unknown')
+    } finally {
+      process.chdir(previous)
+    }
+    const empty = tempDir('acp-resume-team-none-')
+    expect(await run(teamListTool(pool, { workspaceDirFor: () => empty }), 'session-a')).toBe(`no workspace team config (.agents/acp-team.yml) found from ${empty}`)
+    const bad = workspace('roles:\n  - name: a\n    seed: x\n')
+    expect(await run(teamListTool(pool, { workspaceDirFor: () => bad }), 'session-a')).toMatch(/^workspace config error: .*roles\[0\] has unknown field seed/)
   })
 })
 

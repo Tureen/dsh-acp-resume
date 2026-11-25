@@ -318,13 +318,14 @@ async function until(predicate: () => boolean, what: string, timeoutMs = 5000): 
 }
 
 describe('apply (plugin wiring)', () => {
-  it('registers the provider under the default name, the five prefixed tools, and acp_workflow with workflow: true', async () => {
+  it('registers the provider under the default name, the five prefixed tools, acp_workflow, and the prefixed team list with workflow: true', async () => {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-apply-'), 'registry.json')
     const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, toolPrefix: 'kc_', workflow: true })
     cleanups.push(() => fiber.dispose())
-    await until(() => stubTools(ctx).registered.size === 8, 'tool registration')
-    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer'])
+    await until(() => stubTools(ctx).registered.size === 9, 'tool registration')
+    // D32: the team list follows the prefix (kc_ → kc_team_list), as backend status does.
+    expect([...stubTools(ctx).registered.keys()].sort()).toEqual(['acp_backend_usage', 'acp_workflow', 'kc_backend_status', 'kc_close', 'kc_list', 'kc_send', 'kc_start', 'kc_steer', 'kc_team_list'])
   })
 
   it('registers the five chat tools and backend status, without workflow by default', async () => {
@@ -560,7 +561,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     const beforeCheck = new Map(tools)
     expect([...beforeCheck.keys()].sort()).toEqual([
       'acp_backend_status', 'acp_backend_usage', 'acp_chat_close', 'acp_chat_list',
-      'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_workflow',
+      'acp_chat_send', 'acp_chat_start', 'acp_chat_steer', 'acp_team_list', 'acp_workflow',
     ])
     await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic backend check')
     expect(panel.backends()).toMatchObject({ defaultBackend: 'codex', dispatchEnabled: true, checking: false })

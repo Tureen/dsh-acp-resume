@@ -29,7 +29,7 @@ import { isAbsolute } from 'node:path'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { acpConfigurationFailure, type AcpRunSpec, DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS, type PermissionPolicy, startAcpRun } from './run.js'
 import { AcpSessionPool, DEFAULT_BACKEND, type BackendSpec } from './pool.js'
-import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, type ChatJobsFace, type RoleSupport } from './tools.js'
+import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWorkflowTool, teamListTool, type ChatJobsFace, type RoleSupport } from './tools.js'
 import { UsageService } from './usage.js'
 import { AcpResumePanelService } from './panel.js'
 import type { AcpSessionSpec } from './connection.js'
@@ -451,7 +451,8 @@ export function apply(ctx: Context, config: Config): void {
     const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
     const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
       false, preferred, allowMissingKiroFallback && preferred === undefined)
-    for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix)]) {
+    // D32: the team list exists with the workflow feature; with it off the tool surface is unchanged.
+    for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
       scope.effect(() => scope.tools.register(tool))
     }
     usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
