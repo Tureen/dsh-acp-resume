@@ -31,6 +31,7 @@ jobs:
       - run: npm publish --provenance
 
   market-index:
+    continue-on-error: true
     needs: publish
     runs-on: ubuntu-latest
     permissions:
