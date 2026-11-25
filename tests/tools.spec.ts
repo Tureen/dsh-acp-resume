@@ -603,6 +603,55 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default' })
   }, 10_000)
 
+  it.skipIf(process.platform === 'win32')('names a kiro-not-found fallback in the start receipt and the first role send, but not an explicit or kiro start (D31)', async () => {
+    const ctx = await host()
+    const fixture = autoFixture()
+    const workspace = tempDir('acp-resume-fallback-ws-')
+    mkdirSync(join(workspace, '.agents'))
+    writeFileSync(join(workspace, '.agents', 'acp-team.yml'), 'roles:\n  - name: reviewer\n')
+    const fiber = await ctx.plugin(acp, fixture.config)
+    cleanups.push(() => fiber.dispose())
+    const panel = ctx.get('acpResume')!
+    await until(() => panel.backends().defaultBackend === 'codex' && !panel.backends().checking, 'automatic codex check')
+    const tools = stubTools(ctx).registered
+    const start = tools.get('acp_chat_start')!
+    const args = { cwd: process.cwd() }
+    const notice = 'kiro-cli was not found; this chat uses codex (read-only)'
+    // Kiro missing, nothing named: the receipt says so.
+    const fallback = await start.execute(args, exec()) as { chatId: string; backend: string; fallbackNotice?: string }
+    expect(fallback).toMatchObject({ backend: 'codex', fallbackNotice: notice })
+    expect(start.output.render(args, fallback)).toEqual([{ type: 'text', text: `chat started: ${fallback.chatId} (backend: codex, cwd: ${process.cwd()}); send messages with acp_chat_send. ${notice}` }])
+    // Codex named explicitly: a choice, not a fallback.
+    const explicit = await start.execute({ ...args, backend: 'codex' }, exec()) as { chatId: string; fallbackNotice?: string }
+    expect(explicit).not.toHaveProperty('fallbackNotice')
+    expect(start.output.render(args, explicit)[0]?.text).not.toContain('was not found')
+    // The first send to a role provisioned on the fallback carries the notice too.
+    const send = tools.get('acp_chat_send')!
+    const sent = await send.execute({ role: 'reviewer', message: 'hi' }, { ...exec(), agent: { id: 'session-a', session: { header: { cwd: workspace } } } } as unknown as ToolRunContext) as { text: string }
+    expect(sent.text.startsWith(`[${notice}]\n`)).toBe(true)
+    const again = await send.execute({ role: 'reviewer', message: 'again' }, { ...exec(), agent: { id: 'session-a', session: { header: { cwd: workspace } } } } as unknown as ToolRunContext) as { text: string }
+    expect(again.text).not.toContain('was not found')
+    // Kiro present: no notice.
+    fixture.writeKiro('3.5.1')
+    const kiro = await start.execute(args, exec()) as { chatId: string; backend: string }
+    expect(kiro).toMatchObject({ backend: 'default' })
+    expect(kiro).not.toHaveProperty('fallbackNotice')
+  }, 15_000)
+
+  it.skipIf(process.platform === 'win32')('does not call a pinned defaultBackend a fallback, even with Kiro missing (D31)', async () => {
+    const ctx = await host()
+    const fixture = autoFixture()
+    const fiber = await ctx.plugin(acp, { ...fixture.config, defaultBackend: 'codex' })
+    cleanups.push(() => fiber.dispose())
+    const panel = ctx.get('acpResume')!
+    await until(() => panel.backends().backends.some(row => row.id === 'codex' && row.readiness === 'ready'), 'automatic codex check')
+    const start = stubTools(ctx).registered.get('acp_chat_start')!
+    const chat = await start.execute({ cwd: process.cwd() }, exec()) as { chatId: string; backend: string }
+    expect(chat).toMatchObject({ backend: 'codex' })
+    expect(chat).not.toHaveProperty('fallbackNotice')
+    expect(start.output.render({ cwd: process.cwd() }, chat)[0]?.text).not.toContain('was not found')
+  }, 10_000)
+
   it.skipIf(process.platform === 'win32')('auto-discovers agy 1.5.14, reports auth failure on first start, and retries after sign-in', async () => {
     const ctx = await host()
     const fixture = autoFixture()

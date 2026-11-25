@@ -716,3 +716,9 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - **状态不拦截续聊**：工具注册不随就绪结果增减。已有 `chatId` 的发送、重连和既有角色绑定不查就绪门，按原后端和 D6 处理；仅新建和首次供给角色需要选路。注册表中的 `default` 含义、历史绑定和 D6 的降级条件均不变。单次启动失败只作诊断，不锁住后端，不要求手动复查才能重试。
 - **默认发现（2026-11-23 二轮审阅后修订）**：保留 `discoverBackends: true`，以保留零 YAML 体验。与 [PR #1 首轮审阅第 ⑤ 条](https://github.com/Tureen/dsh-acp-resume/pull/1#issuecomment-7090561573) 不同，二轮审阅接受默认开启的前提是仅在明确找不到配置的 Kiro 可执行文件时才回退。用户可设 `discoverBackends: false` 关闭额外发现和回退，不影响已配置后端。
 - **模式与边界**：修订 D26，保留 `acp-dispatcher` 预设标识（宿主重启后恢复历史需要它）；没有可用的自动候选时返回诊断，不启用 bash 或切到标准模式。`acp_backend_status` 与面板读取同一状态。官方 one-shot 和 `src/run.ts` 按 D11 不动。
+
+- **改派要写明(2026-11-25 修订)**:未显式指定 `backend`、也没有固定 `defaultBackend`,且宿主查找明确找不到配置的 Kiro 可执行文件而改派到 Codex / `agy` 时，模型与用户都要能看出这是被动改派。现实风险是 macOS 从 Dock 启动的 DSH 宿主 `PATH` 常不含 `~/.local/bin`,Kiro 明明装着却被判找不到，悄悄换成只读 Codex。
+  - **来源**:是否发生改派由就绪服务的选路结果给出，不靠「后端名 ≠ `default`」反推。新增 `BackendReadinessService.route()`,返回 `{ backend, fallbackFrom? }`;只有「未指定、未固定、顶层 Kiro 明确找不到」这一条路径换掉了 `default` 时才带 `fallbackFrom: 'default'`(含先做一次检测后再改派的分支)。显式 `backend`、固定的 `defaultBackend`、找到了 Kiro、或没有可用替代而仍按原命令启动，都不带。池的 `start` 优先调 `route()`,只有 `select()` 的旧调用方按无改派处理。
+  - **文案**:固定一句 `<被替换后端的命令名> was not found; this chat uses <后端名>`;落到沙箱为只读的 Codex 后端(自动发现的 Codex 恒为只读)时末尾加 ` (read-only)`;`agy` 不加。
+  - **出现在哪**:`start` 结果的 `fallbackNotice` 字段(只在创建它的那次结果里，不落注册表、不进列表);多后端版 `acp_chat_start` 的输出结构加可选 `fallbackNotice`,回执末尾追加 `. <这句话>`;单后端版工具定义与回执不变(关闭发现时没有改派)。以 role 首次供给落到改派后端时，同步 `acp_chat_send` 的回答首行加 `[<这句话>]`,后台 job 的输出首行同样写入(job 回执在供给前已返回，所以不在回执里)。
+  - **暂不标注**:`acp_workflow` 的结果 JSON 不标注其中角色是否被改派(角色的首次供给发生在引擎内部);`acp_chat_list` 也不标注。用户可在列表或面板里看到该会话的后端名。

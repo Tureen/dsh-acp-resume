@@ -50,6 +50,7 @@ import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { stripVolatileFlags } from './engine.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
+import type { DispatchRoute } from './backend-readiness.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
 import { readTeamConfig, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
 import { WorkflowLog, type WorkflowRunRecord, type WorkflowStepSummary } from './workflow-log.js'
@@ -122,6 +123,12 @@ export interface PooledChatInfo {
   readonly attention?: ChatAttention
   /** The newest turn-log entry is a turn that settled `completed` on its saved session; absent otherwise. */
   readonly lastCompleted?: true
+  /**
+   * Set only on the result of the `start` that created the chat, when the
+   * configured default's executable was not found and this chat was routed to
+   * another backend (D31): the fixed notice to show. Never persisted.
+   */
+  readonly fallbackNotice?: string
 }
 
 /**
@@ -169,6 +176,8 @@ export interface PoolSendResult {
 
 /** Optional observers of one {@link AcpSessionPool.send}; a throwing observer is contained. */
 export interface PoolSendHooks {
+  /** Called once, before the message is sent, when a role was just provisioned on a fallback backend (D31); receives the fixed notice. */
+  readonly onBackendFallback?: (notice: string) => void
   /** Called once, before the prompt is sent, when a FRESH remote session replaces the saved one. */
   readonly onFreshSession?: (reason: FreshSessionReason) => void
   /** Each assistant text chunk of this turn, in arrival order; their concatenation is `output`. */
@@ -209,6 +218,8 @@ export interface PoolOptions {
   /** Host admission for new chats, independent of existing chats' saved bindings. */
   readonly dispatch?: {
     select(backend?: string, signal?: AbortSignal): string | Promise<string>
+    /** Like `select`, plus whether the configured default was replaced because its executable was not found. */
+    route?(backend?: string, signal?: AbortSignal): DispatchRoute | Promise<DispatchRoute>
     executable?(backend: string): string | undefined
     model?(backend: string): string | undefined
     failure?(backend: string, reason: 'login-required'): void
@@ -273,7 +284,12 @@ export interface RoleCallContext {
 }
 
 /** A send addressed by role: the pool result plus the role and whether this call provisioned it. */
-export type RoleSendResult = PoolSendResult & { readonly role: string; readonly provisioned: boolean }
+export type RoleSendResult = PoolSendResult & {
+  readonly role: string
+  readonly provisioned: boolean
+  /** Set when this call provisioned the role on a fallback backend (D31): the fixed notice. */
+  readonly fallbackNotice?: string
+}
 
 /** A pooled chat's live state (absent while released). */
 interface LiveChat {
@@ -534,8 +550,17 @@ export class AcpSessionPool {
     // Fail loud at the earliest resolvable point, mirroring the official provider start.
     assertUsableCwd('acp-resume', 'chat cwd', cwd)
     const label = options.label?.trim() ?? ''
-    const selected = this.opts.dispatch?.select(options.backend, signal) ?? options.backend ?? DEFAULT_BACKEND
-    const backend = typeof selected === 'string' ? selected : await selected
+    const dispatch = this.opts.dispatch
+    const routed: DispatchRoute | Promise<DispatchRoute> = dispatch === undefined
+      ? { backend: options.backend ?? DEFAULT_BACKEND }
+      : dispatch.route !== undefined
+        ? dispatch.route(options.backend, signal)
+        : (() => {
+            const picked = dispatch.select(options.backend, signal)
+            return typeof picked === 'string' ? { backend: picked } : picked.then(backend => ({ backend }))
+          })()
+    const route = routed instanceof Promise ? await routed : routed
+    const backend = route.backend
     this.assertLive()
     const backendSpec = this.backends.get(backend)
     if (backendSpec === undefined) throw new Error(`acp-resume: unknown backend ${backend}`)
@@ -593,7 +618,20 @@ export class AcpSessionPool {
       this.starting.delete(chatId)
     }
     this.assertLive()
-    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendDisplay: this.displayBackend(backend), backendCount: this.backends.size, active: true, lastActive: now }
+    const fallbackNotice = route.fallbackFrom === undefined ? undefined : this.fallbackNotice(route.fallbackFrom, backend)
+    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendDisplay: this.displayBackend(backend), backendCount: this.backends.size, active: true, lastActive: now, ...(fallbackNotice === undefined ? {} : { fallbackNotice }) }
+  }
+
+  /**
+   * The fixed model- and user-facing sentence for a fallback (D31, 2026-11-25):
+   * `kiro-cli was not found; this chat uses codex (read-only)`. `(read-only)`
+   * appears for a Codex backend whose sandbox is read-only (the auto-discovered
+   * one always is); the missing command is the replaced backend's basename.
+   */
+  private fallbackNotice(from: string, backend: string): string {
+    const spec = this.backends.get(backend)
+    const readOnly = spec?.protocol === 'codex' && (spec.codex?.sandbox ?? 'read-only') === 'read-only'
+    return `${this.displayBackend(from)} was not found; this chat uses ${backend}${readOnly ? ' (read-only)' : ''}`
   }
 
   /**
@@ -921,7 +959,10 @@ export class AcpSessionPool {
     if (existing !== undefined) return { ...await this.send(existing, message, signal, hooks), role, provisioned: false }
     // The seeding turn gets the same confirmation bridge as the message: under `permission: ask` it may ask too.
     const chat = await this.provision(role, context, signal, hooks.permissionResolver)
-    return { ...await this.send(chat.chatId, message, signal, hooks), role, provisioned: true }
+    if (chat.fallbackNotice !== undefined && hooks.onBackendFallback !== undefined) {
+      try { hooks.onBackendFallback(chat.fallbackNotice) } catch { /* an observer cannot break the send */ }
+    }
+    return { ...await this.send(chat.chatId, message, signal, hooks), role, provisioned: true, ...(chat.fallbackNotice === undefined ? {} : { fallbackNotice: chat.fallbackNotice }) }
   }
 
   /** The role's chat for this session, provisioning it from the blueprint when it has none. */

@@ -164,6 +164,7 @@ async function runTurnAsJob(
 ): Promise<JobOutcome> {
   try {
     const result = await send({
+      onBackendFallback: (notice) => { job.append(`[${notice}]\n`) },
       onFreshSession: (reason) => { job.append(`${freshSessionNotice(reason)}\n`) },
       onText: (text) => { job.append(text) },
       ...(permissionResolver === undefined ? {} : { permissionResolver }),
@@ -349,7 +350,8 @@ export function chatSendTool(
         })
         if (result.stopReason !== 'completed') throw failedTurnError(result)
         const body = result.output.trim() === '' ? EMPTY_OUTPUT : result.output
-        return { text: result.freshSession ? `${resultFreshSessionNotice(result)}\n${body}` : body }
+        const fallback = 'fallbackNotice' in result && typeof result.fallbackNotice === 'string' ? `[${result.fallbackNotice}]\n` : ''
+        return { text: `${fallback}${result.freshSession ? `${resultFreshSessionNotice(result)}\n${body}` : body}` }
       },
     })
   }
@@ -459,8 +461,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
             : `Optional backend name; omit for ${defaultBackend ?? 'default'}. Available backends: ${backends.map(backend => backend.name).join(', ')}` },
       },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true }, backend: { type: 'string', required: true }, cwd: { type: 'string', required: true } } },
-        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId} (backend: ${value.backend}, cwd: ${value.cwd}); send messages with ${toolPrefix}send` }],
+        schema: { type: 'object', additionalProperties: false, properties: { chatId: { type: 'string', required: true }, remoteSessionId: { type: 'string', required: true }, backend: { type: 'string', required: true }, cwd: { type: 'string', required: true }, fallbackNotice: { type: 'string' } } },
+        // A fallback (D31: the default's executable was not found) is named at the end, so neither the model nor the user mistakes it for kiro.
+        render: (_args, value) => [{ type: 'text', text: `chat started: ${value.chatId} (backend: ${value.backend}, cwd: ${value.cwd}); send messages with ${toolPrefix}send${value.fallbackNotice === undefined ? '' : `. ${value.fallbackNotice}`}` }],
       },
       isConcurrencySafe: () => true,
       async execute(args, exec) {
@@ -476,7 +479,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
           ...(args.backend === undefined ? {} : { backend: args.backend }),
           ...(ownerSessionId === undefined ? {} : { ownerSessionId }),
         })
-        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId, backend: chat.backend, cwd: chat.cwd }
+        return { chatId: chat.chatId, remoteSessionId: chat.remoteSessionId, backend: chat.backend, cwd: chat.cwd, ...(chat.fallbackNotice === undefined ? {} : { fallbackNotice: chat.fallbackNotice }) }
       },
     })
 

@@ -19,6 +19,12 @@ export interface BackendCandidate {
   readonly configurationIssue?: 'model-required' | 'unsupported-mode'
 }
 
+/** A new chat's backend, and the backend it replaced when the configured default's executable was not found. */
+export interface DispatchRoute {
+  readonly backend: string
+  readonly fallbackFrom?: string
+}
+
 export type Verification = { readonly status: 'ready'; readonly model?: string }
   | { readonly status: 'login-required' | 'handshake-failed' | 'model-required' | 'model-override-unavailable' }
 
@@ -172,27 +178,43 @@ export class BackendReadinessService implements BackendStatusService {
   }
 
   private async selectUnspecified(signal?: AbortSignal): Promise<string> {
+    return (await this.routeUnspecified(signal)).backend
+  }
+
+  /**
+   * Route a new chat that named no backend. `fallbackFrom` is set exactly
+   * when the configured default's executable was not found and another
+   * backend was substituted; every other outcome keeps the default.
+   */
+  private async routeUnspecified(signal?: AbortSignal): Promise<DispatchRoute> {
+    const resolved = await this.resolveUnspecified(signal)
+    return resolved.substituted ? { backend: resolved.backend, fallbackFrom: 'default' } : { backend: resolved.backend }
+  }
+
+  private async resolveUnspecified(signal?: AbortSignal): Promise<{ backend: string; substituted: boolean }> {
+    const keep = (backend: string): { backend: string; substituted: boolean } => ({ backend, substituted: false })
     const primary = this.options.candidates.find(candidate => candidate.id === 'default' && candidate.configured)
     if (primary === undefined) throw new Error('acp-resume: configured default backend is missing')
     const lifetime = signal === undefined ? this.life.signal : AbortSignal.any([this.life.signal, signal])
     const resolution = AbortSignal.any([lifetime, AbortSignal.timeout(this.timeoutMs)])
     try {
       await resultWithin(this.options.host.resolveExecutable(primary.command, primary.env, resolution), resolution)
-      return primary.id
+      return keep(primary.id)
     } catch (error) {
       signal?.throwIfAborted()
       this.life.signal.throwIfAborted()
       // Permission errors, timeouts and other ambiguous failures are not proof of absence.
-      if (!isExecutableMissing(error)) return primary.id
+      if (!isExecutableMissing(error)) return keep(primary.id)
     }
     const fallback = this.missingKiroFallback()
-    if (fallback !== undefined) return fallback
+    if (fallback !== undefined) return { backend: fallback, substituted: true }
     if (this.shouldCheck()) {
       await resultWithin(this.check(), lifetime)
-      return this.automaticDefault() ?? primary.id
+      const after = this.automaticDefault() ?? primary.id
+      return { backend: after, substituted: after !== primary.id }
     }
     // Without a substitute, let start report the normal actionable executable error.
-    return primary.id
+    return keep(primary.id)
   }
 
   private shouldCheck(): boolean {
@@ -202,6 +224,22 @@ export class BackendReadinessService implements BackendStatusService {
   private canStart(row: BackendStatus): boolean {
     return row.configured && row.readiness !== 'ready' && row.compatibility !== 'not-found'
       && row.reason !== 'backend-unready' && row.reason !== 'model-required'
+  }
+
+  /**
+   * Select for a new chat and say whether the configured default was
+   * replaced because its executable was not found (D31, 2026-11-25). An
+   * explicit `backend` or a pinned `defaultBackend` is never a fallback.
+   */
+  route(requested?: string, signal?: AbortSignal): DispatchRoute | Promise<DispatchRoute> {
+    const explicit = requested ?? this.options.preferred
+    if (explicit === undefined) {
+      signal?.throwIfAborted()
+      if (this.life.signal.aborted) throw new Error('acp-resume: backend detection is disposed')
+      return this.routeUnspecified(signal)
+    }
+    const selected = this.select(requested, signal)
+    return typeof selected === 'string' ? { backend: selected } : selected.then(backend => ({ backend }))
   }
 
   /** Select for a new chat only. Explicit configurations may try the real connection without waiting on diagnostics. */
