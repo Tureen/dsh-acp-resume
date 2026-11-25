@@ -141,6 +141,8 @@ templates:
 | Role blueprints (`roles`) | Workspace, shared by sessions in that workspace | Who each role is, including its `backend`, working directory (`cwd`), and initial instructions (`seeding`). |
 | Roster instance | DSH parent session, one roster per session | The plugin uses the `ownerSessionId` to track which `chatId` belongs to each role in that session. |
 
+A role blueprint can carry a one-sentence `summary` of what the role does, for the main model choosing a role and for teammates. `seeding` stays the role's full brief to itself; when a role has one, the plugin puts a short note about the team and how to reach teammates in front of it (D32). The main model can call the read-only `acp_team_list` to see each role's summary and whether it is not yet set up, idle, or running in this session.
+
 For example, when sessions 1 and 2 run `dual_review` in the same workspace, they read the same template and role blueprints. Reviewer A (`reviewerA`) maps to a different chat in each roster. A follow-up from session 1 using `acp_chat_send` with `role: reviewerA` continues session 1’s review. After editing a blueprint, use `acp_chat_close` with the role name in the current session to clear its binding. The next assignment creates a chat from the updated blueprint (D27).
 
 ## Reference

@@ -141,6 +141,8 @@ templates:
 | 角色蓝图 `roles` | 工作区，同一工作区的会话共享 | 角色是谁，包括后端 `backend`、工作目录 `cwd` 和首次派工前发送的 `seeding`。 |
 | 花名册实例（roster） | DSH 主会话，每个会话独立 | 插件按 `ownerSessionId` 记录本会话的角色名与 `chatId` 的绑定。 |
 
+角色蓝图可加一句 `summary`,说明这个角色负责什么，供主模型选角色和队友了解分工;`seeding` 仍是给角色自己的完整职责，有 `seeding` 时插件会在它前面自动附上团队成员与转达方式(D32)。主模型可用只读工具 `acp_team_list` 查看每个角色的 summary 以及本会话里它是未建、空闲还是正在运行。
+
 例如，同一工作区的主会话 1 和 2 都运行 `dual_review`，读取同一份模板和角色蓝图。审核员 A（`reviewerA`）在两份花名册中绑定的是两个不同的 chat；在会话 1 用 `acp_chat_send` 指定 `role: reviewerA` 追问，只会续上会话 1 的审核。修改蓝图后，可在当前会话用 `acp_chat_close` 按角色解除绑定，下次派工时按新蓝图创建（D27）。
 
 ## 参考
