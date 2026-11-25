@@ -93,6 +93,15 @@ describe('team config (D27)', () => {
     })
   })
 
+  it('reads an optional one-line summary per role (D32): blank means unset, inner whitespace collapses', () => {
+    const roles = parseTeamConfig('roles:\n  - name: a\n    summary: Reviews diffs for bugs.\n  - name: b\n    summary: "   "\n  - name: c\n  - name: d\n    summary: |\n      Two\n      lines\n', '/ws').roles
+    expect(roles.map(r => r.summary)).toEqual(['Reviews diffs for bugs.', undefined, undefined, 'Two lines'])
+    expect(roles[1]).not.toHaveProperty('summary')
+    // The strict field check still holds next to the new field.
+    expect(() => parseTeamConfig('roles:\n  - name: a\n    sumary: typo\n', '/ws')).toThrow('roles[0] has unknown field sumary; allowed: name, backend, cwd, summary, seeding')
+    expect(() => parseTeamConfig('roles:\n  - name: a\n    summary: 3\n', '/ws')).toThrow('roles[0].summary must be a string')
+  })
+
   it('accepts role names in any script, such as Chinese, and still rejects other characters', () => {
     const config = parseTeamConfig('roles:\n  - name: 调研员\n  - name: 审核员-2\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        parallel: [调研员, 审核员-2]\n', '/ws')
     expect(config.roles.map(r => r.name)).toEqual(['调研员', '审核员-2'])
@@ -102,7 +111,7 @@ describe('team config (D27)', () => {
   })
 
   it('rejects unknown fields at every level, naming the field and the allowed ones', () => {
-    expect(() => parseTeamConfig('roles:\n  - name: a\n    seed: hi\n', '/ws')).toThrow('roles[0] has unknown field seed; allowed: name, backend, cwd, seeding')
+    expect(() => parseTeamConfig('roles:\n  - name: a\n    seed: hi\n', '/ws')).toThrow('roles[0] has unknown field seed; allowed: name, backend, cwd, summary, seeding')
     expect(() => parseTeamConfig('role:\n  - name: a\n', '/ws')).toThrow('file has unknown field role; allowed: version, roles, templates')
     expect(() => parseTeamConfig('roles:\n  - name: a\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        parallel: [{ role: a, promt: x }]\n', '/ws')).toThrow('templates[0].steps[0].parallel[0] has unknown field promt')
     expect(() => parseTeamConfig('roles:\n  - name: a\ntemplates:\n  - name: t\n    steps:\n      - id: s\n        merge: { mode: role, role: a, extra: 1 }\n', '/ws')).toThrow('templates[0].steps[0].merge has unknown field extra')

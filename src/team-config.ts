@@ -33,7 +33,14 @@ export interface RoleBlueprint {
   readonly backend?: string
   /** Absolute working directory of the role's chat (a relative file value is resolved against the workspace root). */
   readonly cwd: string
-  /** First message sent to a freshly provisioned chat; absent means none. */
+  /**
+   * One sentence for OTHERS (D32): what this role does, shown to the
+   * dispatcher choosing a role (`acp_team_list`) and to teammates in their
+   * seeding context. Absent when unset or blank. Contrast `seeding`, the
+   * role's full brief to itself.
+   */
+  readonly summary?: string
+  /** First message sent to a freshly provisioned chat, for the role ITSELF (its full brief); absent means none. */
   readonly seeding?: string
 }
 
@@ -148,7 +155,7 @@ export function parseTeamConfig(text: string, root: string): TeamConfig {
   const doc: unknown = parse(text)
   const top = doc === null || doc === undefined ? {} : record(doc, 'file', ['version', 'roles', 'templates'])
   if (top['version'] !== undefined && top['version'] !== 1) throw new Error('version must be 1 when given')
-  const roles = list(top['roles'], 'roles').map((raw, i) => role(record(raw, `roles[${i}]`, ['name', 'backend', 'cwd', 'seeding']), `roles[${i}]`, root))
+  const roles = list(top['roles'], 'roles').map((raw, i) => role(record(raw, `roles[${i}]`, ['name', 'backend', 'cwd', 'summary', 'seeding']), `roles[${i}]`, root))
   unique(roles.map(r => r.name), 'role name')
   const known = new Set(roles.map(r => r.name))
   const templates = list(top['templates'], 'templates').map((raw, i) => template(record(raw, `templates[${i}]`, ['name', 'description', 'params', 'steps']), `templates[${i}]`, known))
@@ -162,10 +169,13 @@ function role(raw: Record<string, unknown>, at: string, root: string): RoleBluep
   const backend = str(raw['backend'], `${at}.backend`)
   const cwd = str(raw['cwd'], `${at}.cwd`)
   const seeding = str(raw['seeding'], `${at}.seeding`)
+  // One line: a summary is shown in lists, so inner whitespace (newlines included) collapses.
+  const summary = str(raw['summary'], `${at}.summary`)?.replace(/\s+/g, ' ').trim()
   return {
     name,
     cwd: resolve(root, cwd ?? '.'),
     ...(backend === undefined ? {} : { backend }),
+    ...(summary === undefined || summary === '' ? {} : { summary }),
     ...(seeding === undefined || seeding.trim() === '' ? {} : { seeding }),
   }
 }
