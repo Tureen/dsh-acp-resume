@@ -4,12 +4,17 @@
 # and its grandparent). Blueprints only: chats are created per DSH session on
 # first reference and listed by acp_chat_list with a `role` column.
 #
+# Plugin config (D33): roles are on by default (`roles: true`), so the roles
+# below work as soon as this file exists. The templates section needs
+# `workflow: true` as well; `roles: false` turns roles off and cannot be
+# combined with `workflow: true`.
+#
 # summary vs seeding (D32): `summary` is one sentence for OTHERS — the
 # dispatcher reads it in acp_team_list when choosing a role, and teammates see
 # it in their team context. `seeding` is the role's full brief to ITSELF, sent
 # once as the first turn. When a role has a seeding, the plugin puts a short
 # team context in front of it (the role's name, the other roles with their
-# summaries, and "ask through the dispatcher"); a role without seeding gets no
+# summaries, and "ask through the agent that dispatches you"); a role without seeding gets no
 # seeding turn at all.
 
 roles:
@@ -65,6 +70,7 @@ roles:
 # notes but cannot write them.
 
 # Templates are run by the acp_workflow tool: acp_workflow(template, params).
+# acp_workflow exists only with `workflow: true` in the plugin config.
 # Steps run in order. A `parallel` step sends its prompt to each listed role at
 # once; a role entry may carry its own prompt. Placeholders: {param} is a call
 # param, {stepId} is an earlier step's results; a prompt naming no earlier step

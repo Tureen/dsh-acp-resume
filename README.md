@@ -14,7 +14,7 @@ DeepSeek Harness（DSH）官方的 ACP 后端采用一次性委派，每次都�
 
 ### ACP Workflow · 把反复使用的协作步骤写成模板
 
-如果每次审核都需要两人独立检查、再由一人汇总，可以在工作区的 `.agents/acp-team.yml` 里写好角色蓝图和流程模板。启用工作流后，模型只需调用一次 `acp_workflow`，执行器就按模板先让两个审核角色并行检查，再把结果交给汇总角色。下次审核可复用同一模板，步骤顺序、并行分工和合并方式都由配置确定，模型无需临场记住并派发每一步。
+如果每次审核都需要两人独立检查、再由一人汇总，可以在工作区的 `.agents/acp-team.yml` 里写好角色蓝图和流程模板。角色默认可用，开启 `workflow` 后，模型只需调用一次 `acp_workflow`，执行器就按模板先让两个审核角色并行检查，再把结果交给汇总角色。下次审核可复用同一模板，步骤顺序、并行分工和合并方式都由配置确定，模型无需临场记住并派发每一步。
 
 ## 安装
 
@@ -119,7 +119,7 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 
 ### ACP Workflow · 按工作区模板派工
 
-在插件的顶层 `config` 中设置 `workflow: true` 并重启 DSH，再将以下内容保存为工作区根目录下的 `.agents/acp-team.yml`。两位审核员使用默认后端、各自独立审查，最后把结果交给主模型。要让某个角色改用已配置的 Codex，可在它的蓝图中添加 `backend: codex`。[更多模板，包括由编辑角色汇总的示例](docs/acp-team.example.yml)
+按角色派工默认开启(Config `roles`,默认 `true`):工作区里有 `.agents/acp-team.yml` 时，`acp_chat_send` 等工具即可用 `role` 指定角色。要用模板，还需在插件的顶层 `config` 中设置 `workflow: true` 并重启 DSH,再将以下内容保存为工作区根目录下的 `.agents/acp-team.yml`。`roles: false` 关闭全部角色能力，此时不能开启 `workflow`(D33)。两位审核员使用默认后端、各自独立审查，最后把结果交给主模型。要让某个角色改用已配置的 Codex，可在它的蓝图中添加 `backend: codex`。[更多模板，包括由编辑角色汇总的示例](docs/acp-team.example.yml)
 
 ```yaml
 roles:
@@ -141,7 +141,7 @@ templates:
 | 角色蓝图 `roles` | 工作区，同一工作区的会话共享 | 角色是谁，包括后端 `backend`、工作目录 `cwd` 和首次派工前发送的 `seeding`。 |
 | 花名册实例（roster） | DSH 主会话，每个会话独立 | 插件按 `ownerSessionId` 记录本会话的角色名与 `chatId` 的绑定。 |
 
-角色蓝图可加一句 `summary`,说明这个角色负责什么，供主模型选角色和队友了解分工;`seeding` 仍是给角色自己的完整职责，有 `seeding` 时插件会在它前面自动附上团队成员与转达方式(D32)。主模型可用只读工具 `acp_team_list` 查看每个角色的 summary 以及本会话里它是未建、空闲还是正在运行。
+只写 `roles`、不写模板也能按角色派工。角色蓝图可加一句 `summary`,说明这个角色负责什么，供主模型选角色和队友了解分工;`seeding` 仍是给角色自己的完整职责，有 `seeding` 时插件会在它前面自动附上团队成员与转达方式(D32)。主模型可用只读工具 `acp_team_list` 查看每个角色的 summary 以及本会话里它是未建、空闲还是正在运行。
 
 例如，同一工作区的主会话 1 和 2 都运行 `dual_review`，读取同一份模板和角色蓝图。审核员 A（`reviewerA`）在两份花名册中绑定的是两个不同的 chat；在会话 1 用 `acp_chat_send` 指定 `role: reviewerA` 追问，只会续上会话 1 的审核。修改蓝图后，可在当前会话用 `acp_chat_close` 按角色解除绑定，下次派工时按新蓝图创建（D27）。
 
@@ -157,6 +157,7 @@ templates:
 | `acp_chat_list` | 找回当前 DSH 会话创建的子代理，包括已释放的会话。 |
 | `acp_chat_steer` | 给正在执行的一轮补充指令。后端不支持插话时会返回提示。 |
 | `acp_chat_close` | 释放进程以便稍后重连，或用 `purge` 删除本地记录。kiro 远端记录可用 `kiro-cli chat --list-sessions` 查看，用 `--delete-session` 清理。 |
+| `acp_team_list` | 只读查看工作区角色的 summary 与本会话中的状态。`roles: false` 时不注册。 |
 | `acp_workflow` | 开启 `workflow` 后，按模板名和参数执行多角色工作流。 |
 
 **后台任务。** 宿主同时装有 `dsh-jobs-local` 和 `dsh-tool-jobs` 时，发送和工作流会立即返回 `jobId`。模型收到完成通知后用 `job_output` 读取结果，运行中可用 `job_kill` 停止。默认拦截对运行中 ACP 任务的阻塞等待。没有 jobs 服务时同步返回结果，仅有任务注册表而缺少控制器时会报错（D17、D22）。

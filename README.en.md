@@ -14,7 +14,7 @@ The plugin makes ACP tools available in every mode, and ACP Dispatcher is an opt
 
 ### ACP Workflow · Turn repeatable collaboration into a template
 
-If every review calls for two independent reviewers and an editor to combine their findings, define those roles and the workflow template in your workspace’s `.agents/acp-team.yml`. With workflows enabled, a single `acp_workflow` call runs the steps in the declared order, dispatches the designated roles in parallel, and merges their results as specified. Reuse the template for each review and the engine follows the same sequence without relying on the model to remember and dispatch every step.
+If every review calls for two independent reviewers and an editor to combine their findings, define those roles and the workflow template in your workspace’s `.agents/acp-team.yml`. Roles are available by default; with `workflow` enabled, a single `acp_workflow` call runs the steps in the declared order, dispatches the designated roles in parallel, and merges their results as specified. Reuse the template for each review and the engine follows the same sequence without relying on the model to remember and dispatch every step.
 
 ## Installation
 
@@ -119,7 +119,7 @@ Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode me
 
 ### ACP Workflow · Run a workspace template
 
-Set `workflow: true` in the plugin’s top-level `config`, restart DSH, and save the following as `.agents/acp-team.yml` at the workspace root. The reviewers work independently on the default backend, and the final step returns both reviews to the main model. To assign a role to your configured Codex backend, add `backend: codex` to its blueprint. [More templates, including one with an editor role](docs/acp-team.example.yml)
+Role dispatch is on by default (Config `roles`, default `true`): once the workspace has an `.agents/acp-team.yml`, `acp_chat_send` and the other chat tools accept a `role`. For templates, also set `workflow: true` in the plugin’s top-level `config`, restart DSH, and save the following as `.agents/acp-team.yml` at the workspace root. `roles: false` turns off every role feature and cannot be combined with `workflow: true` (D33). The reviewers work independently on the default backend, and the final step returns both reviews to the main model. To assign a role to your configured Codex backend, add `backend: codex` to its blueprint. [More templates, including one with an editor role](docs/acp-team.example.yml)
 
 ```yaml
 roles:
@@ -141,7 +141,7 @@ templates:
 | Role blueprints (`roles`) | Workspace, shared by sessions in that workspace | Who each role is, including its `backend`, working directory (`cwd`), and initial instructions (`seeding`). |
 | Roster instance | DSH parent session, one roster per session | The plugin uses the `ownerSessionId` to track which `chatId` belongs to each role in that session. |
 
-A role blueprint can carry a one-sentence `summary` of what the role does, for the main model choosing a role and for teammates. `seeding` stays the role's full brief to itself; when a role has one, the plugin puts a short note about the team and how to reach teammates in front of it (D32). The main model can call the read-only `acp_team_list` to see each role's summary and whether it is not yet set up, idle, or running in this session.
+Roles work without templates. A role blueprint can carry a one-sentence `summary` of what the role does, for the main model choosing a role and for teammates. `seeding` stays the role's full brief to itself; when a role has one, the plugin puts a short note about the team and how to reach teammates in front of it (D32). The main model can call the read-only `acp_team_list` to see each role's summary and whether it is not yet set up, idle, or running in this session.
 
 For example, when sessions 1 and 2 run `dual_review` in the same workspace, they read the same template and role blueprints. Reviewer A (`reviewerA`) maps to a different chat in each roster. A follow-up from session 1 using `acp_chat_send` with `role: reviewerA` continues session 1’s review. After editing a blueprint, use `acp_chat_close` with the role name in the current session to clear its binding. The next assignment creates a chat from the updated blueprint (D27).
 
@@ -157,6 +157,7 @@ For example, when sessions 1 and 2 run `dual_review` in the same workspace, they
 | `acp_chat_list` | Find subagent chats created in the current DSH session, including chats whose processes have been released. |
 | `acp_chat_steer` | Add instructions to a turn in progress. The tool reports when the backend does not support steering. |
 | `acp_chat_close` | Release the process for later reconnection, or use `purge` to delete local records. To manage kiro's remote records, list them with `kiro-cli chat --list-sessions` and remove them with `--delete-session`. |
+| `acp_team_list` | Read-only view of the workspace roles, their summaries, and their state in this session. Not registered with `roles: false`. |
 | `acp_workflow` | Run a multi-role workflow by template name and parameters when `workflow` is enabled. |
 
 **Background jobs.** With both `dsh-jobs-local` and `dsh-tool-jobs` installed on the host, sending a message or starting a workflow immediately returns a `jobId`. The model reads the result with `job_output` after the completion notification arrives. It can stop a running job with `job_kill`. By default, the plugin blocks attempts to wait synchronously on running ACP jobs. Without a jobs service, the call returns its result synchronously. Installing only the job registry leaves the controller missing and causes an error (D17, D22).

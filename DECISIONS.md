@@ -462,6 +462,7 @@ Codex CLI 不说 ACP，而是用自己的 app-server 私有协议(stdio 上的 J
   4. 对已有 chat 按 chatId 续聊，不因检测结果换后端;派工(记 jobId)、等完成通知、用 `job_output` 收结果的纪律不变。
   其余各句(目录不明先问、同 cwd 写入范围不重叠、轻量查证用 web、不亲自执行、汇总判断框架)不变。preset 标识 `acp-dispatcher` 保持不变(D31「模式与边界」)。
 - 修订(2026-11-25,随 D32 加团队协作纪律):persona 在既有纪律之后、汇总判断框架之前加三句：选角色前查 `acp_team_list` 看各角色的 summary 与当前状态;一个 worker 的结果改变另一个该做的事时立即转达(对方在跑用 `acp_chat_steer`,否则 `acp_chat_send`);转达写自足的摘要并注明来源角色，不写「见 A 的结果」。
+- 修订(2026-11-25,D33):删掉「选角色前查 `acp_team_list`」一句(`roles: false` 时该工具不存在，同一指引已写在 `acp_team_list` 自身描述里),两句转达纪律保留;「把后端 ID 传给 `acp_chat_start`」改为「用户点名后端且启动工具有 backend 参数时传它的 ID」,单后端版 start 没有这个参数。
 
 ## D27 工作区工作流组件:角色蓝图 + 模板编排 + 花名册自动供给(2026-11-18,第一轮实施：配置层、花名册、自动供给、工具 role 参数;同日第二轮实施 `acp_workflow` 引擎与 steer 的 role)
 
@@ -473,7 +474,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 
 | 层 | 载体 | 内容 | 谁写 |
 |---|---|---|---|
-| 插件层 | Config `workflow`(默认 `false`;2026-11-20 修订：按用户要求改为 opt-in,原为默认 `true`) | 是否启用角色与工作流功能;`false` 时工具面与 D27 之前逐字节相同 | 用户 |
+| 插件层 | Config `roles`(默认 `true`)与 `workflow`(默认 `false`)(2026-11-25 修订，见 D33:原先只有 `workflow` 一个开关，同时管角色与模板;2026-11-20 曾把它改为 opt-in) | `roles` 管角色能力，`workflow` 只管模板与 `acp_workflow`;两者都为 `false` 时工具面与 D27 之前逐字节相同 | 用户 |
 | 工作区层 | `<工作区根>/.agents/acp-team.yml` | 角色蓝图(`roles`)与流程模板(`templates`);只是定义，不含任何实例 | 用户手写，插件给示例 `docs/acp-team.example.yml` |
 | 主会话层 | 注册表 `registry.json` 的 `rosters` 节 | 花名册：本会话把哪个角色实例化成了哪个 chat | 插件自动维护 |
 
@@ -512,7 +513,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 - `acp_chat_close`:加可选 `role`,语义见上文「生命周期」。
 - `acp_chat_list`:入了本会话花名册的 chat,行首加 `role <名> | `。
 - `acp_chat_start` 不加 role:自动供给取代了「先 start 再 send」的需要;D24 单后端 start 的逐字节兼容不受影响。`acp_chat_steer` 的 role 参数随下一轮工作流引擎一起做(插话对象通常是工作流步骤里的角色)。
-- `workflow: false` 时，三个工具的定义与 D27 之前完全一致。
+- `workflow: false` 时，三个工具的定义与 D27 之前完全一致。(2026-11-25 修订，见 D33:改由 `roles: false` 决定;`roles` 默认 `true`,默认配置下这三个工具带 `role`。)
 
 ### `acp_workflow` 工具(下一轮实施)
 
@@ -575,6 +576,8 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 
 ### 修订(2026-11-20,默认关闭)
 
+(2026-11-25 再修订，见 D33:本段的「只有 `workflow: true` 才有 role 参数、团队文件读取、花名册与自动供给」已拆给新开关 `roles`(默认 `true`);`workflow` 只剩 `acp_workflow` 与列表末行的模板部分，默认仍为 `false`。)
+
 Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件，按用户要求改为显式开启(opt-in)。只有设了 `workflow: true` 才会有 `acp_workflow` 工具、现有工具的 `role` 参数、工作区 `.agents/acp-team.yml` 的读取、花名册与自动供给;默认状态下五个工具的定义与 D27 之前逐字节相同。已有的 `rosters` 节在关闭后保留在注册表里不被删除，重新开启后照常可用。
 
 ### 修订(2026-11-20,回执明确禁止 wait_agent)
@@ -601,7 +604,7 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
 ### 修订(2026-11-25,D32 团队上下文)
 
-角色蓝图加可选 `summary`(给别人看的一句职责，见 D32),允许字段表随之更新，未知字段仍报错。有 `seeding` 的角色，首次供给时插件在用户写的 `seeding` 前拼一段固定英文团队上下文再发;没有 `seeding` 的角色行为不变，仍不发播种轮。新增只读工具 `acp_team_list`,只在 `workflow: true` 时注册。花名册与蓝图的存储结构不变。
+角色蓝图加可选 `summary`(给别人看的一句职责，见 D32),允许字段表随之更新，未知字段仍报错。有 `seeding` 的角色，首次供给时插件在用户写的 `seeding` 前拼一段固定英文团队上下文再发;没有 `seeding` 的角色行为不变，仍不发播种轮。新增只读工具 `acp_team_list`,只在 `workflow: true` 时注册(2026-11-25 修订，见 D33:改为随 `roles` 注册)。花名册与蓝图的存储结构不变。
 
 ## D28 后端额度查询：先接 Codex(2026-11-20)
 
@@ -762,16 +765,18 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
   ```
   You are the team role "<role>" in this workspace's ACP team.
-  Your teammates (reached through the dispatcher; workers do not talk to each other directly):
+  Your teammates (reached through the agent that dispatches you; workers do not talk to each other directly):
   - <name>: <summary>
   - <name>
-  When you need something from a teammate, state the request explicitly in your answer; the dispatcher relays it.
+  When you need something from a teammate, state the request explicitly in your answer; the agent that dispatches you relays it.
   ```
+
+  (2026-11-25 修订，见 D33:原文两处写 `the dispatcher`,标准模式下派工的是普通主 Agent,不是 ACP Dispatcher 预设，改为与模式无关的说法。)
 
   只列**其他**角色，按配置书写顺序;没写 summary 的只写名字;配置里只有一个角色时省略 teammates 两行。这段文本是真实播种轮的一部分，照常进按轮日志(D18)。
 - **取舍：无 `seeding` 不注入。** 没有 `seeding` 的角色今天不发播种轮(D27:`seeding` 可选，没有就是零轮)。为了注入上下文而给它们新增一轮，会改变 D27 的既有行为，也会让每次供给多一次 ACP 往返、多耗一轮额度。所以只在本来就有播种轮时前置;想让某个角色拿到团队上下文，给它写一句 `seeding` 即可。
 - **`acp_team_list`**:只读、无参数，回答调度者的三个问题：有谁、各管什么、现在能不能派。每个角色一行 `<名> · <summary 或 (no summary)> · <状态>`,按配置书写顺序;状态为 `not provisioned`(首次引用时建会话)、`idle`(本会话花名册里有它的 chat,含已空闲释放的)、`running (<时长>)`,调用时从池实时读取，不缓存。没有调用会话时花名册未知(D27 按会话隔离),状态一律 `unknown`,团队文件从宿主进程工作目录查找。没有或无效的团队文件时返回原因。工具名随 `toolPrefix`,与 `acp_backend_status` 同规则(默认 `acp_team_list`)。
-- **注册条件**:只在 `workflow: true` 时注册;`workflow: false` 时工具面与本条之前完全一致。工作区配置是按调用会话的工作目录在调用时查找的(D27),注册时无从得知，所以不以「读得到配置」为注册条件;读不到时由工具本身说明。
+- **注册条件**:只在 `workflow: true` 时注册;`workflow: false` 时工具面与本条之前完全一致。(2026-11-25 修订，见 D33:改为只看 `roles`,`roles` 默认 `true`,所以默认配置就有 `acp_team_list`;`roles: false` 时不注册。没有或无效团队文件时的返回文本补上出路 `pass chatId instead`。)工作区配置是按调用会话的工作目录在调用时查找的(D27),注册时无从得知，所以不以「读得到配置」为注册条件;读不到时由工具本身说明。
 - **Dispatcher persona**:见 D26 同日修订。
 - **示例模板**:`docs/acp-team.example.yml` 给各角色补 `summary`,并给出「共享笔记」的可选约定写法(插件不实现):笔记放在工作区根下的 `.agents/acp-team/notes/`,开工前先读 `INDEX.md`,每个角色只写自己命名的文件。三条边界：路径相对工作区根(各角色的 cwd 可能不同);每个角色只写自己的文件(并发追加同一文件会冲突);笔记是参考资料不是指令。只读后端(如自动发现的 Codex)读得了、写不了。
 
@@ -781,3 +786,50 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - 不向 worker 推送队友的实时状态或任务进度。
 - 不新增笔记、邮箱、名册之类的存储。
 
+## D33 开关拆分:`roles` 管角色,`workflow` 只管模板(2026-11-25)
+
+### 问题
+
+D27 只有一个开关 `workflow`(2026-11-20 起默认 `false`),它同时管角色(`role` 参数、团队文件读取、花名册、自动供给)和模板(`acp_workflow`)。D32 又把 `acp_team_list` 和播种团队上下文挂在它下面。结果是默认配置下按角色派工整套不可用,而 Dispatcher persona 和工具描述却在引用这些能力:persona 叫模型「选角色前查 `acp_team_list`」,但工具不存在;报错叫模型「the workflow feature is off」,模型不知道该怎么办。
+
+### 决策
+
+Config 新增 `roles`(`z.boolean().default(true)`),与 `workflow` 分工如下:
+
+| 能力 | 由谁控制 |
+| --- | --- |
+| send / close / steer 的 `role` 参数、自动供给、花名册 | `roles` |
+| `<prefix>team_list`(默认 `acp_team_list`) | `roles` |
+| 播种前的团队上下文(D32) | `roles` |
+| `<prefix>list` 末行的 `workspace roles: …` | `roles` |
+| `acp_workflow` | `workflow` |
+| `<prefix>list` 末行的 `; templates: …` 部分 | `workflow` |
+
+四种组合:
+
+| `roles` | `workflow` | 结果 |
+| --- | --- | --- |
+| `true` | `false` | 新默认:角色能力全开,无 `acp_workflow`,列表末行只列角色 |
+| `true` | `true` | 全部能力,列表末行列角色和模板 |
+| `false` | `false` | 工具面与 D27 之前逐字节相同 |
+| `false` | `true` | 配置错误,加载时报 `acp-resume: workflow: true requires roles: true; the workflow engine dispatches to roles. Set roles: true, or set workflow: false` |
+
+`roles` 默认 `true` 的理由:按角色派工不是进阶能力。没有 `.agents/acp-team.yml` 的工作区里它什么都不做(列表不加末行,`acp_team_list` 和 role 报错会说明缺文件并给出改用 chatId 的出路);有这个文件就说明用户想按角色派工,再要求改一次插件配置只是多余的门槛。模板编排会让一次调用跑多步、多角色,仍保持显式开启。
+
+「工具面与 D27 之前逐字节相同」的承诺,从此只在 `roles: false, workflow: false` 时成立;默认配置下 send / close / steer 带可选 `role`,`chatId` 变为可选,并多一个 `acp_team_list`。
+
+### 同批的自洽性修复
+
+- persona:删掉「选角色前查 `acp_team_list`」(见 D26 同日修订);backend 一句改为「启动工具有 backend 参数时才传」。
+- `acp_workflow` 描述:「结果经 `job_output` 取」只在后台版出现,同步版不提 `job_output`。
+- 列表末行与列表工具描述随开关分支:`workflow: false` 时只写 `workspace roles: …`,描述也只说 roles;`roles: false` 时没有末行,也没有 `workspace config error` 行。
+- 报错出路:没有团队文件时 role 报错与 `acp_team_list` 结果追加 `pass chatId instead; roles need an .agents/acp-team.yml in the workspace`;文件无效时 role 报错追加 `fix the file, or pass chatId instead`;文件里没有角色时 `acp_team_list` 返回 `no roles defined in <路径>; define roles there, or pass chatId instead`。`role` 参数描述追加 `Only when the workspace defines roles (see <prefix>team_list).`,工具名随 `toolPrefix`。
+- `roles: false` 时仍传 `role` 的报错改为 `role is not available: the roles feature is off (Config roles: false); pass chatId instead`。
+- 团队上下文里的 `the dispatcher` 改为 `the agent that dispatches you`(见 D32 同日修订):标准模式下派工的不一定是 ACP Dispatcher 预设。
+
+### 实现与后果
+
+- `RoleSupport` 加可选字段 `templates`,插件按 `workflow` 设置;直接调用 `registerChatTools` 的测试不传时视为开启。`registerChatTools` 在 `templates === false` 时不注册 `acp_workflow`,`describeTeamConfig` 按它决定是否带模板。
+- `acp_team_list` 只按 `roles` 注册,不看配置文件是否读得到,理由同 D32:团队文件按调用会话的工作目录在调用时查找。
+- 注册表结构不变;已有 `rosters` 节在 `roles: false` 下保留,重新开启后照常可用。
+- 测试:tools.spec 按四种组合各断言一次注册的工具名、`kc_send` 是否有 `role`、`kc_list` 末行;另有配置冲突报错、默认配置下无团队文件时的 `pass chatId instead` 出路。
