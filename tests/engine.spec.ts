@@ -9,7 +9,7 @@
  * @module dsh-acp-resume/tests/engine.spec
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -124,9 +124,11 @@ describe('engine flag helpers', () => {
       .toEqual(['acp', '--model', 'glm-5', '--effort', 'high'])
   })
 
-  it("modelSelect 'session' appends no --model; default 'flag' still does", () => {
+  it("modelSelect 'session' appends no --model / --effort; default 'flag' still does", () => {
     expect(buildChildArgs(['acp'], { engine: 'none', model: 'm', modelSelect: 'session' })).toEqual(['acp'])
     expect(buildChildArgs(['acp'], { engine: 'none', model: 'm', modelSelect: 'flag' })).toEqual(['acp', '--model', 'm'])
+    expect(buildChildArgs(['acp'], { engine: 'v3', model: 'm', effort: 'xhigh', modelSelect: 'session' })).toEqual(['acp', '--agent-engine', 'v3'])
+    expect(buildChildArgs(['acp'], { engine: 'v2', effort: 'xhigh', modelSelect: 'flag' })).toEqual(['acp', '--agent-engine', 'v2', '--effort', 'xhigh'])
     expect(buildChildArgs(['acp'], { engine: 'none', model: 'm' })).toEqual(['acp', '--model', 'm'])
   })
 
@@ -206,5 +208,42 @@ describe('engine flag on the spawn paths', () => {
   it('one-shot provider: appends --model / --effort when configured', async () => {
     expect(await oneShotArgv({ args: [mockServer], model: 'claude-opus-5.5', effort: 'max' }))
       .toEqual(['--agent-engine', 'v3', '--model', 'claude-opus-5.5', '--effort', 'max'])
+  })
+})
+
+describe('session effort on ACP backends (kiro v3 effortLevel)', () => {
+  /** Chat argv plus the `set_config_option` lines the mock recorded for that chat's process. */
+  async function chatWithConfigLog(config: Record<string, unknown>): Promise<{ argv: string[]; configLines: string[] }> {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-resume-effort-'))
+    dirs.push(dir)
+    const log = join(dir, 'set-config.log')
+    const argv = await chatArgv({ ...config, env: { MOCK_ECHO_ARGV: '1', MOCK_SET_CONFIG_FILE: log } })
+    return { argv, configLines: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] }
+  }
+
+  it("modelSelect 'session' + effort: no --effort flag, one set_config_option(effortLevel) after open", async () => {
+    const { argv, configLines } = await chatWithConfigLog({ args: [mockServer], modelSelect: 'session', effort: 'xhigh' })
+    expect(argv).toEqual(['--agent-engine', 'v3'])
+    expect(configLines).toHaveLength(1)
+    expect(configLines[0]).toMatch(/^set_config_option \S+ effortLevel xhigh$/)
+  })
+
+  it("modelSelect 'flag' keeps --effort as a flag and sends no effortLevel; no effort sends nothing", async () => {
+    const flag = await chatWithConfigLog({ args: [mockServer], effort: 'high' })
+    expect(flag.argv).toEqual(['--agent-engine', 'v3', '--effort', 'high'])
+    expect(flag.configLines).toEqual([])
+    const unset = await chatWithConfigLog({ args: [mockServer], modelSelect: 'session' })
+    expect(unset.argv).toEqual(['--agent-engine', 'v3'])
+    expect(unset.configLines).toEqual([])
+  })
+
+  it('rejects a session-mode effort outside low|medium|high|xhigh|max at load; flag mode and Codex keep their own values', async () => {
+    const base = { command: process.execPath, args: [mockServer], registryPath: join(mkdtempSync(join(tmpdir(), 'acp-resume-effort-')), 'registry.json'), discoverBackends: false }
+    await expect(Promise.resolve((await host()).plugin(acp, { ...base, modelSelect: 'session', effort: 'ultra' })))
+      .rejects.toThrow('acp-resume: effort "ultra" is not a session effort level; with modelSelect: session it must be one of low, medium, high, xhigh, max')
+    await expect(Promise.resolve((await host()).plugin(acp, { ...base, backends: { kiro: { command: 'kiro-cli', args: ['acp'], modelSelect: 'session', effort: 'High' } } })))
+      .rejects.toThrow('acp-resume: backends.kiro.effort "High" is not a session effort level')
+    const accepted = await (await host()).plugin(acp, { ...base, effort: 'ultra', backends: { codex: { command: 'codex', protocol: 'codex', model: 'gpt-x', modelSelect: 'session', effort: 'ultra' } } })
+    cleanups.push(() => accepted.dispose())
   })
 })

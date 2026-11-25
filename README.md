@@ -36,7 +36,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 | 后端 | 支持能力 |
 | --- | --- |
-| **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话。 |
+| **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话；可用 `modelSelect: session` + `effort` 指定思考强度（`low`、`medium`、`high`、`xhigh`、`max`）。 |
 | **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
 | **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
 
@@ -60,7 +60,7 @@ dsh plugin --profile <name> add dsh-acp-resume
         permission: ask
 ```
 
-如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`，并省略 `effort`。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
+如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`。kiro v3 可在同一模式下再设 `effort` 指定思考强度，取值限 `low`、`medium`、`high`、`xhigh`、`max`，其他值会在加载时报配置错误；所选模型不支持该强度时只记告警。agy 的强度写在模型 ID 里，请省略 `effort`。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
 
 ### 让模型在多个后端中选择
 

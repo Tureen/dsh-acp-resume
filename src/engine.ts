@@ -4,7 +4,8 @@
  * spawn-level flags to the configured args unless the user already set them:
  * `--agent-engine <engine>` (the KAS engine selector; `'none'` turns this one off) and, when configured,
  * `--model <id>` / `--effort <level>` (model routing, off by default so the
- * server keeps auto-routing). The reconnect fingerprint ignores all three:
+ * server keeps auto-routing; never with `modelSelect: 'session'`, which sets
+ * both per session over ACP instead). The reconnect fingerprint ignores all three:
  * a saved remote session loads across engines, and `auto` already swaps models
  * per task inside a session, so a model/effort difference is not "a different
  * agent" the way a different command would be.
@@ -44,7 +45,11 @@ function hasFlag(args: readonly string[], flag: string): boolean {
   return args.some(arg => matchesFlag(arg, flag))
 }
 
-/** How `model` reaches the agent: `--model` CLI flag, or `session/set_model` (fallback `session/set_config_option`) after the session opens. */
+/**
+ * How `model` and `effort` reach the agent: `--model` / `--effort` CLI flags, or,
+ * for `'session'`, ACP calls after the session opens (`session/set_model`, falling
+ * back to `session/set_config_option`; effort as `set_config_option(effortLevel)`).
+ */
 export type ModelSelect = 'flag' | 'session'
 
 /**
@@ -56,9 +61,9 @@ export interface ChildFlags {
   readonly engine: AgentEngineSetting
   /** When set, the model id appended as `--model <id>` (otherwise server auto-routes). */
   readonly model?: string
-  /** `'session'`: the model is switched via `session/set_model`, so `--model` is never appended. */
+  /** `'session'`: model and effort are set per session over ACP, so neither `--model` nor `--effort` is appended. */
   readonly modelSelect?: ModelSelect
-  /** When set, the effort level appended as `--effort <level>`. */
+  /** When set (and not `modelSelect: 'session'`), the effort level appended as `--effort <level>`. */
   readonly effort?: string
 }
 
@@ -78,7 +83,7 @@ export function buildChildArgs(args: readonly string[], flags: ChildFlags): stri
   const next = [...args]
   appendFlag(next, ENGINE_FLAG, flags.engine === 'none' ? undefined : flags.engine)
   appendFlag(next, MODEL_FLAG, flags.modelSelect === 'session' ? undefined : flags.model)
-  appendFlag(next, EFFORT_FLAG, flags.effort)
+  appendFlag(next, EFFORT_FLAG, flags.modelSelect === 'session' ? undefined : flags.effort)
   return next
 }
 

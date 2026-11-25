@@ -200,7 +200,8 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - **argv 拼接与 `--agent-engine` 同款**:两条 spawn 路径(池 `specBase` 与 one-shot provider)在用户 `args` 未显式含 `--model` / `--effort`(`--model x` 与 `--model=x` 两种写法都识别)且 Config 有值时追加;用户显式写了则不追加。空串按未设处理。
 - **生效语义是 spawn 级**:对既有会话,钉死的模型/档位要等下次重连(新进程)才应用,运行中进程不变——文档与 Config JSDoc 都写明这点,避免用户误以为改配置能即时切活跃会话的模型。
 - **指纹排除清单扩为三旗标**:重连指纹比较时剔除的从 `--agent-engine` 扩到 `--agent-engine` / `--model` / `--effort`(各自的分离与 `=` 写法及值)。理由:`auto` 本身就在会话内按任务动态换模型,会话存的是对话不是模型;模型/档位差异不像 `command` 差异那样构成"换了一个 agent"。实现上原 `stripAgentEngine` 泛化为 `stripVolatileFlags`;追加逻辑泛化为 `buildChildArgs(args, {engine, model?, effort?})`。(2026-11-05 精简:`stripAgentEngine` 别名与 `withAgentEngine` / `hasAgentEngineFlag` 两个薄封装为零生产引用的死导出,已删除;生产只用 `buildChildArgs` / `stripVolatileFlags`。engine.spec 的两例改以这两个活函数直接断言,等价覆盖、例数不变。)
-- 测试 188 → 266 的其余增量含本轮 7 例(engine helper 2 + 两条 spawn 路径 4 + pool 模型/档位指纹 1;其余为上游其他改动)。变异自检:model/effort 不追加、指纹漏剔、忽略用户已设旗标、空串当有效值、one-shot 路径漏拼、指纹剔除过头——六类故意改坏均被测试抓红。
+- 测试 188 → 266 的其余增量含本轮 7 例(engine helper 2 + 两条 spawn 路径 4 + pool 模型/档位指纹 1;其余为上游其他改动)。
+- 2026-11-25 补注(D34):`modelSelect: session` 时 `--effort` 与 `--model` 一样不再追加，强度改为建会话/重连后的 `session/set_config_option(effortLevel)`;`modelSelect: flag` 的旗标语义不变。变异自检:model/effort 不追加、指纹漏剔、忽略用户已设旗标、空串当有效值、one-shot 路径漏拼、指纹剔除过头——六类故意改坏均被测试抓红。
 
 修订(2026-11-09,`agentEngine` 可显式关闭追加):
 - 问题:原语义下,只要 `args` 里没写 `--agent-engine`,每次拉起子进程都会追加 `--agent-engine v3`,没有关闭途径(上文"已知限制")。非 kiro 的 ACP agent 不认该旗标,多半因未知参数退出,导致"换 `command` 即可换 agent"并不成立。发布前修掉。
@@ -833,3 +834,23 @@ Config 新增 `roles`(`z.boolean().default(true)`),与 `workflow` 分工如下:
 - `acp_team_list` 只按 `roles` 注册,不看配置文件是否读得到,理由同 D32:团队文件按调用会话的工作目录在调用时查找。
 - 注册表结构不变;已有 `rosters` 节在 `roles: false` 下保留,重新开启后照常可用。
 - 测试:tools.spec 按四种组合各断言一次注册的工具名、`kc_send` 是否有 `role`、`kc_list` 末行;另有配置冲突报错、默认配置下无团队文件时的 `pass chatId instead` 出路。
+
+## D34 kiro v3 会话级思考强度:`modelSelect: session` 延伸到 `effort`(2026-11-25,目标 0.4.1)
+
+背景:`modelSelect` 此前没有单独的 D 条目，只在 Config 注释里说明:`'flag'`(默认)追加 `--model`;`'session'` 不追加，建会话/重连后调 `session/set_model`,遇 -32601/-32603 回退 `session/set_config_option(model)`。`effort` 在两种模式下都被拼成 `--effort` 旗标(D19 2026-11-05 修订)。kiro v3 不接受 `--model` / `--effort`(带了会被就绪检查判为 `unsupported-mode`),所以 README 要求 v3 用户省略 `effort`,`effort` 对 kiro v3 等于不可用。
+
+真机探针(kiro-cli 3.6.0,`acp --agent-engine v3`,2026-11-25,探针脚本留在 /tmp,不进仓库):
+- 强度走 `session/set_config_option {sessionId, configId: 'effortLevel', value}`,回复带完整 `configOptions`,可从中读到 `effortLevel.currentValue`。没有专用方法;`session/set_model` 仍回 -32603(`details` 为 `Ext method "session/set_model" has no persistence classification`)。
+- 值域按模型不同:`model` 选项的 `_meta.kiro.effortLevels` 给出每个模型的合法档位，例如 claude-opus-5.5 / sonnet-5.5 / haiku-5.5 为 `low|medium|high|xhigh|max`,claude-opus-4.6 / sonnet-4.6 为 `low|medium|high|max`(没有 `xhigh`),gpt-5.6-* 另有 `none`。`hasEffort: false` 的模型(`auto`、claude-*-4.5、glm-5、deepseek-3.2 等)的 `configOptions` 里没有 `effortLevel`。
+- 非法值不报错，只保持原值:`ultra`、`bogus`、给 opus-4.6 传 `xhigh` 都返回成功，值不变。对 `auto` 发 effortLevel 同样返回成功，选项仍然缺席。
+- 会话级设置落盘:新进程 `session/load` 的回复里 `effortLevel` 就是上次设的值。
+- **与旧数据不同的一点**:`session/new` 与 `session/load` 刚返回时，模型还在初始化,`session/new` 的回复里甚至还没有 `effortLevel`;此时立即发 set 会返回成功但值不变。约 40 ms 后 `config_option_update` 通知补出 `effortLevel`。按 25 ms 间隔重试，新建后第 1~4 次、重连后第 2~9 次才生效(≤ 240 ms)。同一时机切 `model` 均在第 1 次生效。
+
+决策:
+- **`modelSelect: session` 管模型和强度两项**:不追加 `--effort`(两条 spawn 路径共用 `buildChildArgs`,one-shot provider 同样不追加，它本来也不做会话级切换);池连接在模型之后发 `set_config_option(effortLevel)`,新建与重连各一次。`modelSelect: flag` 照旧追加 `--effort`,v2 路径不变。重连指纹不受影响(D19 本就剔除 `--effort`)。
+- **配置期校验**:ACP 后端在 `modelSelect: session` 且 `effort` 非空时，值必须属于 `SESSION_EFFORT_LEVELS = low | medium | high | xhigh | max`,否则加载即报 `acp-resume: <effort | backends.<名>.effort> "<值>" is not a session effort level; with modelSelect: session it must be one of low, medium, high, xhigh, max`。理由：协议对非法值静默不生效，不校验用户就永远发现不了。只校验 session 模式:flag 模式下值交给 CLI 自己判断;Codex 后端的 `effort` 走 `turn/start`,值域不同，不受这套检查约束。这个集合是各模型档位的并集上限，具体模型可能更窄(如 opus-4.6 没有 `xhigh`),这种情况只能运行期发现。
+- **按回复确认，有限重试**:回复带 `configOptions` 时检查 `effortLevel.currentValue`,不等于目标值就隔 50 ms 重发，最多 20 次(约 1 秒，探针最坏 240 ms 的 4 倍余量)。回复不带 `configOptions` 的 agent 视为已生效，只发一次。最终仍未生效时只经 `onError` 告警，分两种措辞：选项缺席(`the session's model lists no effortLevel option (it may not support effort)`)与值没变(`effortLevel stayed <当前值> (the model may not offer that level)`)。请求本身报错也只告警。三种情况都不阻断连接，与模型切换同一策略。
+- agy 的强度编码在模型 ID 里,README 仍要求 agy 省略 `effort`;若 agy 配了 session 模式 + `effort`,会照样发 effortLevel 并在被拒时告警。
+
+后果:kiro v3 可用 `modelSelect: session` + `model` + `effort` 同时钉模型与强度;`model` 缺省时强度作用于该账号的默认模型。新建会话的启动在强度未立即生效时最多多等约 1 秒。测试 591 → 597:engine.spec 3 例(session 模式经插件实际发 effortLevel 且不带 `--effort`;flag 模式与未设 effort 都不发;非法值加载报错且 Codex 的 `ultra` 不受影响),connection.spec 3 例(新建与重连各一次且在模型之后;回复显示旧值时重试到生效;选项缺席与请求失败只告警),engine helper 的 session 模式用例补 `--effort` 断言。
+
