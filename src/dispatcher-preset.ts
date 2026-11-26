@@ -36,13 +36,19 @@ const synthesis = `When synthesizing results:
 - Distinguish blocking results (needed for the answer) from informational results (nice to have)
 - If the user's question is already answered by partial results, share them immediately`
 
+function targetDirectoryRule(askUser: boolean): string {
+  const choose = askUser ? 'ask the user to choose' : 'ask in the conversation which one to use'
+  const clarify = askUser ? 'ask the user' : 'ask in the conversation'
+  return `Before starting an ACP chat, identify the project, repository, or worktree the task targets. Pass its absolute path explicitly through the start tool's working-directory parameter. Use the dispatcher's own working directory only when the request or earlier conversation clearly identifies it as the target.
+When the target is unambiguous, proceed without asking. If several directories are plausible, list them and ${choose}. If no target can be identified, ${clarify} which project or directory the task is for before starting the chat.`
+}
+
 function dispatcherCopy(tools: DispatcherTools) {
   const description = ['纯派工模式:主 Agent 只做调度,ACP 会话做实际 Worker。']
   description.push(tools.readOnlyFs ? '可用 read/grep/glob 核对结果，无 bash，不改文件。' : '无 bash/fs,')
   description.push(tools.web ? '轻量联网查询保留。' : '联网查询交给 Worker。')
   const lines = [identity,
-    tools.askUser ? 'If the target directory is unclear, ask the user before creating a chat.'
-      : 'If the target directory is unclear, ask in the conversation before creating a chat.',
+    targetDirectoryRule(tools.askUser),
     'Workers sharing the same cwd must have non-overlapping file write boundaries.',
   ]
   if (tools.web) lines.push('For lightweight fact-checking use web tools directly; delegate full research tasks to workers.')
