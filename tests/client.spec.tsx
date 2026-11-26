@@ -26,7 +26,7 @@ import { LiveSource, type FollowTurn } from '../src/client/live-source.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
-import { formatHybridTime, formatTurnTime } from '../src/client/panel-time.ts'
+import { formatHybridTime, formatTurnTime, formatTurnTimeTitle } from '../src/client/panel-time.ts'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, cwdName, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
@@ -37,11 +37,9 @@ import type {
   BackendStatusView, ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
   PanelChat, RunningItem, TabInfoHook, TurnItem, WorkflowsSnapshot,
 } from '../src/client/face.ts'
-import { formatTurnTime, formatTurnTimeTitle } from '../src/client/panel-time.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
-vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
-  Button: ({ children, variant: _variant, size: _size, icon, ...rest }: Record<string, unknown> & { children?: ReactNode; icon?: ReactNode }) =>
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({  Button: ({ children, variant: _variant, size: _size, icon, ...rest }: Record<string, unknown> & { children?: ReactNode; icon?: ReactNode }) =>
     <button type="button" {...rest}>{icon}{children}</button>,
   Input: ({ icon: _icon, ...rest }: Record<string, unknown> & { icon?: ReactNode }) =>
     <span><input {...rest} /></span>,
@@ -51,10 +49,6 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   IconChevronDownOutlineRegular: () => <svg data-icon="chevron-down" aria-hidden="true" />,
   IconChevronUpOutlineRegular: () => <svg data-icon="chevron-up" aria-hidden="true" />,
   IconEllipsisOutlineRegular: () => <svg data-icon="ellipsis" aria-hidden="true" />,
-
-  IconChevronDownOutlineRegular: () => <svg aria-hidden="true" />,
-  IconChevronUpOutlineRegular: () => <svg aria-hidden="true" />,
-
   IconRefreshOutlineRegular: () => <svg data-icon="refresh" aria-hidden="true" />,
   IconSettingsOutlineRegular: () => <svg data-icon="settings" aria-hidden="true" />,
   IconSlidersTwoOutlineRegular: () => <svg data-icon="sliders" aria-hidden="true" />,
@@ -95,27 +89,15 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
       </div>
     )
   },
-  MarkdownText: () => null,
-  Pill: () => null,
-  TextShimmer: () => null,
-  extractMarkdownPlainText: (text: string) => text
-    .replace(/^\s*#{1,6}\s+/gm, '')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1'),
-
-  DisclosureRow: () => null,
-
-  DisclosureRow: ({ title, open, onToggle, headerAccessory, collapsedContent, children }: { title: string; open: boolean; onToggle(): void; headerAccessory?: ReactNode; collapsedContent?: ReactNode; children?: ReactNode }) =>
-    <div><button aria-expanded={open} onClick={onToggle}>{title}</button>{headerAccessory}{!open && collapsedContent}{open && children}</div>,
-
   MarkdownText: ({ text, omitHtml, streaming, variant }: { text: string; omitHtml: boolean; streaming: boolean; variant: string }) =>
     <div data-md={variant} data-omit-html={String(omitHtml)} data-streaming={String(streaming)}>{omitHtml ? text.replace(/<[^>]+>/g, '') : text}</div>,
   Pill: ({ onClick, children }: { onClick(): void; children: ReactNode }) => <button onClick={onClick}>{children}</button>,
   TextShimmer: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-  extractMarkdownPlainText: (text: string) => text.replace(/\*\*|`/g, '').replace(/^#+ /gm, ''),
-
+  extractMarkdownPlainText: (text: string) => text
+    .replace(/^\s*#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1'),
   useClipboardCopy: () => ({ copied: false, onCopy: () => {} }),
-
   Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
     open ? <div role="dialog" aria-label={title} data-tone={tone}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
   // Read-only badge and status dot: stand-ins that expose tone/state for assertions.
@@ -134,6 +116,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
       ) : null}
     </>
   ),
+
 }))
 
 afterEach(() => {
@@ -1767,7 +1750,7 @@ describe('ChatDetail (D18, D30 density)', () => {
       turn(5, { freshSession: true }),
     ]
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
-    fireEvent.click(screen.getByRole('button', { name: '更早的 2 条记录' }))
+    fireEvent.click(screen.getByRole('button', { name: /更早的 2 条记录/ }))
     const rail = (seq: number): [string | null, string] => {
       const row = container.querySelector(`[data-seq="${seq}"]`) as HTMLElement
       return [row.getAttribute('data-rail'), (row.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft]
@@ -1877,7 +1860,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(earlier.getByText('+3 条未加载')).toBeTruthy()
     expect(earlier.getByText('11-24 12:00 – 昨天 12:00')).toBeTruthy()
     expect(screen.queryByText('加载更早的记录')).toBeNull()
-    fireEvent.click(earlier.getByRole('button', { name: '更早的 2 条记录' }))
+    fireEvent.click(earlier.getByRole('button', { name: /更早的 2 条记录/ }))
     expect(earlier.getAllByRole('heading').map(el => el.textContent)).toEqual(['昨天', '11-24'])
     fireEvent.click(earlier.getByText('加载更早的记录'))
     expect(source.loadMore).toHaveBeenCalledTimes(1)
