@@ -26,11 +26,11 @@
  * @module dsh-acp-resume/client/ChatDetail
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
 import { DisclosureRow, PanelCard, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
-import { formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
+import { formatDayHeader, formatTimeRange, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { FollowTurn, LiveView } from './live-source.ts'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
@@ -296,6 +296,44 @@ function ActionsMenu({ canRelease, disabled, onRelease, onDelete, t }: {
   )
 }
 
+const RECENT_VISIBLE = 3
+const RECENT_FOLD_ABOVE = 4
+type HistoryItem = TurnItem | EventItem
+
+function EarlierHistory({ items, unloaded, footer, renderItem, now, t }: {
+  items: HistoryItem[]; unloaded: number; footer: ReactNode; renderItem: (item: HistoryItem) => ReactNode; now: number; t: PanelTranslate
+}) {
+  const [open, setOpen] = useState(false)
+  const toggle = useCallback(() => setOpen(value => !value), [])
+  const groups = new Map<string, HistoryItem[]>()
+  let errors = 0, events = 0, warnings = 0
+  for (const item of items) {
+    if (item.kind === 'event') events++
+    else if (item.stopReason === 'error') errors++
+    else if (turnRail(item)) warnings++
+    if (open) {
+      const day = formatDayHeader(t, item.at, now)
+      const group = groups.get(day)
+      if (group) group.push(item)
+      else groups.set(day, [item])
+    }
+  }
+  const times = items.map(item => item.at)
+  return <section data-earlier>
+    <DisclosureRow icon={null} expandable expandOnRowClick title={t('detailEarlier', { count: items.length })} open={open} onToggle={toggle}
+      collapsedContent={<span style={styles.aside}>{formatTimeRange(t, Math.min(...times), Math.max(...times), now)}</span>}
+      headerAccessory={<div style={styles.line}>
+        {errors > 0 && <Tag tone="danger">{t('detailErrors', { count: errors })}</Tag>}
+        {warnings > 0 && <Tag tone="warning">{t('detailWarnings', { count: warnings })}</Tag>}
+        {events > 0 && <Tag tone="warning">{t('detailEvents', { count: events })}</Tag>}
+        {unloaded > 0 && <span style={styles.aside}>{t('detailUnloaded', { count: unloaded })}</span>}
+      </div>}>
+      {[...groups].map(([day, rows]) => <section key={day}><h4 style={styles.subheading}>{day}</h4><ul style={styles.list}>{rows.map(renderItem)}</ul></section>)}
+      {footer}
+    </DisclosureRow>
+  </section>
+}
+
 interface ViewProps {
   readonly tabSignal?: AbortSignal
   readonly follow?: FollowTurn
@@ -353,6 +391,16 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   const now = snapshot.fetchedAt ?? 0
   const running = snapshot.entries.find((item): item is RunningItem => item.kind === 'running')
   const newestFirst = snapshot.entries.filter((item): item is TurnItem | EventItem => item.kind !== 'running').reverse()
+  const folded = newestFirst.length > RECENT_FOLD_ABOVE
+  const recent = folded ? newestFirst.slice(0, RECENT_VISIBLE) : newestFirst
+  const renderItem = (item: HistoryItem) => item.kind === 'event'
+    ? <EventRow key={item.seq} item={item} now={now} t={t} />
+    : <TurnRow key={item.seq} item={item} now={now} open={openSeq === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />
+  const unloaded = snapshot.total - newestFirst.length
+  const footer = unloaded > 0 && <div style={styles.loadMoreWrap}>
+    <span style={styles.sectionCount}>{t('shownOf', { shown: newestFirst.length, total: snapshot.total })}</span>
+    <Button size="sm" variant="ghost" onClick={() => { void source.loadMore() }}>{t('loadMore')}</Button>
+  </div>
   const inFlightSince = running?.startedAt ?? chat?.inFlight?.startedAt
   const backend = chat !== undefined && (chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? (chat.backendDisplay ?? chat.backend) : undefined
   const turns = chat?.turnCount === undefined ? t('noValue') : String(chat.turnCount)
@@ -392,17 +440,10 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
       {running === undefined && newestFirst.length === 0 ? null : (
         <ul style={styles.list}>
           {running === undefined ? null : <RunningRow key={running.startedAt} chatId={chatId} signal={tabSignal} follow={follow} item={running} now={now} t={t} />}
-          {newestFirst.map(item => item.kind === 'event'
-            ? <EventRow key={item.seq} item={item} now={now} t={t} />
-            : <TurnRow key={item.seq} item={item} now={now} open={openSeq === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />)}
+          {recent.map(renderItem)}
         </ul>
       )}
-      {snapshot.total > newestFirst.length ? (
-        <div style={styles.loadMoreWrap}>
-          <span style={styles.sectionCount}>{t('shownOf', { shown: newestFirst.length, total: snapshot.total })}</span>
-          <Button size="sm" variant="ghost" onClick={() => { void source.loadMore() }}>{t('loadMore')}</Button>
-        </div>
-      ) : null}
+      {folded ? <EarlierHistory items={newestFirst.slice(RECENT_VISIBLE)} unloaded={unloaded} footer={footer} renderItem={renderItem} now={now} t={t} /> : footer}
       <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
         title={t(confirming === 'release' ? 'releaseConfirmTitle' : 'confirmTitle', { chatId: short })}
         description={t(confirming === 'release' ? 'releaseConfirmBody' : 'confirmBody')}

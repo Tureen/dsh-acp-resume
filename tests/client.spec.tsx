@@ -1765,6 +1765,7 @@ describe('ChatDetail (D18, D30 density)', () => {
       turn(5, { freshSession: true }),
     ]
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '更早的 2 条记录' }))
     const rail = (seq: number): [string | null, string] => {
       const row = container.querySelector(`[data-seq="${seq}"]`) as HTMLElement
       return [row.getAttribute('data-rail'), (row.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft]
@@ -1855,6 +1856,29 @@ describe('ChatDetail (D18, D30 density)', () => {
     await act(async () => { fireEvent.click(head(container, 1)) })
     expect(screen.getByRole('alert').textContent).toBe('读取全文失败:acp-resume/unknown-turn: trimmed')
     expect(container.querySelector('[data-full="message"]')?.textContent).toBe('问…')
+  })
+
+  it('keeps four entries visible and folds older days, counts and paging below the newest three', () => {
+    const now = new Date(2026, 10, 26, 12).getTime()
+    const day = 86400000
+    const rows = [lostEvent(1), turn(2, { stopReason: 'error' }), turn(3), turn(4), turn(5)]
+      .map((item, i) => ({ ...item, at: now - (i === 0 ? 2 : i === 1 ? 1 : 0) * day }))
+    const view = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: rows.slice(1), fetchedAt: now }))).injected} />)
+    expect(view.container.querySelectorAll('li[data-seq]')).toHaveLength(4)
+    expect(view.container.querySelector('[data-earlier]')).toBeNull()
+    const source = fakeSource(detailSnapshot({ entries: rows, total: 8, fetchedAt: now }))
+    view.rerender(<ChatDetail {...detailProps(source).injected} />)
+    expect([...view.container.querySelectorAll('li[data-seq]')].map(el => el.getAttribute('data-seq'))).toEqual(['5','4','3'])
+    const earlier = within(view.container.querySelector('[data-earlier]') as HTMLElement)
+    expect(earlier.getByText('1 出错')).toBeTruthy()
+    expect(earlier.getByText('1 事件')).toBeTruthy()
+    expect(earlier.getByText('+3 条未加载')).toBeTruthy()
+    expect(earlier.getByText('11-24 12:00 – 昨天 12:00')).toBeTruthy()
+    expect(screen.queryByText('加载更早的记录')).toBeNull()
+    fireEvent.click(earlier.getByRole('button', { name: '更早的 2 条记录' }))
+    expect(earlier.getAllByRole('heading').map(el => el.textContent)).toEqual(['昨天', '11-24'])
+    fireEvent.click(earlier.getByText('加载更早的记录'))
+    expect(source.loadMore).toHaveBeenCalledTimes(1)
   })
 
   it('offers older entries when the log holds more than is shown', () => {
