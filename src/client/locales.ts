@@ -242,6 +242,18 @@ export const zh = {
   statsLine: '{running} 进行中 · {idle} 空闲 · {released} 已释放',
   showRest: '显示其余 {count} 个',
   collapseActive: '收起',
+  copyText: '复制',
+  copiedText: '已复制',
+  mdCodeFallback: '代码',
+  mdCodeWrap: '自动换行',
+  mdCodeUnwrap: '取消换行',
+  mdFootnotes: '脚注',
+  durationUnderSecond: '<1秒',
+  dateToday: '今天',
+  dateYesterday: '昨天',
+  turnTimeTooltip: '开始 {start} · 结束 {end} · 耗时 {duration}（{relative}）',
+  pointTimeTooltip: '{time}（{relative}）',
+  startedAtTooltip: '开始于 {time}',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -482,6 +494,18 @@ export const en: Record<PanelCopyKey, string> = {
   statsLine: '{running} running · {idle} idle · {released} released',
   showRest: 'Show the other {count}',
   collapseActive: 'Collapse',
+  copyText: 'Copy',
+  copiedText: 'Copied',
+  mdCodeFallback: 'Code',
+  mdCodeWrap: 'Wrap lines',
+  mdCodeUnwrap: 'No wrap',
+  mdFootnotes: 'Footnotes',
+  durationUnderSecond: '<1s',
+  dateToday: 'Today',
+  dateYesterday: 'Yesterday',
+  turnTimeTooltip: 'Started {start} · Ended {end} · {duration} ({relative})',
+  pointTimeTooltip: '{time} ({relative})',
+  startedAtTooltip: 'Started {time}',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */
