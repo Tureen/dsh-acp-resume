@@ -175,9 +175,8 @@ export interface Config {
   /**
    * Allow `job_output` with `wait: true` on a still-running `acp-chat` job
    * (default false, D22). By default such a call is refused with guidance:
-   * a chat turn can run for minutes, and blocking on it stalls the model and
-   * queues the user's messages, while the job's completion notice already
-   * wakes the model. Settled jobs and other job kinds are never affected.
+   * a chat turn can run for minutes, and its completion notice already wakes
+   * the model. This setting does not affect the host's inbox wait tool.
    */
   allowChatJobWait?: boolean
   /**

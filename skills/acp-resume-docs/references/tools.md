@@ -20,7 +20,7 @@
 
 start 的 chatId 标识后续操作的本地会话；remoteSessionId 是后端的会话号；jobId 标识一次后台任务。send、steer、close 的 role 与 chatId 二选一；角色必须有调用会话。相同 chat 单飞，不排队。已有会话直接 send，不因新的检测结果重新 start。
 
-后台 job 运行期间可做独立工作，完成通知会唤醒主会话。用 job_output 不带 wait 收结果；默认等待门也会拦截本主会话有运行中 ACP job 时的 wait_agent。需中止任务时用 job_kill。未挂 jobs 服务则同步等待。
+后台 job 运行期间可做独立工作，完成通知会唤醒主会话。宿主提供 `wait_agent` 时，可留在本轮等通知；默认超时 30 秒，用户插话会提前返回。收到完成通知后用 `job_output` 不带 wait 收结果。默认等待门只拦运行中 acp-chat 的 `job_output wait:true`。需中止任务时用 job_kill。未挂 jobs 服务则同步等待。
 
 ## 释放、恢复与历史
 

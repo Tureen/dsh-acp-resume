@@ -350,8 +350,10 @@ function roleKey(role: string, ownerSessionId: string): string {
   return `${ownerSessionId}\u0000${role}`
 }
 
+const BUSY_TURN_GUIDANCE = 'Retry after the current turn finishes. For a background job, wait_agent can wait for the completion notice or user input if available.'
+
 function roleInFlight(role: string): Error {
-  return new Error(`acp-resume: role ${role} is still being set up or already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
+  return new Error(`acp-resume: role ${role} is still being set up or already has a prompt in flight. ${BUSY_TURN_GUIDANCE}`)
 }
 
 /** Resolve once `promise` settles or `ms` elapses, whichever comes first. Never rejects. */
@@ -717,7 +719,7 @@ export class AcpSessionPool {
     const existing = this.live.get(chatId)
     if (existing?.changing) throw new Error(`chat ${chatId} is changing session settings; try again when it finishes`)
     if (existing?.busy === true || this.starting.has(chatId)) {
-      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight. ${BUSY_TURN_GUIDANCE}`)
     }
     if (existing?.closing !== undefined) {
       // A release is underway: let it finish, then take the released path.
@@ -859,7 +861,7 @@ export class AcpSessionPool {
     if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
     const existing = this.live.get(chatId)
     if (existing?.busy === true || this.starting.has(chatId)) {
-      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
+      throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight. ${BUSY_TURN_GUIDANCE}`)
     }
     if (existing === undefined) this.assertSameAgent(entry)
   }

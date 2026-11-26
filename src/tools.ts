@@ -378,7 +378,7 @@ export function chatSendTool(
     name,
     description: `Send one message to a persistent chat started with ${toolPrefix}start. Returns at once with a background job id; `
       + 'the agent\'s answer streams into that job. When the turn finishes you are woken in-session; then read the answer with job_output without wait. '
-      + 'Ending your turn while the job runs is correct and counts as collecting it. '
+      + `${INBOX_WAIT_GUIDANCE} Ending your turn while the job runs is correct and counts as collecting it. `
       + (allowChatJobWait ? '' : 'job_output with wait on a running turn is refused, and reading again before the notification only returns no new output. ')
       + 'A send to a chat whose previous job is still running is rejected; send again after that job\'s completion notice. '
       + 'Stop it with job_kill. The chat keeps full conversation context; different chats may run in parallel. '
@@ -416,7 +416,7 @@ export function chatSendTool(
       // The tool description carries the rest (ending the turn collects it, job_kill stops it); repeat only what this call decides.
       return {
         text: `message sent to ${what}; the answer runs as background job ${jobId}. `
-          + `You are woken in-session when it finishes. Do not send to this ${target.kind} again until then. ${NO_WAIT_GUIDANCE}`,
+          + `You are woken in-session when it finishes. Do not send to this ${target.kind} again until then. ${BACKGROUND_RECEIPT_GUIDANCE}`,
         jobId,
       }
     },
@@ -634,8 +634,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
   return [start, list, close, steer]
 }
 
-/** Closing line of every background receipt: the model must end its reply, not block on the job (D22). */
-export const NO_WAIT_GUIDANCE = 'Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.'
+/** Options after dispatching a background job (D17/D22). */
+const INBOX_WAIT_GUIDANCE = 'If available, wait_agent can wait in this turn for the completion notice or new user input.'
+const BACKGROUND_RECEIPT_GUIDANCE = `Send any other independent tasks. ${INBOX_WAIT_GUIDANCE} After the notice, read the result with job_output without wait.`
 
 /** Name of the workflow tool (D27); fixed, not under the chat tools' prefix. */
 export const WORKFLOW_TOOL = 'acp_workflow'
@@ -733,7 +734,7 @@ export function chatWorkflowTool(
       + (jobs === undefined
         ? 'The call waits for the run and returns its JSON result; a run that did not complete fails with its partial JSON.'
         : 'Returns at once with a background job id; the result comes with job_output: you are woken in-session when it finishes, then read the JSON result with job_output without wait. '
-          + 'Ending your turn while it runs is correct. Stop it with job_kill.'),
+          + `${INBOX_WAIT_GUIDANCE} Ending your turn while it runs is also correct. Stop it with job_kill.`),
     parameters: {
       template: { type: 'string', required: true, description: 'Template name from the workspace team file.' },
       params: { type: 'object', additionalProperties: true, description: 'Template params as name → value (strings, numbers, or booleans).' },
@@ -771,7 +772,7 @@ export function chatWorkflowTool(
         },
       })
       return {
-        text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes. ${NO_WAIT_GUIDANCE}`,
+        text: `workflow ${template.name} started as background job ${jobId}. You are woken in-session when it finishes. ${BACKGROUND_RECEIPT_GUIDANCE}`,
         jobId,
       }
     },

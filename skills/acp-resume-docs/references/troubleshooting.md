@@ -48,7 +48,7 @@
 | already has a prompt in flight / is still being set up | chat 单飞，或角色正在首次供给 | 等通知或使用支持的 steer。 |
 | has no turn in flight / has no chat in this session, so it has no turn to steer | 无在途轮 | 用 send。 |
 | this backend does not support mid-turn steering | 插话不支持 | 等轮结束，或中止后再 send。 |
-| Waiting on job <id> is disabled / You have a running acp-chat job | 等待被拒 | 等通知后用 job_output 不带 wait。 |
+| Waiting on job <id> is disabled | 对运行中 acp-chat 的 job_output wait:true 被拒 | 可用 wait_agent 等完成通知，收到通知后用 job_output 不带 wait 收结果。 |
 | remote session lost, started fresh / remote session failed repeatedly, started fresh | 远端上下文已换新 | 补背景并重述问题。 |
 | send aborted before it started / was released before the prompt started | 发送前已取消 | 查状态再决定是否重发。 |
 | releasing chat <id> failed; its record is kept | 释放失败 | 保留记录，查进程诊断。 |

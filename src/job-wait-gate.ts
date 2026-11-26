@@ -1,15 +1,7 @@
 /**
- * Pre-execute gate for D22: refuses `job_output` calls that would block
- * (`wait: true`) on a still-running `acp-chat` job, and (2026-11-20) any
- * `wait_agent` call while the calling session has a running `acp-chat` job
- * (chat turns and `acp_workflow` runs both use that kind). A chat turn often runs for
- * many minutes, and a blocking wait holds the model's step (and queues the
- * user's new messages) up to the host's wait ceiling; the job's completion
- * notice already wakes the model, so the only collection path left is
- * "notified, then read without wait". Pure decision logic over a minimal job
- * lookup face: no host runtime import beyond types, so it is unit-testable
- * with a real or stub registry. Every doubtful case yields `undefined`
- * (allow) and leaves the verdict to `job_output` itself.
+ * D22 pre-execute gate for blocking `job_output` reads of running `acp-chat` jobs.
+ * A completion notice wakes the calling agent to collect the result without
+ * waiting. All other calls pass through to the host.
  *
  * @module dsh-acp-resume/job-wait-gate
  */
@@ -18,26 +10,7 @@ import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 
 /** The registry face the gate needs: `ctx.jobs` in a host. */
-export type JobLookupFace = Pick<JobRegistry, 'get' | 'list'>
-
-/** Model-facing refusal text for a `wait_agent` call while a chat job runs. */
-export const WAIT_AGENT_DENIED_REASON = 'You have a running acp-chat job; end your reply instead of waiting — the completion notification will wake you.'
-
-/**
- * Deny `wait_agent` while the calling agent has a running `acp-chat` job.
- * `wait_agent` has no wait flag: the call itself is the blocking wait. A
- * registry that cannot list allows the call.
- */
-function decideWaitAgent(jobs: JobLookupFace, agentId: Parameters<JobRegistry['list']>[0]): PreToolDecision | undefined {
-  let views
-  try {
-    views = jobs.list(agentId)
-  } catch (_unavailable: unknown) {
-    return undefined
-  }
-  const running = views.some(view => view.kind === 'acp-chat' && view.status === 'running')
-  return running ? { kind: 'deny', reason: WAIT_AGENT_DENIED_REASON } : undefined
-}
+export type JobLookupFace = Pick<JobRegistry, 'get'>
 
 /** The slice of a tool execution the gate reads. */
 export type JobWaitExecution = Pick<ToolExecution, 'name' | 'arguments' | 'agent'>
@@ -53,8 +26,7 @@ export function waitDeniedReason(jobId: string): string {
 }
 
 /**
- * Decide whether a tool call must be denied. Denies a `wait_agent` call from an
- * agent that has a running `acp-chat` job (any arguments), and a `job_output` call
+ * Deny a `job_output` call
  * from an agent with `wait: true` and a non-empty `job_id` whose job is of kind
  * `acp-chat` and still `running`. A `stopping` job (the model already
  * killed it) is allowed: a model-requested kill sends no completion notice,
@@ -67,7 +39,6 @@ export function waitDeniedReason(jobId: string): string {
  */
 export function decideJobWait(jobs: JobLookupFace, exec: JobWaitExecution): PreToolDecision | undefined {
   if (exec.agent === undefined) return undefined
-  if (exec.name === 'wait_agent') return decideWaitAgent(jobs, exec.agent.id)
   if (exec.name !== 'job_output') return undefined
   const args = exec.arguments
   if (typeof args !== 'object' || args === null) return undefined

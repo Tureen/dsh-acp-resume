@@ -28,7 +28,7 @@
 | allowUnverifiedBackends | false | 允许显式选用自动发现的范围外版本；不会将其加入自动回退顺序。（可在侧栏改） |
 | toolPrefix | acp_chat_ | 五个 chat 工具的前缀。status、team_list 派生名字时去掉末尾 chat_；workflow 和 usage 工具名固定。 |
 | enableChatTools | true | 关闭持久会话工具、池与后端检测。一次性 provider 仍在，列表与详情显示关闭态。 |
-| allowChatJobWait | false | 有 jobs 时默认拦截运行中 ACP job 的阻塞等待。开启会移除等待门；常规收结果仍可等通知后读。（可在侧栏改） |
+| allowChatJobWait | false | 仅控制运行中 acp-chat 的 job_output wait:true：默认拦截，开启后不挂门。两种设置下均放行 wait_agent。（可在侧栏改） |
 | roles | true | 注册角色参数、团队列表和按主会话隔离的花名册。关闭后仍能按 chatId 派工。（可在侧栏改） |
 | workflow | false | 开启模板工具 acp_workflow，要求 roles 为 true；非法组合在插件加载时报错。（可在侧栏改） |
 

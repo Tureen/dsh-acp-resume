@@ -239,7 +239,7 @@ templates:
 | `acp_team_list` | 只读查看工作区角色的 summary 与本会话中的状态。`roles: false` 时不注册。 |
 | `acp_workflow` | 开启 `workflow` 后，按模板名和参数执行多角色工作流。 |
 
-**后台任务。** 宿主同时装有 `dsh-jobs-local` 和 `dsh-tool-jobs` 时，发送和工作流会立即返回 `jobId`。模型收到完成通知后用 `job_output` 读取结果，运行中可用 `job_kill` 停止。默认拦截对运行中 ACP 任务的阻塞等待。没有 jobs 服务时同步返回结果，仅有任务注册表而缺少控制器时会报错（D17、D22）。
+**后台任务。** 宿主同时装有 `dsh-jobs-local` 和 `dsh-tool-jobs` 时，发送和工作流会立即返回 `jobId`。模型收到完成通知后用 `job_output` 读取结果，运行中可用 `job_kill` 停止。默认仅拦截对运行中 `acp-chat` 任务的 `job_output wait:true`；设 `allowChatJobWait: true` 可放行。宿主提供 `wait_agent` 时，两种设置下都可用它在本轮等待完成通知，新用户输入也会让它提前返回。没有 jobs 服务时同步返回结果，仅有任务注册表而缺少控制器时会报错（D17、D22）。
 
 **会话恢复。** 插件默认在空闲 10 分钟后释放进程。远端会话明确丢失、后端未声明加载能力，或同一池实例中该会话连续三轮出错后再次发送时，会新开会话并提示补充上下文。原因不明的加载失败会保留原绑定并报错。注册表默认位于 `$DSH_HOME/storages/acp-resume/registry.json`，旁边的 `turns/<chatId>.jsonl` 以明文保存最近 200 条轮次记录。[恢复与日志决策（D6、D18）](DECISIONS.md)
 

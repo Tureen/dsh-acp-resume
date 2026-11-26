@@ -138,9 +138,9 @@ describe('job-backed send', () => {
     const sent = await call('send', { chatId, message: 'hi' })
     const jobId = sent.jobId as JobId
     expect(jobId).toMatch(/^acp-chat-/)
-    // The receipt keeps three facts only: the job id, the wake-up, and the single-flight rule.
+    // The receipt names the job and explains how to wait for its notice and collect it.
     expect(sent.text).toBe(`message sent to chat ${chatId as string}; the answer runs as background job ${jobId}. You are woken in-session when it finishes. Do not send to this chat again until then. `
-      + 'Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.')
+      + 'Send any other independent tasks. If available, wait_agent can wait in this turn for the completion notice or new user input. After the notice, read the result with job_output without wait.')
     // D22: no copy may push the model toward a blocked wait.
     expect(sent.text).not.toMatch(/wait for that job|wait: true/)
     const description = tools.get('acp_chat_send')!.description

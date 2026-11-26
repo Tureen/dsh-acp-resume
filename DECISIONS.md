@@ -321,6 +321,13 @@ D18 修订(2026-11-05,D21):轮询节奏由固定 5 秒改为自适应(5 秒 ↔ 
 后果:新增 `src/job-wait-gate.ts`、`tests/job-wait-gate.spec.ts`(13 例,含经真实 `ToolRuntime` 派发的一例:拒绝时工具本体未跑、结果 `isError` 且以 `Error: Waiting on job acp-chat-` 开头(文案重构后));测试 295 → 308(评审修订补 stopping 放行一例,重挂载回归并入既有监听用例;send 文案锁定并入 jobs.spec 既有用例)。
 
 (2026-11-06 注记)模型可见文案按描述层优化原则重构:正面协议优先(先说「完成会唤醒、再无 wait 读取」)、因果完整(说明机制而非只给禁令)、后果明示(wait 被拒、提前读只得 no new output)、冲突化解(带着运行中任务结束本轮即算已收集,对冲 tool-jobs 系统提示的「最终回答前先收集」)。涉及 `acp_chat_send` 描述与返回文本、`waitDeniedReason` 三处;描述里写作 `job_output with wait`(不含字面 `wait: true`,由文案锁定测试保证)。
+
+修订（2026-11-26，0.7.1）：撤销 11 月 20 日对 `wait_agent` 的拦截。当初将「等待期间用户新消息排队」套用到这个工具，写 D22 时漏读了 `packages/subagent/tool-subagent-control/src/wait-agent.ts` 的 inbox 唤醒逻辑。rc.3、rc.5 与本机 origin/master 的该文件逐字一致：默认等待 30 秒，当前 Agent 收到新的待处理 inbox 输入（含用户插话、完成通知）会提前返回，取消或会话销毁也会终止等待。600000 毫秒是 `job_output` 的默认等待上限。
+
+用户观察到 ACP 派工时目标模式反复启动空轮。按 rc.5 的 `goal-round-driver/src/index.ts`，模型被拒后依提示结束本轮会让 Agent 进入 idle，满足目标推进的一项条件；下一轮前的 `subagents.waitForTreeWork(agent)` 只等待宿主子代理树，外部 ACP 进程和 acp-chat job 不在树中。因此新轮可能在 job 结算前开始，再次尝试等待并被拒。0.7.1 允许模型留在本轮等 inbox，也保留 D17 的完成通知唤醒和通知后无 wait 读取。这条触发链来自源码核对，本次未在 Desktop 重放用户的 goal 会话。
+
+`job_output wait:true` 对运行中 acp-chat 的拒绝条件、文案和 `stopping` 放行规则保留，`allowChatJobWait: true` 仍不挂监听器。除长时间占住模型步骤外，官方 tool-jobs 的 FIXME #5965 也指出，插件可能注入来源标为 `user` 的消息，使这个等待误判为用户插话并提前结束；本包 `acp_chat_send` 回执是否在实际投递中触发这一情形未实测。
+
 ## D23 permission: ask 转发宿主用户确认(2026-11-09)
 
 问题:bundle 默认 `permission: allow` 适合 kiro-cli 开箱运行，但用户需要一个真实可用的收紧选项。此前 `reject` 只能自动拒绝，无法让用户逐次判断外部 ACP agent 的 `session/request_permission`。
@@ -591,7 +598,7 @@ D26 的 Dispatcher 模式靠 persona 提示词调度，是软约束：双审核�
 
 Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件，按用户要求改为显式开启(opt-in)。只有设了 `workflow: true` 才会有 `acp_workflow` 工具、现有工具的 `role` 参数、工作区 `.agents/acp-team.yml` 的读取、花名册与自动供给;默认状态下五个工具的定义与 D27 之前逐字节相同。已有的 `rosters` 节在关闭后保留在注册表里不被删除，重新开启后照常可用。
 
-### 修订(2026-11-20,回执明确禁止 wait_agent)
+### 修订(2026-11-20,回执明确禁止 wait_agent；0.7.1 已按 D22 修订放行)
 
 真机验证：模型调 `acp_workflow` 拿到 jobId 后没有结束回复，而是调 `wait_agent`(30 秒、120 秒)等待，工作流要跑几分钟，两次都超时。`acp_workflow` 与 `acp_chat_send` 的后台回执末尾统一追加固定一句:`Do not call wait_agent or job_output with wait — end your reply now; the completion notification will wake you automatically.` 门控层面的拦截见 D22 同日修订。
 

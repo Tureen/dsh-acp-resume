@@ -43,7 +43,7 @@ src/
 - `src/client/ChatSettings.tsx`（D44）：展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
 - `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
-  job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,拒绝对运行中 acp-chat 任务的 job_output wait:true,有运行中 acp-chat 任务时也拒绝 wait_agent(allowChatJobWait 可关)
+  job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,只拒绝运行中 acp-chat 任务的 job_output wait:true；allowChatJobWait 为 true 时不挂门
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
                  (defineTool + ctx.tools.register,不走 ctx.subagents);roles: true(默认)时另注册 <prefix>team_list(D32,默认 acp_team_list)并给 send/close/steer 加 role,workflow: true 时再注册 acp_workflow(D27;须 roles: true,D33);有 ctx.jobs 时 send 注册
                  acp-chat 后台任务并立即返回 jobId(D17),无 jobs 时同步等待、轮非 completed 抛工具错误
@@ -86,7 +86,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 691 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 91 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 29 + `client.spec.tsx` 121 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 690 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 91 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 29 + `client.spec.tsx` 121 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
@@ -100,6 +100,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 - 注释直接、具体:不重述代码、不写推理过程;命令、路径、报错保留原文。
 - 凭据走 Config `env` 显式叠加,父进程环境先经官方清洗逻辑;不在测试、夹具、文档写入真实 key。
 - send 的后台任务模式见 D17:单飞前置检查在 `jobs.start` 之前;job 的取消走 D6 取消条;无 jobs 服务时保持同步语义。
+- D22 等待门仅拦本会话运行中 acp-chat 的 `job_output wait:true`，`stopping` 放行。工具说明允许用宿主的 `wait_agent` 等 inbox 通知或用户插话；完成后按 D17 读结果。
 - 池语义固定,改动需先修订 D6:每会话单飞(在途时拒绝新 send,不排队);协议级 `session/load` 拒绝且能认出会话不存在(或未声明 loadSession)，或当前池实例同一 chat 连续 3 条 `error` 后的下一次 send，才降级新会话，分别注记固定短语 `remote session lost, started fresh` 与 `remote session failed repeatedly, started fresh`;后者计数仅在内存中保存，重启重新累计，注册表不存此状态;其余重连失败(含原因不明的 load 拒绝)报错且注册表不动;空闲释放只关进程、注册表保留;注册表写 = 临时文件 + 原子改名;取消 = 本地立即结算 `aborted` + 尽力 `session/cancel` + 作废连接(error 轮同样作废)。
 - 按轮日志(D18)是诊断镜像不是状态:写失败只经 `onWarn` 告警、绝不改变轮结果;写前复查注册表里会话还在(purge 后不得复活);`purge` 连日志文件一起删;steer 不记。注册表结构不因日志而改。
 - 面板详情页签是资源地址页签(`dsh-resource://acp-resume-chat/<chatId>`),不注册 resource provider;身份只能放地址里(官方不持久化导航参数)。

@@ -378,7 +378,7 @@ describe('workflow progress records (D27, 2026-11-20)', () => {
     const receipt = await tool.execute({ template: 'chain', params: { target: 'X' } }, { signal: new AbortController().signal, agent: { id: 'session-a', session: sink().session } } as unknown as ToolRunContext) as { text: string }
     await done
     expect(receipt.text).toBe('workflow chain started as background job job-1. You are woken in-session when it finishes. '
-      + 'Do not call wait_agent or job_output with wait. Send any other independent tasks, then end your reply; the completion notification wakes you.')
+      + 'Send any other independent tasks. If available, wait_agent can wait in this turn for the completion notice or new user input. After the notice, read the result with job_output without wait.')
     progress.length = 0
     const direct = sink()
     const nested = sink()
