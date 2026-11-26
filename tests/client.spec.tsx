@@ -39,10 +39,22 @@ import type {
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
-  Button: ({ children, variant: _variant, size: _size, icon: _icon, ...rest }: Record<string, unknown> & { children?: ReactNode }) =>
-    <button type="button" {...rest}>{children}</button>,
-  Modal: ({ open, title, description, footer }: { open: boolean; title: string; description?: string; footer?: ReactNode }) =>
-    open ? <div role="dialog" aria-label={title}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
+  Button: ({ children, variant: _variant, size: _size, icon, ...rest }: Record<string, unknown> & { children?: ReactNode; icon?: ReactNode }) =>
+    <button type="button" {...rest}>{icon}{children}</button>,
+  Input: ({ icon: _icon, ...rest }: Record<string, unknown> & { icon?: ReactNode }) =>
+    <span><input {...rest} /></span>,
+  Switch: ({ checked, onChange, label, disabled, title }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; title?: string }) =>
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} title={title} onClick={() => onChange(!checked)} />,
+  IconRefreshOutlineRegular: () => <svg data-icon="refresh" aria-hidden="true" />,
+  IconSettingsOutlineRegular: () => <svg data-icon="settings" aria-hidden="true" />,
+  DisclosureRow: () => null,
+  MarkdownText: () => null,
+  Pill: () => null,
+  TextShimmer: () => null,
+  extractMarkdownPlainText: (text: string) => text,
+  useClipboardCopy: () => ({ copied: false, copy: () => {} }),
+  Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
+    open ? <div role="dialog" aria-label={title} data-tone={tone}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
   // Read-only badge and status dot: stand-ins that expose tone/state for assertions.
   Tag: ({ children, tone }: { children?: ReactNode; tone?: string }) => <span data-tag data-tone={tone}>{children}</span>,
   StateDot: ({ state }: { state: string }) => <span data-state-dot data-state={state} aria-hidden="true" />,
@@ -2188,5 +2200,75 @@ describe('live detail body (D46)', () => {
       await screen.findByText('审阅')
       expect(watch).not.toHaveBeenCalled()
     } finally { cleanup(); await ctx.fiber.dispose() }
+})
+})
+
+describe('ChatsPanel header icons and settings drawer (D47 Step 2)', () => {
+  function readyForm(value: Record<string, unknown>) {
+    const snapshot = { status: 'ready', writable: true, revision: 1, value }
+    return {
+      getSnapshot: () => snapshot,
+      subscribe: () => () => {},
+      mutate: vi.fn(async () => true),
+    }
+  }
+
+  function settingsForms() {
+    return () => ({
+      main: readyForm({ roles: true, workflow: false }),
+      dispatcher: readyForm({ dispatcherTools: { web: true }, dispatcherPrompt: { extraRules: '', overrideRules: false } }),
+    })
+  }
+
+  it('renders official refresh and settings icon buttons without raw gear unicode and triggers refresh', () => {
+    const refresh = vi.fn()
+    const { container } = render(<ChatsPanel {...props(ready([]), { refresh, profileForms: settingsForms() })} />)
+    const refreshBtn = screen.getByRole('button', { name: zh.refresh })
+    const settingsBtn = screen.getByRole('button', { name: zh.profileSettings })
+    expect(refreshBtn.querySelector('[data-icon="refresh"]')).toBeTruthy()
+    expect(settingsBtn.querySelector('[data-icon="settings"]')).toBeTruthy()
+    expect(container.textContent).not.toContain('⚙')
+    fireEvent.click(refreshBtn)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('toggles the inline settings drawer open and closed from the header settings button', () => {
+    render(<ChatsPanel {...props(ready([]), { profileForms: settingsForms() })} />)
+    const settingsBtn = screen.getByRole('button', { name: zh.profileSettings })
+    expect(settingsBtn.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText(zh.profileMain)).toBeNull()
+
+    fireEvent.click(settingsBtn)
+    expect(settingsBtn.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText(zh.profileMain)).toBeTruthy()
+    expect(screen.getAllByRole('switch')).toHaveLength(11)
+
+    fireEvent.click(settingsBtn)
+    expect(settingsBtn.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText(zh.profileMain)).toBeNull()
+  })
+
+  it('resets the settings drawer back to collapsed after unmounting and remounting (tab switch)', () => {
+    const panelProps = props(ready([]), { profileForms: settingsForms() })
+    const first = render(<ChatsPanel {...panelProps} />)
+    fireEvent.click(screen.getByRole('button', { name: zh.profileSettings }))
+    expect(screen.getByText(zh.profileMain)).toBeTruthy()
+
+    first.unmount()
+    render(<ChatsPanel {...panelProps} />)
+    const settingsBtn = screen.getByRole('button', { name: zh.profileSettings })
+    expect(settingsBtn.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText(zh.profileMain)).toBeNull()
+  })
+
+  it('keeps zh and en locale dictionaries complete with identical keys and non-empty strings', () => {
+    const zhKeys = Object.keys(zh).sort()
+    const enKeys = Object.keys(en).sort()
+    expect(enKeys).toEqual(zhKeys)
+    for (const key of zhKeys as PanelCopyKey[]) {
+      expect(zh[key].trim().length).toBeGreaterThan(0)
+      expect(en[key].trim().length).toBeGreaterThan(0)
+    }
+
   })
 })

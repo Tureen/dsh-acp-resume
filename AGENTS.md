@@ -39,9 +39,11 @@ src/
   workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
   panel.ts       D46:watch 是带 owner 校验与取消信号的 Remote 流。D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
+- `src/client/panel-time.ts` / `panel-chrome.tsx`（D47）：全侧栏共享纯时间/耗时格式化与共享视觉原语（左侧 3px 状态竖条四态、10px 卡片外壳、引用稳定 `useMarkdownLabels`、`cleanPreview` 与官方组件再导出）。
 - `src/client/features-source.ts` / `PanelFeatureGate.tsx`（D35）：列表、详情正文和标题共享连接级能力查询，关闭时均不订阅业务数据源。工作流关闭时 `workflows-source.ts` 只在区块打开或手动刷新时读取历史。
-- `src/client/ProfileSettings.tsx`（D45）：两个官方 ConfigForm、逐字段保存和首次写回确认。
+- `src/client/ProfileSettings.tsx`（D45/D47）：两个官方 ConfigForm、逐字段保存，官方 `Switch`/`Input`/`Modal(tone="warning")` 控件与首次写回确认。
 - `src/client/live-source.ts`（D46）：仅展开的可见详情正文共享一条流，切走即取消，轮结束刷新原有详情数据源。
+
 - `src/client/ChatSettings.tsx`（D44）：展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
 - `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；除 D46 展开的流式正文外，数据跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
@@ -75,7 +77,7 @@ tests/
   engine.spec.ts         --agent-engine 辅助函数与两条 spawn 路径的 argv
   job-wait-gate.spec.ts  D22 门:decideJobWait 纯函数、allowChatJobWait 开关、真实 ToolRuntime 派发
   turn-log.spec.ts       按轮日志单元(追加/读/截断/容错/裁剪/删除/写失败)
-  panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom)
+  panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom);panel-time.spec.ts / panel-chrome.spec.tsx 共享时间与视觉原语(D47)
   mock-codex-server.ts   Codex app-server mock(D25;无 SDK,会话表落文件支持 thread/resume)
   mock-acp-server.ts     扩展了 session/load 的 mock;会话表落文件以支持跨进程重连(D9/D12)
   fixtures/  helpers/    loader 夹具与测试辅助
@@ -94,7 +96,8 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 706 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 94 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 126 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 724 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 94 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 130 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2;新套件落地时在此登记。
+
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
-import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconRefreshOutlineRegular, IconSettingsOutlineRegular, Modal, StateDot, Tag, type StateDotState } from './panel-chrome.tsx'
 import type { BackendStatus } from '../backend-status.ts'
 import { ProfileSettings } from './ProfileSettings.tsx'
 import { ChatSettings } from './ChatSettings.tsx'
@@ -660,9 +660,13 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
       <div style={styles.header}>
         <h2 style={styles.heading}>{t('title')}</h2>
         <div style={styles.controls}>
-          {profileForms && <button type="button" aria-label={t('profileSettings')} title={t('profileSettings')} aria-expanded={showSettings}
-            onClick={() => setShowSettings(!showSettings)}>⚙</button>}
-          <Button size="sm" variant="ghost" onClick={() => { refresh() }}>{t('refresh')}</Button>
+          <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular size={14} />}
+            aria-label={t('refresh')} title={t('refresh')} onClick={() => { refresh() }} />
+          {profileForms && (
+            <Button size="sm" variant="ghost" icon={<IconSettingsOutlineRegular size={14} />}
+              aria-label={t('profileSettings')} title={t('profileSettings')} aria-expanded={showSettings}
+              onClick={() => { setShowSettings(open => !open) }} />
+          )}
         </div>
       </div>
       {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => b.id)}
