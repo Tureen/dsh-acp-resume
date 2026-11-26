@@ -891,3 +891,5 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - **默认组合。** 保留 D36 后的 id、展示名、order 10、description、完整 persona 和全部子行顺序与参数。基础行是 persona、agent-instructions、time-context、tool-jobs。web、present、todo、askUser、compaction 默认开；压缩组保持两个隔离服务与三个子项。ACP 工具继承自全局插件。
 - **边界。** readOnlyFs 默认关；打开后生成文件行并显式关闭 readImage、write、edit、applyPatch，再配合 fs-search 提供 read、glob、grep。工具开关同源生成 description 和 persona。团队转述延续 D36。主 Agent 的可选项不含 bash 或可写文件工具。
 - **升级。** Loader 行 id 与会话持久化的 preset id 独立。合法 profile 中的旧行覆盖找不到目标时，rc.5 记录警告并继续加载。保留原来的 `config.id` 能延续会话引用，但不会搬迁覆盖内容。只读文件、禁用状态和完整自定义的迁移方法见 D26 与中英文 README。
+
+修订（2026-11-26，0.5.1）：最初从标准模式删减工具时，一并移除了 skill 发现与加载两个子项，未单独评估这项能力。为让 Dispatcher 主 Agent 在任务匹配时加载相应指引，新增第七项 `dispatcherTools.skill`。开启时在 present 后、compaction 前加入 `skill-filesystem` 和 `tool-skill`，沿用标准模式的 Loader 表达式，在当前安装中解析 `@deepseek-ai/dsh-agent-preset` 自带的 skills 目录。可用 skill 的说明会进入主 Agent 上下文，因此默认关闭，升级后沿用 0.5.0 的工具面和 persona。

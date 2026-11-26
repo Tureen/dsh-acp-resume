@@ -135,6 +135,7 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 | `present` | `true` | 展示交付物。 |
 | `todo` | `true` | 维护任务清单。 |
 | `askUser` | `true` | 用工具向用户澄清问题。关闭后仍可在对话中提问。 |
+| `skill` | `false` | 让主 Agent 查看可用 skill 的说明，遇到匹配的任务时加载完整指引。说明会占用上下文，因此默认关闭。 |
 | `compaction` | `true` | 整组启用上下文压缩、手动压缩命令与工具结果裁剪。 |
 
 省略字段使用默认值。Dispatcher 按同一组选择生成模式说明和 persona。改动生效后，新绑定的 Agent 使用新组合，当前进程内已绑定的 Agent 保留原组合。该声明拥有独立的加载生命周期，调整时无需重载 ACP 会话池。

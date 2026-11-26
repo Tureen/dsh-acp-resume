@@ -9,10 +9,10 @@ import z from '@deepseek-ai/schemastery'
 /** Host service required by this declaration. */
 export const inject = ['agentPresets']
 
-const defaults = { readOnlyFs: false, web: true, present: true, todo: true, askUser: true, compaction: true }
+const defaults = { readOnlyFs: false, web: true, present: true, todo: true, askUser: true, skill: false, compaction: true }
 type DispatcherTools = typeof defaults
 
-/** Toggles for the Dispatcher scope. Named-role and workflow settings belong to the main plugin. */
+/** Toggles for the Dispatcher scope. Skill descriptions enter the main agent's context only on opt-in. */
 export const Config = z.object({
   dispatcherTools: z.object({
     readOnlyFs: z.boolean().default(defaults.readOnlyFs).description('Read and search files to verify worker results.'),
@@ -20,6 +20,7 @@ export const Config = z.object({
     present: z.boolean().default(defaults.present).description('Present deliverables.'),
     todo: z.boolean().default(defaults.todo).description('Maintain a task list.'),
     askUser: z.boolean().default(defaults.askUser).description('Use a tool to ask the user for clarification.'),
+    skill: z.boolean().default(defaults.skill).description('Include skill descriptions in the main agent’s context and let it load matching skills. Off by default to keep the prompt smaller.'),
     compaction: z.boolean().default(defaults.compaction).description('Enable the isolated context compaction group.'),
   }).default(defaults),
 })
@@ -57,6 +58,10 @@ function dispatcherCopy(tools: DispatcherTools) {
     lines.push('Track outstanding tasks in the conversation.')
   }
   if (!tools.askUser) description.push('需要澄清时直接在对话中提问。')
+  if (tools.skill) {
+    description.push('可加载 skill。')
+    lines.push('When a task matches an available skill’s description, load that skill before acting.')
+  }
   if (!tools.compaction) {
     description.push('上下文压缩组已关闭。')
     lines.push('Keep worker summaries concise because the Dispatcher compaction group is disabled.')
@@ -81,6 +86,12 @@ export function buildDispatcherPreset(tools: DispatcherTools = defaults): Preset
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
   )
   if (tools.present) plugins.push({ id: 'present', name: '@deepseek-ai/dsh-tool-present' })
+  if (tools.skill) plugins.push(
+    { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem', config: {
+      customSkillDirs: [{ __jsExpr: "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')" }],
+    } },
+    { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
+  )
   if (tools.compaction) plugins.push({
     id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
     config: [

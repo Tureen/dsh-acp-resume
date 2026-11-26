@@ -1,26 +1,30 @@
 /** D37: compare with the shipped D36 declaration and exercise rc.5 profile composition and preset revisions.
  * @module dsh-acp-resume/tests/dispatcher-preset
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import Loader, { EntryTree, Group } from '@deepseek-ai/cordis-plugin-loader'
 import Registry, { type PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { auditStartupEntries, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import * as Persona from '@deepseek-ai/dsh-persona'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import SkillRegistry from '@deepseek-ai/dsh-skill'
+import * as SkillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
 import Subs from '@deepseek-ai/dsh-subagent'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import * as FsTools from '@deepseek-ai/dsh-tool-fs'
 import * as FsSearch from '@deepseek-ai/dsh-tool-fs-search'
+import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { parse } from 'yaml'
 import * as dispatcher from '../src/dispatcher-preset.ts'
 import * as acp from '../src/index.ts'
-import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/dispatcher-preset-46978eb.json', import.meta.url), 'utf8'))
 const bundle = parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
@@ -37,7 +41,7 @@ function prefix(definition: PresetDefinition): string {
 }
 
 it('preserves the published persona, defaults, row order, parameters and isolation exactly', () => {
-  expect(defaultTools).toEqual({ readOnlyFs: false, web: true, present: true, todo: true, askUser: true, compaction: true })
+  expect(defaultTools).toEqual({ readOnlyFs: false, web: true, present: true, todo: true, askUser: true, skill: false, compaction: true })
   expect(preset({})).toEqual(golden)
   expect(dispatcher.buildDispatcherPreset()).toEqual(golden)
 })
@@ -72,17 +76,30 @@ it('limits read-only file verification to the two allowlisted rows and keeps web
   expect(prefix(both)).not.toMatch(/no file operations|use web tools directly/)
 })
 
+it('inserts only the skill provider and tool between present and compaction when enabled', () => {
+  expect(preset({ skill: false })).toEqual(golden)
+  const enabled = preset({ skill: true })
+  const ids = golden.plugins.map((row: { id: string }) => row.id)
+  ids.splice(ids.indexOf('present') + 1, 0, 'skill-filesystem', 'tool-skill')
+  expect(enabled.plugins.map(row => row.id)).toEqual(ids)
+  expect(enabled.description).toBe(golden.description + '可加载 skill。')
+  expect(prefix(enabled)).toContain('When a task matches an available skill’s description, load that skill before acting.')
+  expect(prefix(enabled)).not.toContain('dsh-doc')
+})
+
 async function host() {
   const dir = mkdtempSync(join(tmpdir(), 'acp-dispatcher-'))
   const ctx = new Context()
   const originalImport = EntryTree.prototype.import
   // The unrelated preset children need no CLI or account. Use real modules for the
-  // declaration, persona, file tools, ACP provider and Cordis Include/group.
+  // declaration, persona, file and skill tools, ACP provider and Cordis Include/group.
   const passive = new Set(golden.plugins.flatMap((row: { group?: boolean; config?: { name: string }[]; name: string }) =>
     row.group ? row.config!.map(child => child.name) : [row.name]))
+  const skillFilesystemApply = vi.fn(SkillFilesystem.apply)
   const modules = new Map<string, unknown>([
     ['dsh-acp-resume/dispatcher-preset', dispatcher], ['dsh-acp-resume', acp],
     ['@deepseek-ai/dsh-persona', Persona], ['@deepseek-ai/dsh-tool-fs', FsTools], ['@deepseek-ai/dsh-tool-fs-search', FsSearch],
+    ['@deepseek-ai/dsh-skill-filesystem', { ...SkillFilesystem, apply: skillFilesystemApply }], ['@deepseek-ai/dsh-tool-skill', ToolSkill],
   ])
   const imports = vi.spyOn(EntryTree.prototype, 'import').mockImplementation(function (this: EntryTree, name, stack) {
     if (modules.has(name)) return modules.get(name)
@@ -98,16 +115,46 @@ async function host() {
   ctx.baseUrl = pathToFileURL(dir + '/').href
   await ctx.plugin(Loader)
   ctx.loader.builtins.group = Group
-  await mountAgentLoopTestDependencies(ctx)
+  await mountAgentLoopTestDependencies(ctx, { workingDirectory: true })
   await mountAgentLoopTestHarness(ctx)
-  await mountWorkingDirectoryFixture(ctx)
-  await ctx.plugin(class extends Service { constructor(c: Context) { super(c, 'fs') } })
   await ctx.plugin(Subs)
   await ctx.plugin(LocalSubprocess)
   await ctx.plugin(Registry, { default: 'acp-dispatcher' })
   const mainOverride = { id: 'subagent-acp-resume', config: { command: 'fixture-acp', discoverBackends: false, registryPath: join(dir, 'registry.json') } }
-  return { ctx, dir, mainOverride }
+  return { ctx, dir, mainOverride, skillFilesystemApply }
 }
+
+it('resolves the installed preset skills from the Loader baseUrl and loads dsh-doc through the Agent skill tool', async () => {
+  const { ctx, dir, skillFilesystemApply } = await host()
+  // Give the temporary profile its own dependency resolution base and isolated skill homes.
+  const presetDir = dirname(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-agent-preset/package.json'))
+  const packages = join(dir, 'node_modules', '@deepseek-ai')
+  mkdirSync(packages, { recursive: true })
+  symlinkSync(presetDir, join(packages, 'dsh-agent-preset'), 'junction')
+  vi.stubEnv('DSH_HOME', join(dir, 'dsh'))
+  vi.stubEnv('DSH_AGENTS_HOME', join(dir, 'agents'))
+  vi.stubEnv('DSH_BUNDLED_SKILL_DIR', undefined)
+  onTestFinished(() => { vi.unstubAllEnvs() })
+  await ctx.plugin(SkillRegistry)
+  await ctx.loader.root.update([{ id: declarationId, name: 'dsh-acp-resume/dispatcher-preset', config: { dispatcherTools: { skill: true } } }])
+  await ctx.loader.await()
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('skills-enabled'), meta: { cwd: dir } })
+  await ctx.agentPresets.select(agent, golden.id)
+  expect(ctx.tools.schemas(agent).map(t => t.name)).toContain('skill')
+  const root = join(presetDir, 'skills')
+  expect(skillFilesystemApply).toHaveBeenCalledTimes(1)
+  expect(skillFilesystemApply.mock.calls[0]![1]?.customSkillDirs).toEqual([root])
+  expect(statSync(root).isDirectory()).toBe(true)
+  expect(await ctx.skills.list({ cwd: dir, scope: agent })).toContainEqual(expect.objectContaining({
+    name: 'dsh-doc', source: 'custom', path: join(root, 'dsh-doc', 'SKILL.md'),
+  }))
+  const { results } = await ctx.tools.execute({
+    agent, signal: new AbortController().signal,
+    calls: [{ type: 'tool-call', id: ToolCallId('load-doc'), name: 'skill', arguments: JSON.stringify({ name: 'dsh-doc' }) }],
+  })
+  expect(results[0]!.result.isError).toBeFalsy()
+  expect(results[0]!.result.content).toContainEqual({ type: 'text', text: expect.stringContaining('# DeepSeek Harness documentation') })
+})
 
 it('logs an orphaned old override and still mounts the migrated profile with one selectable default declaration', async () => {
   const { ctx, dir, mainOverride } = await host()

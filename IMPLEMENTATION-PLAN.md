@@ -35,7 +35,7 @@
 | 19a | D34 Kiro v3 会话级思考强度 | 建会话和重连时应用配置的 `effort` | kiro-cli 3.6.0 协议探针及 engine、connection 回归见 D34；并入 0.5.0 | ☑ |
 | 20 | D35 能力查询与面板开关 | 连接级共享能力读取、三处关闭态、工作流只读历史与旧宿主兼容 | panel 23/23；补充手动刷新用例后 client 111/111。全量回归留给 CI | ☑（宿主与 jsdom） |
 | 21 | D36 与 D31 回执修订 | Dispatcher 动态团队提示、工作流成员改派说明、工具描述与实际开关对齐 | workflow、jobs、team 及 client 单文件通过；D37 批次已单跑 team-prompt 6/6；tools 等待条件修订后的运行结果待 CI | ◐ |
-| 22 | D37 工具面勾选 | 独立声明与子路径导出、可选只读 fs、旧覆盖迁移、双语说明 | dispatcher-preset 9/9、team-prompt 6/6；已验证 rc.5 隔离 profile 加载和旧覆盖告警。全量回归留给 CI | ◐ 完整桌面组合待验收 |
+| 22 | D37 工具面勾选 | 独立声明与子路径导出、可选只读 fs、旧覆盖迁移；0.5.1 增加可选 skill 发现与加载 | 0.5.0 的 team-prompt 6/6；0.5.1 的 dispatcher-preset 11/11，含默认定义深比较、旧覆盖告警、rc.5 Loader 求值与 Agent 加载 dsh-doc。全量回归留给 CI | ◐ 完整桌面组合待验收 |
 
 ## 冒烟剧本(第 6 步固定内容)
 

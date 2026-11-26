@@ -135,6 +135,7 @@ Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode me
 | `present` | `true` | Present deliverables. |
 | `todo` | `true` | Maintain a task list. |
 | `askUser` | `true` | Ask for clarification with a tool. The agent can still ask in conversation when disabled. |
+| `skill` | `false` | Show the main agent descriptions of available skills and let it load the full instructions when a task matches. Off by default because the descriptions use context space. |
 | `compaction` | `true` | Enable context compaction, the compact command, and tool-result pruning together. |
 
 Omitted fields use their defaults. The preset description and persona follow the same selections. Newly bound agents use the updated composition. Agents already bound in the running host keep their revision. Changing the declaration does not reload the ACP pool.

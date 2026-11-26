@@ -106,7 +106,7 @@ An optional session mode, "ACP Dispatcher": one session is a multi-worker workbe
 - **Good for**: parallel sub-tasks; cross-checking one question across backends; long-running work; keeping the main agent's context lean.
 - **Switching**: pick **ACP Dispatcher** in the mode menu of a new session. If you don't, nothing changes, and `acp_chat_*` stays available in the standard mode.
 
-Set `dispatcherTools` on the `acp-dispatcher-settings` row. Read-only file verification defaults to off. Web lookups, deliverable presentation, task lists, clarification, and compaction default to on. If your profile overrode the old `preset-acp-dispatcher` row, migrate that override when upgrading. [Configuration and migration guide](../README.en.md#acp-dispatcher-mode)
+Set `dispatcherTools` on the `acp-dispatcher-settings` row. Read-only file verification and `skill` default to off. Web lookups, deliverable presentation, task lists, clarification, and compaction default to on. With `skill: true`, the main agent sees skill descriptions and can load the full instructions when needed. If your profile overrode the old `preset-acp-dispatcher` row, migrate that override when upgrading. [Configuration and migration guide](../README.en.md#acp-dispatcher-mode)
 
 ## Known limitations
 
