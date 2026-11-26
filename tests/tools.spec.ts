@@ -23,7 +23,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
 import { AcpSessionPool } from '../src/pool.ts'
-import { chatStaticTools, registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { chatSendTool, type ChatJobsFace, chatStaticTools, registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
 import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -120,6 +120,33 @@ describe('chat tools', () => {
     expect((await call('close', { chatId, purge: true })).text).toContain('record deleted')
     expect(pool.knows(chatId)).toBe(false)
     expect((await call('list', {})).text).toBe('no persistent chats')
+  })
+
+  it('appends each chunk to the original job in order while a detail viewer joins midway', async () => {
+    const gate = join(tempDir('acp-job-live-'), 'next')
+    const { pool } = mountTools({ MOCK_TEXT: 'first', MOCK_NEXT_CHUNK_GATE: gate })
+    const { chatId } = await pool.start(process.cwd())
+    const append = vi.fn()
+    let done: Promise<unknown> | undefined
+    const jobs: ChatJobsFace = { start(spec) {
+      const job = spec.run({ append } as Parameters<typeof spec.run>[0])
+      done = job.done
+      return 'acp-chat-fixture' as ReturnType<ChatJobsFace['start']>
+    } }
+    const tool = chatSendTool(pool, 'acp_chat_', jobs)
+    await tool.execute({ chatId, message: 'stream' }, exec())
+    try {
+      await vi.waitFor(() => expect(append.mock.calls).toEqual([['first']]))
+      const viewer = pool.subscribeLive(chatId)
+      try {
+        const frames = viewer.frames[Symbol.asyncIterator]()
+        expect((await frames.next()).value.text).toBe('first')
+        writeFileSync(gate, '')
+        expect((await frames.next()).value.text).toBe('first + next')
+        expect(append.mock.calls).toEqual([['first'], [' + next']])
+      } finally { viewer.close() }
+    } finally { writeFileSync(gate, ''); writeFileSync(gate + '.finish', ''); await done }
+    expect(await done).toMatchObject({ status: 'completed' })
   })
 
   it('names the list tool when a chat is unknown (send and close)', async () => {

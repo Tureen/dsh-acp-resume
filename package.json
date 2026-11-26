@@ -1,6 +1,6 @@
 {
   "name": "dsh-acp-resume",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Resumable ACP subagent backend for DeepSeek Harness: keeps a persistent chat with an external ACP agent and reconnects via session/load. Tested with kiro-cli, agy, and Codex.",
   "type": "module",
   "main": "lib/index.js",
@@ -93,6 +93,7 @@
     "@deepseek-ai/dsh-agent-loop-testkit": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-agent-preset": "0.2.2-rc.5",
     "@deepseek-ai/dsh-agent-preset-registry": "0.2.2-rc.5",
+    "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.5",
     "@deepseek-ai/dsh-app-boot": "0.2.2-rc.5",
     "@deepseek-ai/dsh-brand": "~0.2.2-rc.5",
     "@deepseek-ai/dsh-client-ui-primitives": "~0.2.2-rc.5",

@@ -26,8 +26,9 @@
  * @module dsh-acp-resume/client/ChatDetail
  */
 
-import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { FollowTurn, LiveView } from './live-source.ts'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import { parseChatAddress } from './chat-address.ts'
@@ -221,10 +222,36 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   )
 }
 
-function RunningRow({ item, now, t }: { readonly item: RunningItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
+function LiveOutput({ chatId, startedAt, follow, signal, t }: { signal?: AbortSignal; chatId: string; startedAt: number; follow: FollowTurn; t: PanelTranslate }) {
+  const [frame, setFrame] = useState<LiveView>()
+  const box = useRef<HTMLPreElement>(null)
+  const following = useRef(true)
+  useEffect(() => {
+    if (signal?.aborted) return
+    const stop = follow(chatId, startedAt, setFrame)
+    signal?.addEventListener('abort', stop, { once: true })
+    return () => { signal?.removeEventListener('abort', stop); stop() }
+  }, [follow, chatId, startedAt, signal])
+  useLayoutEffect(() => {
+    if (box.current && following.current) box.current.scrollTop = box.current.scrollHeight
+  }, [frame])
+  if (frame?.kind === 'settled') return null
+  if (frame?.kind === 'error') return <p role="status">{t('liveError')}</p>
+  if (!frame?.text) return <p>{t('liveWaiting')}</p>
+  return <div>
+    <p>{t('liveOutput')}{frame.truncated ? ' · ' + t('liveTail') : ''}</p>
+    <pre ref={box} style={{ ...styles.full, maxHeight: 240, overflowY: 'auto' }} data-live-output
+      onScroll={event => {
+        const el = event.currentTarget
+        following.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 2
+      }}>{frame.text}</pre>
+  </div>
+}
+
+function RunningRow({ item, now, t, chatId, follow, signal }: { signal?: AbortSignal; item: RunningItem; now: number; t: PanelTranslate; chatId: string; follow?: FollowTurn }): ReactNode {
   const [open, setOpen] = useState(false)
   const sent = preview(item.message, QUESTION_LINES)
-  const toggle = (): void => { if (sent.clipped) setOpen(value => !value) }
+  const toggle = (): void => setOpen(value => !value)
   return (
     <li style={styles.row} data-running>
       <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}>
@@ -232,9 +259,11 @@ function RunningRow({ item, now, t }: { readonly item: RunningItem; readonly now
           <ChatStateDot state="ongoing" />
           <p style={styles.question} data-running-preview>{sent.text}</p>
           <LiveElapsed startedAt={item.startedAt} now={now} t={t} />
+          {follow ? <span style={styles.aside} aria-hidden="true">{t('liveOutput')} {open ? '▴' : '▾'}</span> : null}
         </div>
       </div>
-      {open ? <pre style={styles.full} data-running-full>{item.message}</pre> : null}
+      {open && sent.clipped ? <pre style={styles.full} data-running-full>{item.message}</pre> : null}
+      {open && follow ? <LiveOutput signal={signal} chatId={chatId} startedAt={item.startedAt} follow={follow} t={t} /> : null}
     </li>
   )
 }
@@ -282,6 +311,8 @@ function ActionsMenu({ canRelease, disabled, onRelease, onDelete, t }: {
 }
 
 interface ViewProps {
+  readonly tabSignal?: AbortSignal
+  readonly follow?: FollowTurn
   readonly chatId: string
   readonly source: DetailSource
   readonly close: (chatId: string) => Promise<void>
@@ -290,7 +321,7 @@ interface ViewProps {
   readonly t: PanelTranslate
 }
 
-function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps): ReactNode {
+function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSignal, t }: ViewProps): ReactNode {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
   // One open turn at a time.
   const [openSeq, setOpenSeq] = useState<number | undefined>(undefined)
@@ -371,7 +402,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
       {snapshot.status !== 'loading' && running === undefined && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
       {running === undefined && newestFirst.length === 0 ? null : (
         <ul style={styles.list}>
-          {running === undefined ? null : <RunningRow item={running} now={now} t={t} />}
+          {running === undefined ? null : <RunningRow key={running.startedAt} chatId={chatId} signal={tabSignal} follow={follow} item={running} now={now} t={t} />}
           {newestFirst.map(item => item.kind === 'event'
             ? <EventRow key={item.seq} item={item} now={now} t={t} />
             : <TurnRow key={item.seq} item={item} now={now} open={openSeq === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />)}
@@ -406,14 +437,14 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
  * @param props - the data-source factory, commands, the tab-info hook, and copy.
  * @returns the detail body.
  */
-export function ChatDetail({ useTabInfo, features, sourceFor, close, purge, t }: ChatDetailProps): ReactNode {
+export function ChatDetail({ useTabInfo, features, sourceFor, close, purge, followTurn, t }: ChatDetailProps): ReactNode {
   const { tab } = useTabInfo()
   const chatId = parseChatAddress(tab.contentId)
   if (chatId === undefined) {
     return <section style={styles.root}><p role="alert" style={styles.error}>{t('goneTitle')}</p></section>
   }
   return <PanelFeatureGate source={features} t={t}>{() =>
-    <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} close={close} purge={purge}
+    <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} tabSignal={tab.signal} follow={tab.visible === false ? undefined : followTurn} close={close} purge={purge}
       closeTab={() => { tab.actions.close() }} t={t} />
   }</PanelFeatureGate>
 }

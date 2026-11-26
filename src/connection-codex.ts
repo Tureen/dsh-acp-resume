@@ -34,6 +34,7 @@ import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subpr
 import {
   AcpConnectionError,
   AcpSteerUnsupportedError,
+  deliverText, type TextSink,
   type AcpConnection,
   type AcpFailureCategory,
   type AcpStartupStage,
@@ -148,7 +149,7 @@ interface TurnState {
   early: Array<{ method: string; params: Record<string, unknown> }>
   deltas: string
   finalAnswer: string | undefined
-  observer: ((text: string) => void) | undefined
+  observer: TextSink | undefined
   resolveTerminal: (terminal: { status: string | undefined; errorInfo: string | undefined }) => void
 }
 
@@ -267,7 +268,7 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
       if (delta === undefined || delta === '') return
       state.deltas += delta
       if (state.observer !== undefined) {
-        try { state.observer(delta) } catch { /* an observer cannot break the turn */ }
+        deliverText(state.observer, delta)
       }
     } else if (method === 'item/completed') {
       const item = asRecord(params['item'])
@@ -462,6 +463,7 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
   return {
     id,
     remoteSessionId: threadId,
+    get currentTurnText() { return turn?.deltas ?? '' },
     get processSettled(): boolean {
       return processOutcome !== undefined || processFailure !== undefined
     },
@@ -488,7 +490,7 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
       const messageId = str(asRecord(reply)?.['turnId'])
       return { queued: true, ...(messageId === undefined ? {} : { messageId }) }
     },
-    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
+    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: TextSink, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
       flags.cancelled = false
       approvalResolver = permissionResolver
       approvalSignal = promptSignal

@@ -94,7 +94,7 @@ describe('AcpResumePanelService', () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'chatOptions', 'checkBackends', 'close', 'list', 'purge', 'setChatEffort', 'setChatModel', 'turn', 'turns', 'usage', 'workflows'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'chatOptions', 'checkBackends', 'close', 'list', 'purge', 'setChatEffort', 'setChatModel', 'turn', 'turns', 'usage', 'watch', 'workflows'])
   })
 
   it('reads readiness with no chats and calls the probe only for the explicit check', async () => {
@@ -257,6 +257,19 @@ describe('AcpResumePanelService', () => {
       code: 'gateway/bad-request', message: 'backend does not offer model "missing" for this chat',
     })
     expect(pool.chatInfo(chatId)?.active).toBe(true)
+  })
+
+  it('checks the viewing owner before opening a live stream, and settles immediately for an idle chat', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const { chatId } = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
+    const open = (id: string, owner: string) => panel.watch(id, owner, new AbortController().signal)[Symbol.asyncIterator]()
+    expect(remoteMethods(panel).find(row => row.method === 'watch')?.mode).toBe('stream')
+    await expect(open(chatId, 'other').next()).rejects.toThrow('belongs to another DSH session')
+    await expect(open('missing', 'owner').next()).rejects.toThrow('unknown chat')
+    const it = open(chatId, 'owner')
+    expect(await it.next()).toMatchObject({ value: { kind: 'settled', seq: 0 } })
+    expect((await it.next()).done).toBe(true)
   })
 
   it('rejects close from a legacy panel without sessionId and tells it to update', async () => {

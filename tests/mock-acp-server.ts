@@ -371,6 +371,15 @@ function makeAgent() {
       } else {
         await (conn as unknown as { notify(method: string, params: unknown): Promise<void> }).notify('session/update', payload)
       }
+      // Hold after the first delivered chunk so a late subscriber can open before the next chunk.
+      const resume = process.env.MOCK_NEXT_CHUNK_GATE
+      if (resume) {
+        writeFileSync(resume + '.ready', 'first chunk sent')
+        while (!existsSync(resume)) await new Promise(resolve => setTimeout(resolve, 10))
+        await conn.notify(methods.client.session.update, { sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' + next' } } })
+        while (!existsSync(resume + '.finish')) await new Promise(resolve => setTimeout(resolve, 10))
+      }
       if (CRASH_AFTER_CHUNK) {
         await new Promise<void>((resolve) => { setImmediate(resolve) })
         process.exit(17)

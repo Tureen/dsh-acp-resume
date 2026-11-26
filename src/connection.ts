@@ -133,12 +133,25 @@ export interface AcpTurnResult {
   readonly diagnostic: string | undefined
 }
 
+/** Direct connection callers pass a callback; the pool reuses its live chat as the sink. */
+export type TextSink = ((text: string) => void) | { receiveText(text: string): void }
+
+/** Deliver a chunk in arrival order and contain failures from observers. */
+export function deliverText(sink: TextSink | undefined, text: string): void {
+  try {
+    if (typeof sink === 'function') sink(text)
+    else sink?.receiveText(text)
+  } catch { /* Observation cannot change the outcome of a turn. */ }
+}
+
 /** A live connection to one remote ACP session in one spawned process. */
 export interface AcpConnection {
   /** Parent-minted lifecycle id (unique across the runtime). */
   readonly id: SessionId
   /** The remote session id inside the child server. */
   readonly remoteSessionId: string
+  /** Existing accumulator, read only on the first live subscription. */
+  readonly currentTurnText: string
   /** True once the child's fate is known (exited, or `done` rejected); false while live. */
   readonly processSettled: boolean
   readonly sessionChoices?: SessionChoices
@@ -156,7 +169,7 @@ export interface AcpConnection {
    *   settlement are not delivered; a throwing observer is contained.
    * @returns this turn's text, stop reason, and optional diagnostic.
    */
-  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult>
+  prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: TextSink, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult>
   /**
    * Queue a steering message into the running turn via the private
    * `_session/steer` request (neither engine advertises it; ACP has no steer).
@@ -450,7 +463,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   // the next turn's output. Only chunks observed while a turn is in flight accumulate.
   let acceptingUpdates = false
   // The in-flight turn's text observer; cleared with acceptingUpdates.
-  let turnTextObserver: ((text: string) => void) | undefined
+  let turnTextObserver: TextSink | undefined
   let latestPermission: AcpPermissionDecision | undefined
   const flags = { cancelled: false }
 
@@ -475,7 +488,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
         const text = acpContentText(update.content)
         turnText += text
         if (text !== '' && turnTextObserver !== undefined) {
-          try { turnTextObserver(text) } catch { /* an observer cannot break the turn */ }
+          deliverText(turnTextObserver, text)
         }
       }
       // Other updates (thoughts, tool calls, plans) are consumed but not
@@ -717,6 +730,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
         onChoices = undefined
       }
     },
+    get currentTurnText() { return turnText },
     get settingsReport() { return settingsReport },
     get processSettled(): boolean {
       return processOutcome !== undefined || processFailure !== undefined
@@ -742,7 +756,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
         ...(typeof messageId === 'string' ? { messageId } : {}),
       }
     },
-    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: (text: string) => void, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
+    async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: TextSink, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
       // Per-turn state: a notifyCancel between turns or a previous turn's
       // permission decision must not leak into this turn.
       flags.cancelled = false

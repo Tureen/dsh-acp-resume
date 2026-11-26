@@ -43,6 +43,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { BackendReport } from './backend-status.js'
+import { LiveBuffer, type LiveSubscription } from './live-buffer.js'
 import type { ChatOptions } from './chat-options.js'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
@@ -300,6 +301,9 @@ export type RoleSendResult = PoolSendResult & {
 
 /** A pooled chat's live state (absent while released). */
 interface LiveChat {
+  buffer?: LiveBuffer
+  jobText?: PoolSendHooks['onText']
+  receiveText(text: string): void
   readonly chatId: string
   conn: AcpConnection
   idleTimer: NodeJS.Timeout | undefined
@@ -311,6 +315,14 @@ interface LiveChat {
   inFlight: InFlightTurn | undefined
   /** Set once a release started; concurrent closes share it. */
   closing: Promise<void> | undefined
+}
+
+/** Shared function, no callback or buffer allocated on the per-chunk path without viewers. */
+function receiveText(this: LiveChat, text: string): void {
+  const buffer = this.buffer
+  try { this.jobText?.(text) } catch { /* A failing job observer cannot starve the panel. */ }
+  // A subscription opened by the job observer already seeded itself with this chunk.
+  if (buffer && buffer === this.buffer) buffer.append(text)
 }
 
 /** Maximum `title` length, in characters (code points, so a surrogate pair is never split). */
@@ -566,6 +578,19 @@ export class AcpSessionPool {
   /** Owner claimed by the creating DSH session, including for released chats. */
   chatOwner(chatId: string): string | undefined { return this.registry.get(chatId)?.ownerSessionId }
 
+  /** Bind to this turn only. A viewer arriving late seeds its buffer from the existing connection accumulator. */
+  subscribeLive(chatId: string): LiveSubscription {
+    const chat = this.live.get(chatId)
+    if (!chat?.inFlight) return { frames: (async function* () { yield { kind: 'settled' as const, seq: 0 } })(), close() {} }
+    if (!chat.buffer) {
+      const buffer: LiveBuffer = new LiveBuffer(chat.conn.currentTurnText, () => {
+        if (chat.buffer === buffer) chat.buffer = undefined
+      })
+      chat.buffer = buffer
+    }
+    return chat.buffer.subscribe()
+  }
+
   /** Snapshot of the connection report. Reading options never opens or wakes a chat. */
   chatOptions(chatId: string): ChatOptions {
     const entry = this.registry.get(chatId)
@@ -799,10 +824,11 @@ export class AcpSessionPool {
     const startedAt = Date.now()
     const inFlight: InFlightTurn = { chatId, message, startedAt }
     chat.inFlight = inFlight
+    chat.jobText = hooks.onText
     const turnPromise = conn.prompt(
       [{ type: 'text', text: message }],
       signal ?? new AbortController().signal,
-      hooks.onText,
+      chat,
       hooks.permissionResolver,
     )
     chat.busyPromise = turnPromise
@@ -843,7 +869,10 @@ export class AcpSessionPool {
     } finally {
       chat.busy = false
       chat.busyPromise = undefined
+      chat.jobText = undefined
       if (chat.inFlight === inFlight) chat.inFlight = undefined
+      chat.buffer?.settle()
+      chat.buffer = undefined
       if (!this.disposed) this.armIdle(chat)
     }
   }
@@ -1368,7 +1397,7 @@ export class AcpSessionPool {
   }
 
   private track(chatId: string, conn: AcpConnection): void {
-    const chat: LiveChat = { chatId, conn, idleTimer: undefined, busy: false, busyPromise: undefined, inFlight: undefined, closing: undefined }
+    const chat: LiveChat = { chatId, conn, receiveText, idleTimer: undefined, busy: false, busyPromise: undefined, inFlight: undefined, closing: undefined }
     this.live.set(chatId, chat)
     this.armIdle(chat)
   }

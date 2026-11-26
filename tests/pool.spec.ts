@@ -1,3 +1,4 @@
+import { LiveBuffer, type LiveSubscription } from '../src/live-buffer.ts'
 import { selectionEnv, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
 /**
  * Pool lifecycle tests against REAL mock-server subprocesses: same-process
@@ -16,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { AcpConnectionError } from '../src/connection.ts'
 import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSessionNotice, type BackendSpec, type PoolOptions } from '../src/pool.ts'
@@ -1398,6 +1399,23 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
     expect(chunks.join('')).toBe('streamed answer')
   })
 
+  it('seeds a Codex viewer from this turn’s deltas without replaying its first chunk twice', async () => {
+    const { pool } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_TEXT: 'codex streamed answer' })]]) })
+    const { chatId } = await pool.start(process.cwd(), undefined, codexStart)
+    const chunks: string[] = []
+    let subscription: LiveSubscription | undefined
+    await pool.send(chatId, 'p', undefined, { onText(text) {
+      chunks.push(text)
+      subscription ??= pool.subscribeLive(chatId)
+    } })
+    const reader = subscription!.frames[Symbol.asyncIterator]()
+    try {
+      expect((await reader.next()).value).toMatchObject({ kind: 'snapshot', text: chunks[0] })
+      expect((await reader.next()).value.kind).toBe('settled')
+      expect(chunks.join('')).toBe('codex streamed answer')
+    } finally { subscription!.close() }
+  })
+
   it('reconnects with thread/resume after idle release', async () => {
     const dir = tempDir('acp-resume-codex-idle-')
     const spawned: SubprocessHandle[] = []
@@ -1610,5 +1628,60 @@ describe('D44 live chat selection', () => {
     await expect(pool.setChatEffort(chatId, 'low')).rejects.toThrow('backend did not confirm effort "low"')
     expect(warnings).toContain('backend did not confirm effort "low"')
     expect(pool.chatOptions(chatId).effort).toMatchObject({ current: 'high' })
+  })
+})
+
+
+describe('D46 live turn output', () => {
+  it('seeds a mid-turn viewer, preserves job chunk order, and settles after the final log entry exists', async () => {
+    const dir = tempDir('acp-live-')
+    const gate = join(dir, 'next')
+    const { pool } = makePool({ env: { MOCK_TEXT: '此前已输出', MOCK_NEXT_CHUNK_GATE: gate } })
+    const { chatId } = await pool.start(dir)
+    const chunks: string[] = []
+    const pending = pool.send(chatId, '当前任务', undefined, { onText(text) { chunks.push(text); throw Error('observer failure') } })
+    try {
+      await until(() => chunks.length === 1, 'first chunk')
+      expect(pool.turnEntries(chatId)).toHaveLength(0)
+      const sub = pool.subscribeLive(chatId)
+      const it = sub.frames[Symbol.asyncIterator]()
+      try {
+        expect((await it.next()).value).toMatchObject({ kind: 'snapshot', text: '此前已输出' })
+        writeFileSync(gate, '')
+        expect((await it.next()).value).toMatchObject({ kind: 'snapshot', text: '此前已输出 + next' })
+        writeFileSync(gate + '.finish', '')
+        expect((await it.next()).value?.kind).toBe('settled')
+        expect(pool.turnEntries(chatId).at(-1)).toMatchObject({ kind: 'turn', output: '此前已输出 + next' })
+        expect(chunks).toEqual(['此前已输出', ' + next'])
+      } finally { sub.close() }
+    } finally { writeFileSync(gate, ''); writeFileSync(gate + '.finish', ''); await pending }
+  })
+
+  it('does no panel allocation or scheduling on an unobserved chunk and contains a throwing panel sink', async () => {
+    const dir = tempDir('acp-live-cost-'), gate = join(dir, 'next')
+    const { pool } = makePool({ env: { MOCK_NEXT_CHUNK_GATE: gate, MOCK_TEXT: 'first' } })
+    const { chatId } = await pool.start(dir)
+    const chat = pool['live'].get(chatId)!
+    const chunks: string[] = []
+    const turn = pool.send(chatId, 'cost', undefined, { onText: text => chunks.push(text) })
+    try {
+      await until(() => chunks.length === 1, 'first chunk')
+      const alloc = vi.spyOn(Buffer, 'allocUnsafe'), timer = vi.spyOn(globalThis, 'setTimeout')
+      const append = vi.spyOn(LiveBuffer.prototype, 'append')
+      let counts
+      try {
+        chat.receiveText('instrumented')
+        counts = [alloc.mock.calls.length, timer.mock.calls.length, append.mock.calls.length]
+      } finally { alloc.mockRestore(); timer.mockRestore(); append.mockRestore() }
+      expect(counts).toEqual([0, 0, 0])
+      expect(chat.buffer).toBeUndefined()
+      const subscription = pool.subscribeLive(chatId)
+      vi.spyOn(chat.buffer!, 'append').mockImplementation(() => { throw Error('viewer failure') })
+      writeFileSync(gate, '')
+      await until(() => chunks.includes(' + next'), 'job still receives the next chunk')
+      subscription.close()
+      expect(chat.buffer).toBeUndefined()
+    } finally { writeFileSync(gate, ''); writeFileSync(gate + '.finish', ''); await turn }
+    expect(await turn).toMatchObject({ stopReason: 'completed', output: 'first + next' })
   })
 })

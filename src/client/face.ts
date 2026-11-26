@@ -98,6 +98,8 @@ export type SelectorHook<T> = <S>(selector: (snapshot: T) => S, equal?: (a: S, b
 export type TabInfoHook = () => {
   readonly tab: {
     /** The address the tab was opened at; for a detail tab, `dsh-resource://acp-resume-chat/<chatId>`. */
+    readonly signal?: AbortSignal
+    readonly visible?: boolean
     readonly contentId: string
     readonly actions: {
       openResource(address: string): void
@@ -166,6 +168,7 @@ export interface DetailSource extends Observable<DetailSnapshot> {
 
 /** What the detail body's registration injects. */
 export interface ChatDetailInjected {
+  readonly followTurn?: import('./live-source.ts').FollowTurn
   readonly features: FeatureStore
   /** The data source for a chat; one per chatId, shared by the body and the chip title. */
   readonly sourceFor: (chatId: string) => DetailSource

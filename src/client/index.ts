@@ -19,6 +19,7 @@ import { ChatDetail, ChatDetailTitle } from './ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, parseChatAddress } from './chat-address.ts'
 import { FeaturesSource } from './features-source.ts'
 import { BackendStatusSource } from './backend-status-source.ts'
+import { LiveSource, watchDescriptor, type WatchRemote } from './live-source.ts'
 import { callPanel, ChatsSource, type PanelRpc } from './chats-source.ts'
 import { ChatDetailSource } from './detail-source.ts'
 import { WorkflowsSource } from './workflows-source.ts'
@@ -135,7 +136,24 @@ export function apply(ctx: Context): void {
       for (const detail of details.values()) detail.dispose()
       details.clear()
     }, 'dsh-acp-resume.detail-sources')
+    const binding = scope.inject(['remote'], async remoteScope => {
+      const remote = remoteScope.get('remote') as WatchRemote
+      await remote.$mount({ package: 'dsh-acp-resume', descriptors: [watchDescriptor] })
+    })
+    const live = new LiveSource(async function* (chatId, owner, signal) {
+      await binding.await()
+      if (signal.aborted) return
+      const remote = scope.get('remote') as WatchRemote | undefined
+      if (!remote) throw new Error('Remote stream service unavailable')
+      const handle = remote.acpResume.watch(chatId, owner, signal)
+      const cancel = () => handle.dispose()
+      signal.addEventListener('abort', cancel, { once: true })
+      try { yield* handle } finally { signal.removeEventListener('abort', cancel); cancel() }
+    }, chatId => { void details.get(chatId)?.refresh() })
+    scope.on('connection/reset', () => live.reset())
+    scope.effect(() => () => live.dispose())
     const detailInjected = (sessionId?: string): ChatDetailInjected => ({
+      followTurn: (chatId, startedAt, listener) => live.subscribe(chatId, sessionId, startedAt, listener),
       features,
       sourceFor: (chatId): DetailSource => {
         let detail = details.get(chatId)

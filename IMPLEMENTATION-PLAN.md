@@ -45,6 +45,7 @@
 | 29 | D44 单会话模型与强度 | Kiro / agy 连接选项与推送确认、面板 owner 比对、旧宿主重启提示 | agy 真机协议探针；connection 52/52、pool 91/91、panel 29/29、client 121/121、tools 57/57。Desktop 完整 UI 组合留待验收 | ◐ |
 | 30 | D45 右侧栏实时设置 | 15 个字段通过官方 ConfigForm 保存，首次写入确认，工具与声明更新独立于 ACP 池 | 临时 profile 的 15 种变更与拒绝路径通过；D37 即时查询首轮发现重注册间隙，已修正，原用例待复验；完整 Desktop 待验收 | ◐ |
 | 31 | D22 放行 inbox 等待（0.7.1） | 运行中 acp-chat 只拦 job_output wait:true；send、workflow 回执与单飞提示允许 wait_agent | 门测试 14/15，新增真实派发用例的输出 schema 已补 additionalProperties，待复验。jobs 12/12、workflow 19/19、pool 91/91、team 25/25；Desktop goal 场景未重放 | ◐ |
+| 32 | D46 详情页按需推送在途文本 | owner 校验、订阅时取当前轮尾部、150 ms 合帧、取消与日志收尾 | rc.5 Gateway 实测 abort/finally；真实 mock 子进程中途订阅、工作流顺序、100 个 chunk 合帧与 jsdom 交互通过。完整 Desktop UI 待验收 | ◐ |
 | 待办 | Codex 会话级切换 | 读取并缓存完整模型目录及逐模型强度清单，再接入每轮覆盖 | 当前显示暂不支持；版本待定 | ☐ |
 
 ## 冒烟剧本(第 6 步固定内容)

@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { AcpSessionPool, type PoolSendResult, type RoleCallContext } from '../src/pool.ts'
@@ -215,6 +215,30 @@ describe('acp_workflow and steer by role (D27)', () => {
     expect(result.steps[1].result).toMatch(/^echo:merge reviews of T\n\n### Step independent\n#### reviewerA\necho:review T on D/)
     // The roles were provisioned into this session's roster.
     expect(pool.listRoster('session-a').map(e => e.role).sort()).toEqual(['merger', 'reviewerA', 'reviewerB'])
+  })
+
+  it('keeps workflow lifecycle events ordered when a member is watched and its progress observer throws', async () => {
+    const dir = tempDir('acp-member-live-'), gate = join(dir, 'next')
+    const { pool, root } = mount({ MOCK_NEXT_CHUNK_GATE: gate })
+    const events: string[] = []
+    const result = runWorkflow(pool, { name: 'one', params: [], steps: [{ id: 'step', parallel: [{ role: 'reviewerA', prompt: 'work' }] }] },
+      {}, { ...CONTEXT, workspaceDir: root }, new AbortController().signal, {
+        stepStart() { events.push('stepStart'); throw Error('step observer') },
+        memberStart() { events.push('memberStart'); return 7 },
+        memberEnd() { events.push('memberEnd'); throw Error('member observer') },
+      })
+    try {
+      await vi.waitFor(() => expect(existsSync(gate + '.ready')).toBe(true), { timeout: 3000 })
+      const sub = pool.subscribeLive(pool.listChats()[0]!.chatId)
+      const it = sub.frames[Symbol.asyncIterator]()
+      try {
+        expect((await it.next()).value).toMatchObject({ kind: 'snapshot', text: 'echo:work' })
+        writeFileSync(gate, '')
+        expect((await it.next()).value).toMatchObject({ kind: 'snapshot', text: 'echo:work + next' })
+      } finally { sub.close() }
+    } finally { writeFileSync(gate, ''); writeFileSync(gate + '.finish', ''); await result }
+    expect((await result).status).toBe('completed')
+    expect(events).toEqual(['stepStart', 'memberStart', 'memberEnd'])
   })
 
   it('refuses an unknown template and missing params before running anything', async () => {

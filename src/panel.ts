@@ -19,6 +19,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
+import type { LiveFrame } from './live-buffer.js'
 import type { ChatOptions } from './chat-options.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
 import type { PanelFeatures } from './panel-features.js'
@@ -252,6 +253,19 @@ export class AcpResumePanelService extends TypertRemoteService {
       throw new RemoteError('acp-resume/unknown-turn', `acp-resume: chat ${id} has no log entry ${seq}`, { chatId: id, seq })
     }
     return entry
+  }
+
+  /** SRC reflection treats a bare @Remote as unary. Mark watch explicitly for the stream carrier. */
+  @Remote({ mode: 'stream' })
+  async *watch(chatId: string, sessionId: string, signal: AbortSignal): AsyncIterable<LiveFrame> {
+    const id = this.ownedChat(chatId, sessionId)
+    if (signal.aborted) return
+    const live = this.pool.subscribeLive(id)
+    signal.addEventListener('abort', live.close, { once: true })
+    try { yield* live.frames } finally {
+      signal.removeEventListener('abort', live.close)
+      live.close()
+    }
   }
 
   /** Read the reported options available to this seat without calling the backend. */

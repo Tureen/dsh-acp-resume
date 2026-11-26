@@ -21,6 +21,8 @@ import type { ChatOptions } from '../src/chat-options.ts'
 import { callPanel, panelActionError } from '../src/client/chats-source.ts'
 import type { BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as client from '../src/client/index.ts'
+import type { LiveFrame } from '../src/live-buffer.ts'
+import { LiveSource, type FollowTurn } from '../src/client/live-source.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
@@ -2083,5 +2085,108 @@ describe('D44 per-chat controls', () => {
       await view.purge('chat-a')
       for (const method of ['close', 'purge']) expect(call).toHaveBeenCalledWith('/api', 'acpResume/' + method, { args: { chatId: 'chat-a', sessionId: TEST_SESSION } })
     } finally { await ctx.fiber.dispose() }
+  })
+})
+
+describe('live detail body (D46)', () => {
+  const running = { kind: 'running', startedAt: NOW - 1200, message: '检查改动' } as const
+
+  it.each([zh, en])('only follows an expanded visible running row, cancelling on hide, collapse and unmount', copy => {
+    const opened = vi.fn(), stop = vi.fn()
+    const follow: FollowTurn = (id, start, listener) => {
+      opened(id, start)
+      listener({ kind: 'snapshot', seq: 1, text: '已读取配置', truncated: true })
+      return stop
+    }
+    const props = detailProps(fakeSource(detailSnapshot({ entries: [running] })), { followTurn: follow, t: translator(copy) }).injected
+    const renderDetail = (visible: boolean) => <ChatDetail {...props} useTabInfo={() => ({ tab: { ...props.useTabInfo().tab, visible } })} />
+    const view = render(renderDetail(true))
+    expect(opened).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: copy.runningExpand }))
+    expect(screen.getByText(copy.liveOutput + ' · ' + copy.liveTail)).toBeTruthy()
+    expect(screen.getByText('已读取配置')).toBeTruthy()
+    view.rerender(renderDetail(false))
+    expect(stop).toHaveBeenCalledTimes(1)
+    view.rerender(renderDetail(true))
+    expect(opened).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: copy.runningCollapse }))
+    expect(stop).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: copy.runningExpand }))
+    view.unmount()
+    expect(stop).toHaveBeenCalledTimes(3)
+  })
+
+  it('pauses following while scrolled up and replaces the stream with the logged turn on settled', async () => {
+    let snapshot = detailSnapshot({ entries: [running] })
+    const subscribers = new Set<() => void>()
+    const source: DetailSource = { ...fakeSource(snapshot), getSnapshot: () => snapshot,
+      subscribe(fn) { subscribers.add(fn); return () => { subscribers.delete(fn) } },
+      async refresh() {
+        snapshot = detailSnapshot({ entries: [turn(1, { message: running.message, output: '配置检查完成' })] })
+        for (const fn of subscribers) fn()
+      },
+    }
+    let push!: (frame: LiveFrame) => void
+    const live = new LiveSource(async function* (_, __, signal) {
+      let next = Promise.withResolvers<LiveFrame>()
+      push = frame => next.resolve(frame)
+      yield { kind: 'snapshot', seq: 1, text: '已读取配置', truncated: false }
+      while (!signal.aborted) {
+        const frame = await next.promise
+        next = Promise.withResolvers<LiveFrame>()
+        yield frame
+      }
+    }, () => { void source.refresh() })
+    const follow: FollowTurn = (id, start, fn) => live.subscribe(id, TEST_SESSION, start, fn)
+    const { container } = render(<ChatDetail {...detailProps(source, { followTurn: follow }).injected} />)
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: zh.runningExpand })))
+    const box = screen.getByText('已读取配置')
+    Object.defineProperties(box, { scrollHeight: { value: 400 }, clientHeight: { value: 100 } })
+    box.scrollTop = 40
+    fireEvent.scroll(box)
+    await act(async () => push({ kind: 'snapshot', seq: 2, text: '已读取配置，正在核对', truncated: false }))
+    expect(box.scrollTop).toBe(40)
+    box.scrollTop = 300
+    fireEvent.scroll(box)
+    await act(async () => push({ kind: 'snapshot', seq: 3, text: '已核对', truncated: false }))
+    expect(box.scrollTop).toBe(400)
+    await act(async () => push({ kind: 'settled', seq: 4 }))
+    expect(container.querySelector('[data-running]')).toBeNull()
+    expect(container.querySelector('[data-live-output]')).toBeNull()
+    expect(container.querySelector('[data-question]')?.textContent).toBe('检查改动')
+    expect(screen.getAllByText('配置检查完成')).toHaveLength(1)
+  })
+
+  it('shares one stream per viewer session/chat/turn and aborts only on last unsubscribe', async () => {
+    const signals: AbortSignal[] = []
+    const source = new LiveSource(async function* (_, __, signal) {
+      signals.push(signal)
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+    }, vi.fn())
+    const first = source.subscribe('chat', 'owner', NOW, vi.fn())
+    const second = source.subscribe('chat', 'owner', NOW, vi.fn())
+    expect(signals).toHaveLength(1)
+    first()
+    expect(signals[0]?.aborted).toBe(false)
+    second()
+    expect(signals[0]?.aborted).toBe(true)
+  })
+
+  it('does not open watch for the list or a restored chip title', async () => {
+    const watch = vi.fn()
+    const { list, title, ctx } = await panelConnection({ call: async (_, endpoint) => {
+      if (endpoint.endsWith('/features')) return { ok: true, value: defaultFeatureView.features }
+      if (endpoint.endsWith('/turns')) return { ok: true, value: detailSnapshot({ entries: [running] }) }
+      if (endpoint.endsWith('/backends')) return { ok: true, value: backendFixture }
+      if (!endpoint.endsWith('/list')) return { ok: true, value: [] }
+      return { ok: true, value: [chat({ inFlight: { chatId: 'chat', message: running.message, startedAt: NOW } })] }
+    } })
+    ctx.provide('remote', { $mount: async () => () => {}, acpResume: { watch } } as never)
+    try {
+      renderBody(list)
+      render(<ChatDetailTitle {...title} useTabInfo={tabInfo(chatAddress('chat-' + UUID_A)).hook} />)
+      await screen.findByText('审阅')
+      expect(watch).not.toHaveBeenCalled()
+    } finally { cleanup(); await ctx.fiber.dispose() }
   })
 })

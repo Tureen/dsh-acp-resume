@@ -27,7 +27,8 @@ src/
   codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
   connection-codex.ts Codex app-server 私有协议连接层(D25;与 AcpConnection 同形状,自带 JSON-RPC 行传输,不用 ACP SDK)
   chat-options.ts / acp-reported-settings.ts D41/D44:会话可选模型和强度的只读结构及解析；从 ACP 回复与配置更新读取后端报告的模型、展示名和强度
-  pool.ts        D44:存活连接的设置与发送互斥，不落盘；D41 只读投影存活连接的最近设置报告；持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
+  live-buffer.ts   D46:有查看者时才分配的 UTF-8 尾部环形缓冲，共享攒批计时器。
+  pool.ts        D46:按当前轮并列观察文本，最后一个订阅者离开即释放缓冲；D44:存活连接的设置与发送互斥，不落盘；D41 只读投影存活连接的最近设置报告；持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
   dispatcher-preset.ts D37/D38:独立全局声明插件；dispatcherTools 六项开关（readOnlyFs 含 skill）控制子行、description 与工具指引，dispatcherPrompt 追加或替换 persona 的调度规则；声明热更新与 ACP 池隔离
   team-prompt.ts D36:在 Dispatcher 实际绑定且本步团队工具可用时注入角色转述规则
   team-config.ts D27:读工作区 .agents/acp-team.yml(向上至多 3 层),角色蓝图 + 模板的解析与校验;不可用时 onWarn 并视为无配置
@@ -37,11 +38,12 @@ src/
   workflow-log.ts D29:按会话的工作流运行日志 workflows/<ownerSessionId>.jsonl(run-start + run-end 摘要，不存原文与 params;同 D18 纪律)
   workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
-  panel.ts       D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
+  panel.ts       D46:watch 是带 owner 校验与取消信号的 Remote 流。D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
 - `src/client/features-source.ts` / `PanelFeatureGate.tsx`（D35）：列表、详情正文和标题共享连接级能力查询，关闭时均不订阅业务数据源。工作流关闭时 `workflows-source.ts` 只在区块打开或手动刷新时读取历史。
 - `src/client/ProfileSettings.tsx`（D45）：两个官方 ConfigForm、逐字段保存和首次写回确认。
+- `src/client/live-source.ts`（D46）：仅展开的可见详情正文共享一条流，切走即取消，轮结束刷新原有详情数据源。
 - `src/client/ChatSettings.tsx`（D44）：展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
-- `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
+- `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；除 D46 展开的流式正文外，数据跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
   job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,只拒绝运行中 acp-chat 任务的 job_output wait:true；allowChatJobWait 为 true 时不挂门
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
@@ -60,6 +62,7 @@ tests/
   connection-codex.spec.ts Codex 连接层(D25):开/恢复、流式、停止原因、steer/取消、审批(含 ask 桥)、进程失败
   pool.spec.ts           池生命周期
   dispatcher-preset.spec.ts D37:默认定义深比较、工具勾选、旧 profile 警告、已绑定 Agent 的版本隔离、真实 skill 发现/加载与自定义调度提示组装
+  live-buffer.spec.ts / live-gateway.spec.ts D46：尾部字节上限、合帧、显式取消和真实 rc.5 Gateway 清理。
   live-settings.spec.ts / profile-settings.spec.tsx D45：真实临时 profile 逐字段保存、在途轮和 Agent 隔离；侧栏表单和写回确认。
   skill-docs.spec.ts     D39:标准模式和 Dispatcher 文档发现、加载、引用文件和可用配置范例
   team-prompt.spec.ts    D36:用 rc.5 Agent、preset 注册表和工具准入组装实际系统提示
@@ -91,7 +94,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 690 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 91 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 29 + `client.spec.tsx` 121 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 706 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 94 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 126 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
@@ -107,6 +110,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 - send 的后台任务模式见 D17:单飞前置检查在 `jobs.start` 之前;job 的取消走 D6 取消条;无 jobs 服务时保持同步语义。
 - D22 等待门仅拦本会话运行中 acp-chat 的 `job_output wait:true`，`stopping` 放行。工具说明允许用宿主的 `wait_agent` 等 inbox 通知或用户插话；完成后按 D17 读结果。
 - 池语义固定,改动需先修订 D6:每会话单飞(在途时拒绝新 send,不排队);协议级 `session/load` 拒绝且能认出会话不存在(或未声明 loadSession)，或当前池实例同一 chat 连续 3 条 `error` 后的下一次 send，才降级新会话，分别注记固定短语 `remote session lost, started fresh` 与 `remote session failed repeatedly, started fresh`;后者计数仅在内存中保存，重启重新累计，注册表不存此状态;其余重连失败(含原因不明的 load 拒绝)报错且注册表不动;空闲释放只关进程、注册表保留;注册表写 = 临时文件 + 原子改名;取消 = 本地立即结算 `aborted` + 尽力 `session/cancel` + 作废连接(error 轮同样作废)。
+- D46 的流式内容与帧只在内存保留；结算后由原有 D18 日志接替。
 - 按轮日志(D18)是诊断镜像不是状态:写失败只经 `onWarn` 告警、绝不改变轮结果;写前复查注册表里会话还在(purge 后不得复活);`purge` 连日志文件一起删;steer 不记。注册表结构不因日志而改。
 - 面板详情页签是资源地址页签(`dsh-resource://acp-resume-chat/<chatId>`),不注册 resource provider;身份只能放地址里(官方不持久化导航参数)。
 - kiro 侧会话随 new/load 积累(D10):`acp_chat_close` 的工具说明需提示以 `kiro-cli chat --list-sessions` / `--delete-session` 清理。
