@@ -21,6 +21,7 @@ export {
   DisclosureRow,
   IconRefreshOutlineRegular,
   IconSettingsOutlineRegular,
+  IconWarningOutlineRegular,
   Input,
   MarkdownText,
   Menu,

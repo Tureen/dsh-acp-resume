@@ -254,6 +254,8 @@ export const zh = {
   turnTimeTooltip: '开始 {start} · 结束 {end} · 耗时 {duration}（{relative}）',
   pointTimeTooltip: '{time}（{relative}）',
   startedAtTooltip: '开始于 {time}',
+  backendAlertNoDispatch: '暂无就绪后端，无法派工。点击展开「后端状态」查看原因。',
+  backendAlertCheckFailed: '后端检测未完成，点击展开「后端状态」重试。',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -506,6 +508,8 @@ export const en: Record<PanelCopyKey, string> = {
   turnTimeTooltip: 'Started {start} · Ended {end} · {duration} ({relative})',
   pointTimeTooltip: '{time} ({relative})',
   startedAtTooltip: 'Started {time}',
+  backendAlertNoDispatch: 'No backend is ready for dispatch. Open Backend status to see why.',
+  backendAlertCheckFailed: 'Backend check did not finish. Open Backend status to retry.',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */

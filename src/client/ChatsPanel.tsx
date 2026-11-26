@@ -24,8 +24,22 @@
  * @module dsh-acp-resume/client/ChatsPanel
  */
 
-import { useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
-import { Button, IconRefreshOutlineRegular, IconSettingsOutlineRegular, Modal, StateDot, Tag, type StateDotState } from './panel-chrome.tsx'
+import { useCallback, useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import {
+  Button,
+  DisclosureRow,
+  IconRefreshOutlineRegular,
+  IconSettingsOutlineRegular,
+  IconWarningOutlineRegular,
+  Modal,
+  PanelCard,
+  StateDot,
+  Tag,
+  type RailState,
+  type StateDotState,
+  type TagTone,
+} from './panel-chrome.tsx'
+import { formatHybridTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { BackendStatus } from '../backend-status.ts'
 import { ProfileSettings } from './ProfileSettings.tsx'
 import { ChatSettings } from './ChatSettings.tsx'
@@ -97,18 +111,31 @@ const styles = {
   groupToggle: { alignSelf: 'flex-start' },
   controls: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   countNote: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
-  backendSection: { flexShrink: 0, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
-  backendToolbar: { display: 'flex', alignItems: 'center', gap: 4, paddingRight: 6 },
-  backendDisclosure: { display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, padding: '7px 8px', border: 0, borderRadius: 8, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' },
-  backendDisclosureLabel: { flex: 'none', fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
+  backendSection: { flexShrink: 0, overflow: 'hidden' },
+  backendHeaderWrap: { padding: '4px 8px' },
   backendSummary: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 },
-  backendChevron: { flex: 'none' },
   visuallyHidden: { position: 'absolute', width: 1, height: 1, padding: 0, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap' },
-  backendContent: { display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 10px 10px', borderTop: '1px solid var(--dsw-alias-border-l3)' },
-  backendButton: { flex: 'none', whiteSpace: 'nowrap', padding: '3px 6px', borderRadius: 6, border: '1px solid var(--dsw-alias-border-l3)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', font: 'inherit', fontSize: 12 },
-  backendRow: { display: 'flex', flexDirection: 'column', gap: 3, paddingTop: 6, borderTop: '1px solid var(--dsw-alias-border-l3)', overflowWrap: 'anywhere' },
+  backendContent: { display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 10px 10px', borderTop: '1px solid var(--dsw-alias-border-l2)' },
+  backendCard: { display: 'flex', flexDirection: 'column', gap: 5, padding: '8px 10px', overflowWrap: 'anywhere' },
+  backendCardHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, minWidth: 0 },
+  backendCardIdentity: { display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, flexWrap: 'wrap' },
   backendName: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
-  backendMeta: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px' },
+  backendMeta: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
+  backendDetail: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
+  backendUsageBar: { padding: '6px 10px', borderTop: '1px solid var(--dsw-alias-border-l2)' },
+  backendAlertWarn: {
+    display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 10px', borderRadius: 8,
+    border: '1px solid var(--dsw-alias-state-warn-primary)', borderLeft: '3px solid var(--dsw-alias-state-warn-primary)',
+    background: 'var(--dsw-alias-card-fill)', color: 'var(--dsw-alias-label-primary)',
+    textAlign: 'left', font: 'inherit', fontSize: 12, cursor: 'pointer', boxSizing: 'border-box',
+  },
+  backendAlertError: {
+    display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 10px', borderRadius: 8,
+    border: '1px solid var(--dsw-alias-state-error-primary)', borderLeft: '3px solid var(--dsw-alias-state-error-primary)',
+    background: 'var(--dsw-alias-card-fill)', color: 'var(--dsw-alias-state-error-primary)',
+    textAlign: 'left', font: 'inherit', fontSize: 12, cursor: 'pointer', boxSizing: 'border-box',
+  },
+  backendAlertText: { flex: 1, minWidth: 0, overflowWrap: 'anywhere' },
   usage: { display: 'flex', flexDirection: 'column', gap: 2 },
   wfSection: { display: 'flex', flexDirection: 'column', gap: 6 },
   wfHeading: { margin: 0, fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
@@ -264,11 +291,11 @@ function windowLabel(t: PanelTranslate, mins: number): string {
 }
 
 /**
- * The header's backend usage lines (D28): `codex · prolite · 剩 17%` per backend
- * read `ok`, `codex · 额度读取失败` per `error`; `unsupported` backends are not
- * shown. The hover text names the window and its reset time, or the failure.
+ * Backend usage lines (D28 / D47): `codex · prolite · 剩 17%` per backend read
+ * `ok`, `codex · 额度读取失败` per `error`; `unsupported` backends are hidden.
+ * Hover text names the window and hybrid reset time, or the failure.
  */
-function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | undefined; readonly t: PanelTranslate }): ReactNode {
+function UsageLines({ usage, now, t }: { readonly usage: readonly PanelUsage[] | undefined; readonly now: number; readonly t: PanelTranslate }): ReactNode {
   const shown = (usage ?? []).filter(u => u.status !== 'unsupported')
   if (shown.length === 0) return null
   return (
@@ -281,7 +308,7 @@ function UsageLines({ usage, t }: { readonly usage: readonly PanelUsage[] | unde
           ? u.error ?? ''
           : [
               ...(u.usedPercent === undefined || u.windowMins === undefined ? [] : [t('usageWindow', { window: windowLabel(t, u.windowMins), percent: Math.round(u.usedPercent) })]),
-              ...(u.resetsAt === undefined ? [] : [t('usageResets', { time: new Date(u.resetsAt * 1000).toLocaleString() })]),
+              ...(u.resetsAt === undefined ? [] : [t('usageResets', { time: formatHybridTime(t, u.resetsAt * 1000, now) })]),
             ].join(' · ')
         return <p key={u.backend} style={u.status === 'error' ? styles.usageError : styles.countNote} data-usage-backend={u.backend} title={hint}>{text}</p>
       })}
@@ -298,6 +325,21 @@ const READINESS_COPY = {
   ready: 'backendReady', 'needs-configuration': 'backendNeedsConfiguration', 'needs-login': 'backendNeedsLogin',
   unverified: 'backendUnverified', unavailable: 'backendUnavailable',
 } satisfies Record<BackendStatus['readiness'], PanelCopyKey>
+
+const READINESS_TONE = {
+  ready: 'success', 'needs-configuration': 'warning', 'needs-login': 'warning',
+  unverified: 'neutral', unavailable: 'danger',
+} satisfies Record<BackendStatus['readiness'], TagTone>
+
+const READINESS_DOT = {
+  ready: 'done', 'needs-configuration': 'warning', 'needs-login': 'warning',
+  unverified: 'warning', unavailable: 'error',
+} satisfies Record<BackendStatus['readiness'], StateDotState>
+
+const READINESS_RAIL = {
+  ready: 'none', 'needs-configuration': 'warn', 'needs-login': 'warn',
+  unverified: 'warn', unavailable: 'error',
+} satisfies Record<BackendStatus['readiness'], RailState>
 
 const REMEDIATION_COPY = {
   'missing-executable': 'backendFixMissing', 'version-unreadable': 'backendFixVersionUnreadable',
@@ -325,7 +367,12 @@ function selectionValue(actual: string | undefined, configured: string | undefin
   return configured && configured !== actual ? t('backendSelectionMismatch', { configured, actual: value }) : value
 }
 
-function BackendStatusRow({ backend, visibleChats, t }: { readonly backend: BackendStatus; readonly visibleChats: readonly PanelChat[]; readonly t: PanelTranslate }): ReactNode {
+function BackendStatusRow({ backend, visibleChats, now, t }: {
+  readonly backend: BackendStatus
+  readonly visibleChats: readonly PanelChat[]
+  readonly now: number
+  readonly t: PanelTranslate
+}): ReactNode {
   const remediation = backend.reason === undefined ? undefined
     : backend.configured && backend.reason === 'probe-timeout' ? 'backendFixConfiguredTimeout' as const
     : backend.automatic && backend.id === 'agy' && backend.reason === 'login-required' ? 'backendFixAgyLogin' as const
@@ -333,48 +380,64 @@ function BackendStatusRow({ backend, visibleChats, t }: { readonly backend: Back
         : backend.reason === 'unsupported-version' && backend.readiness === 'ready' ? 'backendSelectUnverifiedVersion' as const
           : copyFor(REMEDIATION_COPY, backend.reason)
   const session = backend.report?.source === 'session' ? backend.report : undefined
+  const readinessCopy = copyFor(READINESS_COPY, backend.readiness) ?? 'backendUnverified'
+  const dot = READINESS_DOT[backend.readiness] ?? 'warning'
+  const rail = READINESS_RAIL[backend.readiness] ?? 'warn'
+  const tone = READINESS_TONE[backend.readiness] ?? 'neutral'
   return (
-    <li style={styles.backendRow}>
-      <div style={styles.backendMeta}>
-        <strong style={styles.backendName}>{backendName(t, backend)}</strong>
-        {backend.configured ? null : <span style={styles.countNote}>{t(backend.automatic ? 'backendAutomatic' : 'backendNotConfigured')}</span>}
-      </div>
-      <div style={styles.backendMeta}>
-        <span style={styles.notice}>{backend.version === undefined ? t('backendVersionUnknown') : t('backendVersion', { version: backend.version })}</span>
-        {backend.range === undefined ? null : <span style={styles.notice}>{t('backendRange', { range: backend.range })}</span>}
-      </div>
-      <div style={styles.backendMeta}>
-        <span style={styles.notice}>{t('backendCompatibility', { status: t(copyFor(COMPATIBILITY_COPY, backend.compatibility) ?? 'backendUnknown') })}</span>
-        <span style={styles.notice}>{t('backendReadiness', { status: t(copyFor(READINESS_COPY, backend.readiness) ?? 'backendUnverified') })}</span>
-      </div>
-      <div style={styles.backendMeta}>
-        <span>{t('backendModel', { value: selectionValue(backend.report?.model, backend.configuredModel, backend.report?.modelName, t) })}</span>
-        <span>{t('backendEffort', { value: selectionValue(backend.report?.effort, backend.configuredEffort, undefined, t) })}</span>
-      </div>
-      {session ? <p style={styles.notice}>{t(
-        visibleChats.some(chat => chat.chatId === session.chatId) ? 'backendReportSession' : 'backendReportTime',
-        { chat: session.chatId, time: new Date(session.at).toISOString() },
-      )}</p> : backend.report?.source === 'probe' ? <p style={styles.notice}>{t('backendReportProbe')}</p>
-        : backend.sessionReporting ? <p style={styles.notice}>{t('backendAfterDispatch')}</p> : null}
-      {backend.automatic && backend.readiness === 'ready' ? (
-        <p style={styles.notice}>{t(backend.id === 'agy' ? 'backendAutomaticAgyReady' : 'backendAutomaticReady')}</p>
-      ) : null}
-      {remediation === undefined ? null : <p style={styles.notice}>{t(remediation)}</p>}
+    <li>
+      <PanelCard rail={rail} style={styles.backendCard} data-backend-id={backend.id}>
+        <div style={styles.backendCardHead}>
+          <div style={styles.backendCardIdentity}>
+            <span data-dot={dot} style={styles.dot}><StateDot state={dot} /></span>
+            <strong style={styles.backendName}>{backendName(t, backend)}</strong>
+            {backend.configured ? null : <Tag tone="neutral">{t(backend.automatic ? 'backendAutomatic' : 'backendNotConfigured')}</Tag>}
+          </div>
+          <Tag tone={tone}>{t(readinessCopy)}</Tag>
+        </div>
+        <div style={styles.backendMeta}>
+          <span>{backend.version === undefined ? t('backendVersionUnknown') : t('backendVersion', { version: backend.version })}</span>
+          {backend.range === undefined ? null : <span>{t('backendRange', { range: backend.range })}</span>}
+        </div>
+        <div style={styles.backendMeta}>
+          <span>{t('backendModel', { value: selectionValue(backend.report?.model, backend.configuredModel, backend.report?.modelName, t) })}</span>
+          <span>{t('backendEffort', { value: selectionValue(backend.report?.effort, backend.configuredEffort, undefined, t) })}</span>
+        </div>
+        <div style={styles.backendDetail}>
+          <span>{t('backendCompatibility', { status: t(copyFor(COMPATIBILITY_COPY, backend.compatibility) ?? 'backendUnknown') })}</span>
+          <span>{t('backendReadiness', { status: t(readinessCopy) })}</span>
+        </div>
+        {session ? (
+          <p style={styles.notice} title={formatTurnTimeTitle(t, { at: session.at }, now)}>
+            {t(
+              visibleChats.some(chat => chat.chatId === session.chatId) ? 'backendReportSession' : 'backendReportTime',
+              { chat: session.chatId, time: formatHybridTime(t, session.at, now) },
+            )}
+          </p>
+        ) : backend.report?.source === 'probe' ? <p style={styles.notice}>{t('backendReportProbe')}</p>
+          : backend.sessionReporting ? <p style={styles.notice}>{t('backendAfterDispatch')}</p> : null}
+        {backend.automatic && backend.readiness === 'ready' ? (
+          <p style={styles.notice}>{t(backend.id === 'agy' ? 'backendAutomaticAgyReady' : 'backendAutomaticReady')}</p>
+        ) : null}
+        {remediation === undefined ? null : <p style={styles.notice}>{t(remediation)}</p>}
+      </PanelCard>
     </li>
   )
 }
 
-/** Keep one status line visible; mount diagnostics only when the user expands it. */
-function BackendStatusSection({ source, view, visibleChats, t }: {
+/** Keep one status line visible via DisclosureRow; mount diagnostics only when expanded, with usage in the footer. */
+function BackendStatusSection({ source, view, visibleChats, usage, now, expanded, onToggle, t }: {
   readonly visibleChats: readonly PanelChat[]
   readonly source: BackendStatusSourceFace
   readonly view: BackendStatusView
+  readonly usage: readonly PanelUsage[] | undefined
+  readonly now: number
+  readonly expanded: boolean
+  readonly onToggle: () => void
   readonly t: PanelTranslate
 }): ReactNode {
   const { data, status } = view
   const helpId = useId()
-  const contentId = useId()
-  const [expanded, setExpanded] = useState(false)
   const checking = view.checking || data?.checking === true
   const startup = status === 'loading' || (checking && data !== undefined && data.backends.length > 0
     && data.backends.every(row => row.reason === 'backend-unready'))
@@ -393,6 +456,11 @@ function BackendStatusSection({ source, view, visibleChats, t }: {
                 : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
                   : defaultName !== undefined ? t('backendSummaryDefault', { name: defaultName })
                     : t('backendSummaryMany', { count: readyNames.length })
+  const headerDot: StateDotState = startup || checking ? 'ongoing'
+    : status === 'error' || view.checkFailed || (data !== undefined && !data.dispatchEnabled) ? 'error'
+      : status === 'unavailable' ? 'idle'
+        : (selected !== undefined && selected.readiness !== 'ready') || onlyAutomaticAgy ? 'warning'
+          : readyNames.length > 0 ? 'done' : 'idle'
   const noneVerifiedAfterTimeout = readyNames.length === 0 && data?.backends.some(row => row.reason === 'probe-timeout')
   const checkResult = !view.checkCompleted ? null
     : noneVerifiedAfterTimeout ? t('backendCheckTimeout')
@@ -400,51 +468,65 @@ function BackendStatusSection({ source, view, visibleChats, t }: {
       : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
         : readyNames.length === 1 ? t('backendCheckReady', { name: readyNames[0]! })
           : t('backendCheckMultipleReady', { names: readyNames.join(t('backendNameSeparator')) })
+  const hasUsage = (usage ?? []).some(u => u.status !== 'unsupported')
+  const recheckAccessory = status === 'unavailable' || startup ? undefined : (
+    <Button
+      size="sm"
+      variant="outline"
+      style={checking ? { opacity: 0.6 } : undefined}
+      aria-describedby={expanded ? helpId : undefined}
+      aria-disabled={checking}
+      onClick={() => { if (!checking) void source.check() }}
+    >
+      {t(checking ? 'backendChecking' : 'backendCheck')}
+    </Button>
+  )
   return (
-    <section style={styles.backendSection} aria-label={t('backendStatusHeading')}>
-      <div style={styles.backendToolbar}>
-        <button type="button" style={styles.backendDisclosure} aria-expanded={expanded} aria-controls={contentId}
-          onClick={() => { setExpanded(open => !open) }}>
-          <span style={styles.backendDisclosureLabel}>{t('backendStatusHeading')}</span>{' '}
-          <span style={{ ...styles.notice, ...styles.backendSummary }} title={summary}>{summary}</span>
-          <svg aria-hidden="true" viewBox="0 0 16 16" width={14} height={14} fill="none" stroke="var(--dsw-alias-label-secondary)" strokeWidth={1.5} style={styles.backendChevron}>
-            <path d={expanded ? 'M4 10l4-4 4 4' : 'M4 6l4 4 4-4'} strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        {status === 'unavailable' || startup ? null : (
-          <button type="button" style={{ ...styles.backendButton, opacity: checking ? 0.6 : 1 }}
-            aria-describedby={expanded ? helpId : undefined} aria-disabled={checking}
-            onClick={() => { if (!checking) void source.check() }}>
-            {t(checking ? 'backendChecking' : 'backendCheck')}
-          </button>
-        )}
-      </div>
-      <div role="status" style={styles.visuallyHidden}>{view.checkCompleted && !checking && !view.checkFailed && status === 'ready' ? checkResult : summary}</div>
-      <div id={contentId} hidden={!expanded}>
-        {!expanded ? null : (
-          <div style={styles.backendContent}>
-            {status === 'unavailable' || startup ? null : <p id={helpId} style={styles.notice}>{t('backendCheckHelp')}</p>}
-            {startup ? <p style={styles.notice}>{t('backendLoading')}</p> : null}
-            {status === 'unavailable' ? <p style={styles.notice}>{t('backendStatusUnavailable')}</p> : null}
-            {status === 'error' || view.checkFailed ? <p style={styles.error}>{t(view.checkFailed ? 'backendCheckFailed' : data === undefined ? 'backendReadFailed' : 'backendReadFailedWithCache')}</p> : null}
-            {status === 'ready' && !checking && !view.checkFailed && checkResult !== null ? <p style={styles.notice}>{checkResult}</p> : null}
-            {data === undefined || startup ? null : (
-              <>
-                <p style={styles.notice}>{defaultName === undefined ? t('backendNoDefault') : t('backendDefault', { name: defaultName })}</p>
-                {selected !== undefined && selected.readiness !== 'ready' && selected.reason !== 'probe-timeout' && !checking ? <p style={styles.notice}>{t('backendPinnedUnready')}</p> : null}
-                {data.dispatchEnabled
-                  ? defaultName === undefined ? <p style={styles.notice}>{t('backendChooseReady')}</p> : null
-                  : checking || noneVerifiedAfterTimeout ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}
-                {data.backends.length === 0 ? <p style={styles.notice}>{t('backendNoEntries')}</p> : (
-                  <ul style={styles.list}>
-                    {data.backends.map(backend => <BackendStatusRow key={backend.id} backend={backend} visibleChats={visibleChats} t={t} />)}
-                  </ul>
-                )}
-              </>
-            )}
+    <section aria-label={t('backendStatusHeading')} data-section="backend">
+      <PanelCard style={styles.backendSection}>
+        <div style={styles.backendHeaderWrap}>
+          <DisclosureRow
+            icon={<StateDot state={headerDot} />}
+            title={t('backendStatusHeading')}
+            open={expanded}
+            expandable
+            expandOnRowClick
+            keepContentWhenOpen
+            running={startup || checking}
+            onToggle={onToggle}
+            collapsedContent={<>{' '}<span style={{ ...styles.notice, ...styles.backendSummary }} title={summary}>{summary}</span></>}
+            headerAccessory={recheckAccessory}
+          >
+            <div style={styles.backendContent}>
+              {status === 'unavailable' || startup ? null : <p id={helpId} style={styles.notice}>{t('backendCheckHelp')}</p>}
+              {startup ? <p style={styles.notice}>{t('backendLoading')}</p> : null}
+              {status === 'unavailable' ? <p style={styles.notice}>{t('backendStatusUnavailable')}</p> : null}
+              {status === 'error' || view.checkFailed ? <p style={styles.error}>{t(view.checkFailed ? 'backendCheckFailed' : data === undefined ? 'backendReadFailed' : 'backendReadFailedWithCache')}</p> : null}
+              {status === 'ready' && !checking && !view.checkFailed && checkResult !== null ? <p style={styles.notice}>{checkResult}</p> : null}
+              {data === undefined || startup ? null : (
+                <>
+                  <p style={styles.notice}>{defaultName === undefined ? t('backendNoDefault') : t('backendDefault', { name: defaultName })}</p>
+                  {selected !== undefined && selected.readiness !== 'ready' && selected.reason !== 'probe-timeout' && !checking ? <p style={styles.notice}>{t('backendPinnedUnready')}</p> : null}
+                  {data.dispatchEnabled
+                    ? defaultName === undefined ? <p style={styles.notice}>{t('backendChooseReady')}</p> : null
+                    : checking || noneVerifiedAfterTimeout ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}
+                  {data.backends.length === 0 ? <p style={styles.notice}>{t('backendNoEntries')}</p> : (
+                    <ul style={styles.list}>
+                      {data.backends.map(backend => <BackendStatusRow key={backend.id} backend={backend} visibleChats={visibleChats} now={now} t={t} />)}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          </DisclosureRow>
+        </div>
+        <div role="status" style={styles.visuallyHidden}>{view.checkCompleted && !checking && !view.checkFailed && status === 'ready' ? checkResult : summary}</div>
+        {hasUsage ? (
+          <div style={styles.backendUsageBar}>
+            <UsageLines usage={usage} now={now} t={t} />
           </div>
-        )}
-      </div>
+        ) : null}
+      </PanelCard>
     </section>
   )
 }
@@ -601,6 +683,8 @@ export function ChatsPanel(props: ChatsPanelProps): ReactNode {
 function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, profileForms, features, backendStatus, workflowsFor, config, refresh, close, purge, t }:
   ChatsPanelProps & { config?: PanelFeatures }): ReactNode {
   const [showSettings, setShowSettings] = useState(false)
+  const [backendExpanded, setBackendExpanded] = useState(false)
+  const toggleBackend = useCallback(() => { setBackendExpanded(open => !open) }, [])
   const snapshot = useChats(s => s)
   const backendStore = backendStatus ?? NO_BACKEND_STATUS
   const backendView = useSyncExternalStore(backendStore.subscribe, backendStore.getSnapshot)
@@ -655,6 +739,13 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
   const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chat.chatId)
   const releasing = confirming?.kind === 'release'
   const backendPending = backendView?.status === 'loading' || backendView?.checking || backendView?.data?.checking
+  const backendAlert: 'check-failed' | 'no-dispatch' | undefined = backendView === undefined || backendPending
+    ? undefined
+    : (backendView.checkFailed === true || backendView.status === 'error')
+      ? 'check-failed'
+      : (backendView.status === 'ready' && backendView.data?.dispatchEnabled === false)
+        ? 'no-dispatch'
+        : undefined
   return (
     <section style={styles.root} aria-label={t('title')}>
       <div style={styles.header}>
@@ -671,8 +762,20 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
       </div>
       {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => b.id)}
         t={t} onSaved={path => { if (path === 'workflow') void features.refresh() }} />}
-      {backendStatus === undefined || backendView === undefined ? null : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} t={t} />}
-      <UsageLines usage={snapshot.usage} t={t} />
+      {backendAlert === undefined ? null : (
+        <button
+          type="button"
+          data-backend-alert={backendAlert}
+          style={backendAlert === 'check-failed' ? styles.backendAlertError : styles.backendAlertWarn}
+          onClick={() => { setBackendExpanded(true) }}
+        >
+          <IconWarningOutlineRegular size={14} />
+          <span style={styles.backendAlertText}>{t(backendAlert === 'check-failed' ? 'backendAlertCheckFailed' : 'backendAlertNoDispatch')}</span>
+        </button>
+      )}
+      {backendStatus === undefined || backendView === undefined
+        ? <UsageLines usage={snapshot.usage} now={now} t={t} />
+        : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} usage={snapshot.usage} now={now} expanded={backendExpanded} onToggle={toggleBackend} t={t} />}
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}

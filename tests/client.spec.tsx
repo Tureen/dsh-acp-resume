@@ -26,6 +26,7 @@ import { LiveSource, type FollowTurn } from '../src/client/live-source.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
+import { formatHybridTime } from '../src/client/panel-time.ts'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, cwdName, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
@@ -47,7 +48,43 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
     <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} title={title} onClick={() => onChange(!checked)} />,
   IconRefreshOutlineRegular: () => <svg data-icon="refresh" aria-hidden="true" />,
   IconSettingsOutlineRegular: () => <svg data-icon="settings" aria-hidden="true" />,
-  DisclosureRow: () => null,
+  IconWarningOutlineRegular: () => <svg data-icon="warning" aria-hidden="true" />,
+  DisclosureRow: ({ icon, title, open, expandable, onToggle, running, expandOnRowClick, keepContentWhenOpen, collapsedContent, headerAccessory, children }: {
+    icon?: ReactNode; title: string; open: boolean; expandable: boolean; onToggle: () => void;
+    running?: boolean; expandOnRowClick?: boolean; keepContentWhenOpen?: boolean;
+    collapsedContent?: ReactNode; headerAccessory?: ReactNode; children?: ReactNode;
+  }) => {
+    const rowExpands = Boolean(expandable && expandOnRowClick)
+    return (
+      <div data-disclosure-root="" data-open={open || undefined}>
+        <div data-disclosure-header="" data-has-accessory={headerAccessory ? '' : undefined}>
+          <div
+            data-disclosure-row=""
+            data-expandable={rowExpands || undefined}
+            role={rowExpands ? 'button' : undefined}
+            tabIndex={rowExpands ? 0 : undefined}
+            aria-expanded={rowExpands ? open : undefined}
+            onClick={rowExpands ? onToggle : undefined}
+            onKeyDown={rowExpands ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } } : undefined}
+          >
+            {expandable && !rowExpands ? (
+              <button type="button" aria-label={title} aria-expanded={open} onClick={(e) => { e.stopPropagation(); onToggle() }}>
+                {icon}
+              </button>
+            ) : (
+              <span>{icon}</span>
+            )}
+            <span data-shimmer={running || undefined}>
+              <span>{title}</span>
+              {(keepContentWhenOpen || !open) && collapsedContent}
+            </span>
+          </div>
+          {headerAccessory}
+        </div>
+        {open ? children : null}
+      </div>
+    )
+  },
   MarkdownText: () => null,
   Pill: () => null,
   TextShimmer: () => null,
@@ -201,14 +238,17 @@ describe('backend readiness', () => {
     ] }
     const backendStatus = { subscribe: () => () => {}, getSnapshot: () => view, check: async () => {} }
     const view = { status: 'ready', checking: false, data } as const
-    const panelProps = props(ready([chat({ chatId: 'chat-d41' })]), { backendStatus, t: translator(dictionary) })
+    const tr = translator(dictionary)
+    const expectedTime = formatHybridTime(tr, 0, NOW)
+    const panelProps = props(ready([chat({ chatId: 'chat-d41' })]), { backendStatus, t: tr })
     const mounted = render(<ChatsPanel {...panelProps} />)
     const toggle = screen.getByRole('button', { expanded: false, name: chinese ? /^后端状态/ : /^Backend status/ })
     fireEvent.click(toggle)
     const rows = screen.getAllByRole('listitem')
     expect(within(rows[0]!).getByText(chinese ? '模型：gemini-4-neon (Gemini 4 Neon)' : 'Model: gemini-4-neon (Gemini 4 Neon)')).toBeTruthy()
     expect(within(rows[0]!).getByText(chinese ? '思考强度：high' : 'Reasoning effort: high')).toBeTruthy()
-    expect(within(rows[0]!).getByText(/chat-d41 · 1970-01-01T00:00:00.000Z/)).toBeTruthy()
+    expect(within(rows[0]!).getByText(new RegExp(`chat-d41 · ${expectedTime}`))).toBeTruthy()
+    expect(mounted.container.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/)
     expect(within(rows[1]!).getByText(chinese ? '模型：配置 requested，实际 backend-default' : 'Model: configured requested, actual backend-default')).toBeTruthy()
     expect(within(rows[1]!).getByText(chinese ? '思考强度：配置 high，实际 low' : 'Reasoning effort: configured high, actual low')).toBeTruthy()
     expect(within(rows[1]!).getByText(chinese ? '无会话检测：后端报告的默认值' : 'Session-free check: backend defaults')).toBeTruthy()
@@ -218,7 +258,8 @@ describe('backend readiness', () => {
     expect(screen.queryByText(/invisible/)).toBeNull()
     mounted.rerender(<ChatsPanel {...panelProps} currentSessionId="another-owner" />)
     expect(screen.queryByText(/chat-d41/)).toBeNull()
-    expect(screen.getByText(chinese ? '最近活跃会话报告 · 1970-01-01T00:00:00.000Z' : 'Latest active session report · 1970-01-01T00:00:00.000Z')).toBeTruthy()
+    expect(screen.getByText(chinese ? `最近活跃会话报告 · ${expectedTime}` : `Latest active session report · ${expectedTime}`)).toBeTruthy()
+    expect(mounted.container.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/)
   })
 
   it.each([['zh', zh], ['en', en]] as const)('distinguishes timed out, auto-discovered and failed connections in %s', (locale, dictionary) => {
@@ -356,6 +397,77 @@ describe('backend readiness', () => {
     expect(screen.getByText('This host does not provide backend status.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Recheck backends' })).toBeNull()
     expect(screen.getByText(/Ask the model to call acp_chat_start/)).toBeTruthy()
+  })
+
+  it('uses DisclosureRow, three-layer PanelCard rows with rails/tags, and nests usage in the backend card footer (D47 Step 3)', () => {
+    const view = { status: 'ready', checking: false, data: backendFixture } as const
+    const backendStatus = { getSnapshot: () => view, subscribe: () => () => {}, check: vi.fn(async () => {}) }
+    const usage = [
+      { backend: 'codex', protocol: 'codex' as const, status: 'ok' as const, plan: 'prolite', usedPercent: 17, windowMins: 10080, resetsAt: Math.floor((NOW + 3_600_000) / 1000), fetchedAt: NOW },
+    ]
+    render(<ChatsPanel {...props({ ...ready([]), usage }, { backendStatus })} />)
+    const region = screen.getByRole('region', { name: zh.backendStatusHeading })
+    expect(region.querySelector('[data-disclosure-row]')).toBeTruthy()
+    // Usage stays visible inside the backend section card even while collapsed.
+    expect(region.querySelector('[data-usage-backend="codex"]')?.textContent).toBe('codex · prolite · 剩 83%')
+    expect(region.querySelector('[data-usage-backend="codex"]')?.getAttribute('title')).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
+
+    fireEvent.click(within(region).getByRole('button', { name: '后端状态 Codex 就绪' }))
+    const cards = [...region.querySelectorAll('[data-backend-id]')] as HTMLElement[]
+    expect(cards.map(c => [c.getAttribute('data-backend-id'), c.getAttribute('data-state')])).toEqual([
+      ['codex', 'none'],
+      ['kiro', 'warn'],
+      ['agy', 'error'],
+      ['review', 'warn'],
+      ['other', 'warn'],
+    ])
+    expect(cards[0]?.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('done')
+    expect(within(cards[0]!).getByText(zh.backendReady).closest('[data-tag]')?.getAttribute('data-tone')).toBe('success')
+    expect(cards[2]?.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('error')
+    expect(within(cards[2]!).getByText(zh.backendUnavailable).closest('[data-tag]')?.getAttribute('data-tone')).toBe('danger')
+    expect(cards[4]?.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('warning')
+    expect(within(cards[4]!).getByText(zh.backendNeedsLogin).closest('[data-tag]')?.getAttribute('data-tone')).toBe('warning')
+    expect(backendStatus.check).not.toHaveBeenCalled()
+  })
+
+  it('shows the conditional alert bar only when dispatchEnabled is false or check fails, and expands Backend status on click (D47 Step 3)', () => {
+    const check = vi.fn(async () => {})
+    const sourceOf = (view: BackendStatusView) => ({ getSnapshot: () => view, subscribe: () => () => {}, check })
+
+    // Healthy: no alert bar.
+    const healthy: BackendStatusView = { status: 'ready', checking: false, data: backendFixture }
+    const view = render(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(healthy) })} />)
+    expect(view.container.querySelector('[data-backend-alert]')).toBeNull()
+
+    // Startup checking even with dispatchEnabled: false -> hidden.
+    const loading: BackendStatusView = { status: 'ready', checking: false, data: { ...backendFixture, checking: true, dispatchEnabled: false } }
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(loading) })} />)
+    expect(view.container.querySelector('[data-backend-alert]')).toBeNull()
+
+    // Unavailable legacy host -> hidden.
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf({ status: 'unavailable', checking: false }) })} />)
+    expect(view.container.querySelector('[data-backend-alert]')).toBeNull()
+
+    // Condition 1: dispatchEnabled === false -> shows no-dispatch alert and expands on click without triggering check.
+    const noDispatch: BackendStatusView = { status: 'ready', checking: false, data: { ...backendFixture, dispatchEnabled: false } }
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(noDispatch) })} />)
+    const noDispatchAlert = view.container.querySelector('[data-backend-alert="no-dispatch"]') as HTMLElement
+    expect(noDispatchAlert).toBeTruthy()
+    expect(noDispatchAlert.textContent).toBe(zh.backendAlertNoDispatch)
+    fireEvent.click(noDispatchAlert)
+    const region = screen.getByRole('region', { name: zh.backendStatusHeading })
+    expect(region.querySelector('[data-disclosure-row]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(check).not.toHaveBeenCalled()
+
+    // Condition 2: checkFailed === true -> shows check-failed alert (zh and en).
+    const failed: BackendStatusView = { status: 'ready', checking: false, checkFailed: true, data: backendFixture }
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(failed) })} />)
+    expect(view.container.querySelector('[data-backend-alert="check-failed"]')?.textContent).toBe(zh.backendAlertCheckFailed)
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(failed), t: translator(en) })} />)
+    expect(view.container.querySelector('[data-backend-alert="check-failed"]')?.textContent).toBe(en.backendAlertCheckFailed)
+    view.rerender(<ChatsPanel {...props(ready([]), { backendStatus: sourceOf(noDispatch), t: translator(en) })} />)
+    expect(view.container.querySelector('[data-backend-alert="no-dispatch"]')?.textContent).toBe(en.backendAlertNoDispatch)
+    expect(check).not.toHaveBeenCalled()
   })
 })
 

@@ -778,6 +778,8 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
 修订（2026-11-26，D43）：后端诊断按协议分配超时预算，耗尽预算时记录为未验证。显式派工与自动发现的准入规则沿用 D31。
 
+修订（2026-11-26，D47）：侧栏后端状态行改用官方 `DisclosureRow` 与官方「重新检测后端」`Button`，额度归入同卡底栏；仅在 `dispatchEnabled === false` 或检测失败时于顶栏下方显示 1 行条件告警条。独立手动重查与只读轮询契约不变。
+
 ## D32 Dispatcher 的团队上下文：角色摘要、播种前置上下文与团队列表(2026-11-25)
 
 ### 动机
@@ -1074,7 +1076,7 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
 - 实施分九步,前五步不触碰 `ChatDetail.tsx` 与 `detail-source.ts`(可与流式输出并行),后四步在流式合入后顺序衔接:
   - **Step 1(已落地)**:共享时间层(`src/client/panel-time.ts`)、共享视觉原语(`src/client/panel-chrome.tsx`)与中英文案键。
   - **Step 2(已落地)**:顶栏官方图标按钮(`[↻]`/`[⚙]`)与 `ProfileSettings` 官方 `Switch`/`Input`/`Modal(tone="warning")` 对齐。
-  - **Step 3(待实施)**:后端状态与额度对齐(`DisclosureRow`、三层卡、消除 `toISOString()`、条件告警条)。
+  - **Step 3(已落地)**:后端状态与额度对齐(`DisclosureRow`、三层卡、消除 `toISOString()`、条件告警条)。
   - **Step 4(待实施)**:工作流、会话卡与单会话设置对齐,按注意力顺序重排主面板区块(同步修订 D29)。
   - **Step 5(待实施)**:团队派工视图本体(`pool.ts` 零存储投影、`TeamSection`、互斥分流、`PREVIEW_CHARS` 320)。
   - **Step 6–9(待实施,流式合入后)**:详情页接入共享时间与官方 Markdown 清洗/渲染 → 单轮结构化卡片与粘性顶栏 → 近期 3 轮/更早折叠/跨天分节 → 在途独立工作区与 `LiveSource` 无缝交接。
