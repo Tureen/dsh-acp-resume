@@ -19,8 +19,13 @@ import type { PanelTranslate } from './locales.ts'
 export {
   Button,
   DisclosureRow,
+  IconArchiveOutlineRegular,
+  IconChevronDownOutlineRegular,
+  IconChevronUpOutlineRegular,
+  IconEllipsisOutlineRegular,
   IconRefreshOutlineRegular,
   IconSettingsOutlineRegular,
+  IconSlidersTwoOutlineRegular,
   IconWarningOutlineRegular,
   Input,
   MarkdownText,

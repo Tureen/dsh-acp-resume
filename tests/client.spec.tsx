@@ -26,7 +26,7 @@ import { LiveSource, type FollowTurn } from '../src/client/live-source.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
-import { formatHybridTime } from '../src/client/panel-time.ts'
+import { formatHybridTime, formatTurnTime } from '../src/client/panel-time.ts'
 import { ChatsSource, IDLE_POLL_INTERVAL_MS, POLL_INTERVAL_MS, QUIET_POLLS_BEFORE_BACKOFF, type PanelRpc, type PanelRpcResult } from '../src/client/chats-source.ts'
 import { ChatDetail, ChatDetailTitle, cwdName, type ChatDetailProps } from '../src/client/ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, chatAddress, parseChatAddress } from '../src/client/chat-address.ts'
@@ -46,8 +46,13 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
     <span><input {...rest} /></span>,
   Switch: ({ checked, onChange, label, disabled, title }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; title?: string }) =>
     <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} title={title} onClick={() => onChange(!checked)} />,
+  IconArchiveOutlineRegular: () => <svg data-icon="archive" aria-hidden="true" />,
+  IconChevronDownOutlineRegular: () => <svg data-icon="chevron-down" aria-hidden="true" />,
+  IconChevronUpOutlineRegular: () => <svg data-icon="chevron-up" aria-hidden="true" />,
+  IconEllipsisOutlineRegular: () => <svg data-icon="ellipsis" aria-hidden="true" />,
   IconRefreshOutlineRegular: () => <svg data-icon="refresh" aria-hidden="true" />,
   IconSettingsOutlineRegular: () => <svg data-icon="settings" aria-hidden="true" />,
+  IconSlidersTwoOutlineRegular: () => <svg data-icon="sliders" aria-hidden="true" />,
   IconWarningOutlineRegular: () => <svg data-icon="warning" aria-hidden="true" />,
   DisclosureRow: ({ icon, title, open, expandable, onToggle, running, expandOnRowClick, keepContentWhenOpen, collapsedContent, headerAccessory, children }: {
     icon?: ReactNode; title: string; open: boolean; expandable: boolean; onToggle: () => void;
@@ -88,7 +93,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   MarkdownText: () => null,
   Pill: () => null,
   TextShimmer: () => null,
-  extractMarkdownPlainText: (text: string) => text,
+  extractMarkdownPlainText: (text: string) => text
+    .replace(/^\s*#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1'),
   useClipboardCopy: () => ({ copied: false, copy: () => {} }),
   Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
     open ? <div role="dialog" aria-label={title} data-tone={tone}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
@@ -244,7 +252,8 @@ describe('backend readiness', () => {
     const mounted = render(<ChatsPanel {...panelProps} />)
     const toggle = screen.getByRole('button', { expanded: false, name: chinese ? /^后端状态/ : /^Backend status/ })
     fireEvent.click(toggle)
-    const rows = screen.getAllByRole('listitem')
+    const region = screen.getByRole('region', { name: chinese ? '后端状态' : 'Backend status' })
+    const rows = within(region).getAllByRole('listitem')
     expect(within(rows[0]!).getByText(chinese ? '模型：gemini-4-neon (Gemini 4 Neon)' : 'Model: gemini-4-neon (Gemini 4 Neon)')).toBeTruthy()
     expect(within(rows[0]!).getByText(chinese ? '思考强度：high' : 'Reasoning effort: high')).toBeTruthy()
     expect(within(rows[0]!).getByText(new RegExp(`chat-d41 · ${expectedTime}`))).toBeTruthy()
@@ -535,8 +544,8 @@ describe('ChatsPanel', () => {
     expect(screen.getByRole('alert').textContent).toBe('读取失败:gateway/internal: boom')
   })
 
-  it('renders one single-line row per chat: name by label, else title, else short id; the rest in the hover text', () => {
-    const labelled = chat({ label: '审阅', title: '记住暗号P', turnCount: 12 })
+  it('renders one card per chat: full-width name (label, else title, else short id), clean preview, and release/delete inside the ⋯ menu', () => {
+    const labelled = chat({ label: '审阅', title: '**记住暗号P**', turnCount: 12 })
     const titled = chat({ chatId: 'chat-titled', title: '首轮问题', lastActive: NOW - 4 * 60_000 })
     const legacy = chat({ chatId: `chat-${UUID_B}`, remoteSessionId: '9c0d1e2f-2222', cwd: '/work', active: false, lastActive: NOW - 2 * 3_600_000 })
     render(<ChatsPanel {...props(ready([labelled, titled, legacy]))} />)
@@ -545,18 +554,21 @@ describe('ChatsPanel', () => {
     expect(cards).toHaveLength(3)
     const name = (card: HTMLElement): string => (card.querySelector('[data-name]') as HTMLElement).textContent ?? ''
 
-    expect(name(cards[0] as HTMLElement)).toBe('审阅 chat-a1b2c3d4')
-    expect((cards[0] as HTMLElement).getAttribute('title')).toBe('首轮:记住暗号P\n活跃 · 12 轮 · 3 分钟前')
-    expect(name(cards[1] as HTMLElement)).toBe('首轮问题 chat-titled')
+    expect(name(cards[0] as HTMLElement)).toBe('审阅')
+    expect(cards[0]?.querySelector('[data-preview]')?.textContent).toBe('记住暗号P')
+    expect((cards[0] as HTMLElement).getAttribute('title')).toBe('首轮:**记住暗号P**\n活跃 · 12 轮 · 3 分钟前')
+    expect(name(cards[1] as HTMLElement)).toBe('首轮问题')
     expect(name(cards[2] as HTMLElement)).toBe('chat-e5f6a7b8')
     expect((cards[2] as HTMLElement).getAttribute('title')).toBe('已释放(下次发送自动重连) · — 轮 · 2 小时前')
     // cwd, remote id, and owner live on the detail tab, not on the row.
     for (const card of cards) {
       expect(card.textContent).not.toMatch(/cwd|远端|归属/)
       expect(card.querySelectorAll('p')).toHaveLength(0)
+      expect(card.querySelector('[data-panel-card]')).toBeTruthy()
     }
-    // A released chat has nothing to release.
-    expect((within(cards[2] as HTMLElement).getByRole('button', { name: '释放 chat-e5f6a7b8' }) as HTMLButtonElement).disabled).toBe(true)
+    // A released chat has nothing to release in its ⋯ menu.
+    fireEvent.click(within(cards[2] as HTMLElement).getByRole('button', { name: '更多操作' }))
+    expect((within(cards[2] as HTMLElement).getByRole('menuitem', { name: '释放进程' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('maps panel states onto the official StateDot: ongoing > error > warning > done > idle > released', () => {
@@ -654,12 +666,15 @@ describe('ChatsPanel', () => {
       const rows = [...section.querySelectorAll('[data-workflow]')] as HTMLElement[]
       expect(rows.map(r => r.getAttribute('data-workflow'))).toEqual(['run-live', 'run-ok', 'run-bad', 'run-cut'])
       expect(rows.map(r => r.querySelector('[data-dot]')?.getAttribute('data-dot'))).toEqual(['ongoing', 'done', 'error', 'warning'])
+      expect(rows.map(r => r.querySelector('[data-panel-card]')?.getAttribute('data-state'))).toEqual(['running', 'none', 'error', 'warn'])
+      expect(rows.every(r => r.querySelector('[data-icon="chevron-down"]') !== null)).toBe(true)
       expect(rows[0]?.textContent).toBe('dual_review · independent已运行 3分12秒')
-      expect(rows[1]?.textContent).toBe('chain20 分钟前')
+      expect(rows[1]?.textContent).toBe(`chain${formatTurnTime(t, { startedAt: NOW - 30 * 60_000, endedAt: NOW - 20 * 60_000 }, NOW)}`)
+      expect(rows[1]?.textContent).toContain('10分0秒')
       expect((rows[2]?.querySelector('button') as HTMLElement).getAttribute('title')).toBe('失败: step independent: every role failed')
-      // The block sits after the active chats and before the released group.
+      // The block sits before the active chats (D47 authoritative order: ③ Workflows → ④a Active chats).
       const order = [...container.querySelectorAll('[data-chat-id], [data-workflows]')].map(el => el.hasAttribute('data-workflows') ? 'workflows' : 'chat')
-      expect(order).toEqual(['chat', 'workflows'])
+      expect(order).toEqual(['workflows', 'chat'])
     })
 
     it('expands a row into steps and members, and a member opens its chat detail tab', () => {
@@ -852,10 +867,16 @@ describe('ChatsPanel', () => {
     expect(screen.getByRole('button', { name: 'Released (1) · Collapse' })).toBeTruthy()
   })
 
+  const pickCardAction = (label: string): void => {
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: label }))
+  }
+
   it('releases directly, without a confirmation dialog', async () => {
     const p = props(ready([chat()]))
     render(<ChatsPanel {...p} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '释放进程' })) })
     expect(p.close).toHaveBeenCalledWith(`chat-${UUID_A}`)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
@@ -863,14 +884,14 @@ describe('ChatsPanel', () => {
   it('asks before releasing a chat with a turn in flight; cancel keeps it, confirm releases', async () => {
     const p = props(ready([chat({ inFlight: { chatId: `chat-${UUID_A}`, message: 'm', startedAt: NOW - 5_000 } })]))
     render(<ChatsPanel {...p} />)
-    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    pickCardAction('释放进程')
     const dialog = screen.getByRole('dialog', { name: '释放 chat-a1b2c3d4?' })
     expect(within(dialog).getByText('将中止正在运行的本轮任务并释放进程(历史记录保留,后续仍可重连)。')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(p.close).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+    pickCardAction('释放进程')
     await act(async () => {
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '释放' }))
     })
@@ -895,14 +916,14 @@ describe('ChatsPanel', () => {
   it('asks before deleting, naming the chat; cancel deletes nothing', async () => {
     const p = props(ready([chat()]))
     render(<ChatsPanel {...p} />)
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    pickCardAction('删除记录…')
     const dialog = screen.getByRole('dialog', { name: '删除 chat-a1b2c3d4?' })
     expect(within(dialog).getByText('将释放进程并删除本地记录,之后无法重连该会话。')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(p.purge).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    pickCardAction('删除记录…')
     await act(async () => {
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }))
     })
@@ -913,10 +934,41 @@ describe('ChatsPanel', () => {
   it('shows a failed command and calls refresh from the header button', async () => {
     const p = props(ready([chat()]), { close: vi.fn(async () => { throw new Error('acp-resume/unknown-chat: gone') }) })
     render(<ChatsPanel {...p} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '释放进程' })) })
     expect(screen.getByRole('alert').textContent).toBe('操作失败:acp-resume/unknown-chat: gone')
     fireEvent.click(screen.getByRole('button', { name: '刷新会话' }))
     expect(p.refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('orders sections by attention (header → workflows → active-chats → backend → released-chats) and titles standalone chats "活跃会话" (D47 Step 4)', () => {
+    const view = { status: 'ready', checking: false, data: backendFixture } as const
+    const backendStatus = { getSnapshot: () => view, subscribe: () => () => {}, check: vi.fn(async () => {}) }
+    const wfSnapshot: WorkflowsSnapshot = {
+      status: 'ready',
+      fetchedAt: NOW,
+      running: [{ runId: 'r1', template: 'dual_review', startedAt: NOW - 10_000, currentStep: 'review', steps: [] }],
+      recent: [],
+    }
+    const { container, rerender } = render(<ChatsPanel {...props(ready([
+      chat({ chatId: 'chat-active', active: true, inFlight: { chatId: 'chat-active', message: '## Fix `bug` with **care**', startedAt: NOW - 5_000 } }),
+      chat({ chatId: 'chat-rel', active: false, attention: 'error' }),
+    ]), {
+      backendStatus,
+      workflowsFor: () => ({ getSnapshot: () => wfSnapshot, subscribe: () => () => {} }),
+    })} />)
+    const sectionOrder = [...container.querySelectorAll('[data-section]')].map(el => el.getAttribute('data-section'))
+    expect(sectionOrder).toEqual(['header', 'workflows', 'active-chats', 'backend', 'released-chats'])
+    // Without team roles, active section heading reads "活跃会话" (zh) / "Active chats" (en).
+    const activeSection = container.querySelector('[data-section="active-chats"]') as HTMLElement
+    expect(within(activeSection).getByRole('heading', { level: 3 }).textContent).toBe(zh.activeChatsHeading)
+    // PanelCard left rail + cleaned Markdown preview on active chat card.
+    const activeCard = container.querySelector('[data-chat-id="chat-active"] [data-panel-card]') as HTMLElement
+    expect(activeCard.getAttribute('data-state')).toBe('running')
+    expect(activeCard.querySelector('[data-preview]')?.textContent).toBe('Fix bug with care')
+
+    rerender(<ChatsPanel {...props(ready([chat({ chatId: 'chat-active', active: true })]), { t: translator(en) })} />)
+    expect(within(container.querySelector('[data-section="active-chats"]') as HTMLElement).getByRole('heading', { level: 3 }).textContent).toBe(en.activeChatsHeading)
   })
 })
 
@@ -1391,7 +1443,8 @@ describe('apply (client wiring)', () => {
     expect(rpc.calls).toContainEqual(['/api', 'acpResume/backends', { args: {} }])
     expect(rpc.calls.some(([, endpoint]) => endpoint === 'acpResume/checkBackends')).toBe(false)
     rows = []
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '删除记录…' }))
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
     expect(await screen.findByText('暂无 ACP 会话')).toBeTruthy()
     expect(rpc.calls).toContainEqual(['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_A}`, sessionId: TEST_SESSION } }])
@@ -1471,9 +1524,13 @@ describe('ChatsPanel card click (D18)', () => {
     const info = tabInfo()
     const p = props(ready([chat()]), { useTabInfo: info.hook })
     render(<ChatsPanel {...p} />)
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' })) })
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '释放进程' }))
+    })
     expect(p.close).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
+    fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '删除记录…' }))
     expect(screen.getByRole('dialog')).toBeTruthy()
     expect(info.openResource).not.toHaveBeenCalled()
   })
@@ -2186,9 +2243,13 @@ describe('D44 per-chat controls', () => {
     try {
       renderBody(list)
       fireEvent.click(await screen.findByRole('button', { name: /仅此会话设置/ }))
+      expect(document.querySelector('[data-chat-settings] [data-disclosure-row]')).toBeTruthy()
+      expect(document.querySelector('[data-chat-settings] [data-icon="sliders"]')).toBeTruthy()
+      expect(document.querySelector('[data-chat-settings]')?.textContent).not.toMatch(/[▾▴]/)
       fireEvent.change(await screen.findByRole('combobox', { name: '模型' }), { target: { value: sonnet } })
       expect(await screen.findByText(sonnet + ' · high')).toBeTruthy()
-      fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+      fireEvent.click(screen.getByRole('button', { name: '更多操作' }))
+      fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: '释放进程' }))
       expect(await screen.findByText(zh.restartForChatActions)).toBeTruthy()
       expect(call.mock.calls.filter(args => args[1] === 'acpResume/close')).toHaveLength(1)
     } finally { cleanup(); await ctx.fiber.dispose() }

@@ -28,18 +28,26 @@ import { useCallback, useEffect, useId, useState, useSyncExternalStore, type CSS
 import {
   Button,
   DisclosureRow,
+  IconArchiveOutlineRegular,
+  IconChevronDownOutlineRegular,
+  IconChevronUpOutlineRegular,
+  IconEllipsisOutlineRegular,
   IconRefreshOutlineRegular,
   IconSettingsOutlineRegular,
   IconWarningOutlineRegular,
+  Menu,
   Modal,
   PanelCard,
+  SectionHeading,
   StateDot,
   Tag,
+  cleanPreview,
+  type MenuEntry,
   type RailState,
   type StateDotState,
   type TagTone,
 } from './panel-chrome.tsx'
-import { formatHybridTime, formatTurnTimeTitle } from './panel-time.ts'
+import { formatHybridTime, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { BackendStatus } from '../backend-status.ts'
 import { ProfileSettings } from './ProfileSettings.tsx'
 import { ChatSettings } from './ChatSettings.tsx'
@@ -95,15 +103,21 @@ const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
 const styles = {
-  root: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, height: '100%', overflowY: 'auto', boxSizing: 'border-box' },
+  root: { display: 'flex', flexDirection: 'column', gap: 14, padding: 12, height: '100%', overflowY: 'auto', boxSizing: 'border-box' },
+  headerWrap: { display: 'flex', flexDirection: 'column', gap: 4 },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   heading: { margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   notice: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
   error: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   empty: { display: 'flex', flexDirection: 'column', gap: 4, padding: '24px 4px', textAlign: 'center' },
-  card: { cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4, padding: 10, borderRadius: 12, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
+  section: { display: 'flex', flexDirection: 'column', gap: 8 },
+  cardItem: { listStyle: 'none' },
+  card: { cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' },
   nameButton: { flex: 1, minWidth: 0, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' },
-  cardHead: { display: 'flex', alignItems: 'center', gap: 6 },
+  cardHead: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
+  cardMeta: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '2px 8px', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
+  cardPreview: { fontSize: 12, lineHeight: 1.4, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  menuWrap: { flex: 'none', display: 'inline-flex', alignItems: 'center' },
   name: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   id: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
   dot: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, flex: 'none' },
@@ -137,10 +151,10 @@ const styles = {
   },
   backendAlertText: { flex: 1, minWidth: 0, overflowWrap: 'anywhere' },
   usage: { display: 'flex', flexDirection: 'column', gap: 2 },
-  wfSection: { display: 'flex', flexDirection: 'column', gap: 6 },
-  wfHeading: { margin: 0, fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
-  wfRow: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-2)' },
-  wfHead: { display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer', minWidth: 0 },
+  wfSection: { display: 'flex', flexDirection: 'column', gap: 8 },
+  wfRow: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' },
+  wfHead: { display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer', minWidth: 0 },
+  wfChevron: { flex: 'none', display: 'inline-flex', alignItems: 'center', color: 'var(--dsw-alias-label-tertiary)' },
   wfSteps: { display: 'flex', flexDirection: 'column', gap: 4, margin: 0, paddingLeft: 20, listStyle: 'none' },
   wfStep: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
   wfStepId: { fontWeight: 600 },
@@ -569,12 +583,17 @@ function WorkflowSteps({ steps, running, onOpenChat, t }: { readonly steps: read
   )
 }
 
+/** Left 3px rail for a settled workflow run (D29 / D47). */
+const RUN_RAIL: Readonly<Record<'completed' | 'failed' | 'aborted' | 'interrupted', RailState>> = {
+  completed: 'none', failed: 'error', aborted: 'warn', interrupted: 'warn',
+}
+
 /**
- * The panel's workflow block (D29): heading with the running count, running
- * rows (spinner, `template · step`, live time), then up to five finished
- * rows (outcome dot, template, relative time). A click toggles a row's steps
- * and members; a member opens its chat's detail tab. Nothing renders when the
- * session has no workflow.
+ * The panel's workflow block (D29 / D47): heading with the running count,
+ * running rows first (blue rail, spinner, `template · step`, live time), then
+ * up to five finished rows (outcome rail & dot, template, hybrid time +
+ * settled duration, expand chevron). Nothing renders when the session has no
+ * workflow.
  */
 function WorkflowsSection({ source, onOpenChat, t }: { readonly source: Observable<WorkflowsSnapshot>; readonly onOpenChat: (chatId: string) => void; readonly t: PanelTranslate }): ReactNode {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
@@ -589,33 +608,40 @@ function WorkflowsSection({ source, onOpenChat, t }: { readonly source: Observab
       return next
     })
   }
-  const row = (runId: string, template: string, dot: ChatDotState, body: ReactNode, title: string | undefined, steps: readonly PanelWorkflowStep[], running: boolean): ReactNode => {
+  const row = (runId: string, template: string, dot: ChatDotState, rail: RailState, body: ReactNode, title: string | undefined, steps: readonly PanelWorkflowStep[], running: boolean): ReactNode => {
     const expanded = open.has(runId)
     return (
-      <li key={runId} style={styles.wfRow} data-workflow={runId}>
-        <button type="button" style={styles.wfHead} aria-expanded={expanded} title={title}
-          aria-label={t(expanded ? 'workflowCollapse' : 'workflowExpand', { template })} onClick={() => { toggle(runId) }}>
-          <ChatStateDot state={dot} />
-          {body}
-        </button>
-        {expanded ? <WorkflowSteps steps={steps} running={running} onOpenChat={onOpenChat} t={t} /> : null}
+      <li key={runId} style={styles.cardItem} data-workflow={runId}>
+        <PanelCard rail={rail} style={styles.wfRow}>
+          <button type="button" style={styles.wfHead} aria-expanded={expanded} title={title}
+            aria-label={t(expanded ? 'workflowCollapse' : 'workflowExpand', { template })} onClick={() => { toggle(runId) }}>
+            <ChatStateDot state={dot} />
+            {body}
+            <span style={styles.wfChevron} aria-hidden="true">
+              {expanded ? <IconChevronUpOutlineRegular size={12} /> : <IconChevronDownOutlineRegular size={12} />}
+            </span>
+          </button>
+          {expanded ? <WorkflowSteps steps={steps} running={running} onOpenChat={onOpenChat} t={t} /> : null}
+        </PanelCard>
       </li>
     )
   }
   return (
-    <section style={styles.wfSection} data-workflows>
-      <h3 style={styles.wfHeading}>{snapshot.running.length === 0 ? t('workflowsHeading') : t('workflowsRunning', { count: snapshot.running.length })}</h3>
+    <section style={styles.wfSection} data-workflows data-section="workflows">
+      <SectionHeading title={snapshot.running.length === 0 ? t('workflowsHeading') : t('workflowsRunning', { count: snapshot.running.length })} />
       <ul style={styles.list}>
-        {snapshot.running.map(run => row(run.runId, run.template, 'ongoing', (
+        {snapshot.running.map(run => row(run.runId, run.template, 'ongoing', 'running', (
           <>
             <span style={styles.name}>{run.currentStep === undefined ? run.template : `${run.template} · ${run.currentStep}`}</span>
             <LiveElapsed startedAt={run.startedAt} now={now} t={t} />
           </>
         ), undefined, run.steps, true))}
-        {snapshot.recent.map(run => row(run.runId, run.template, RUN_DOT[run.status], (
+        {snapshot.recent.map(run => row(run.runId, run.template, RUN_DOT[run.status], RUN_RAIL[run.status], (
           <>
             <span style={styles.name}>{run.template}</span>
-            <span style={styles.elapsed}>{relativeTime(t, run.endedAt ?? run.startedAt, now)}</span>
+            <span style={styles.elapsed} data-workflow-time="" title={formatTurnTimeTitle(t, { startedAt: run.startedAt, endedAt: run.endedAt }, now)}>
+              {formatTurnTime(t, { startedAt: run.startedAt, endedAt: run.endedAt }, now)}
+            </span>
           </>
         ), run.error === undefined ? t(RUN_STATUS_COPY[run.status]) : `${t(RUN_STATUS_COPY[run.status])}: ${run.error}`, run.steps, false))}
       </ul>
@@ -637,34 +663,83 @@ function rowHint(t: PanelTranslate, chat: PanelChat, now: number): string {
   return summary === undefined ? status : `${summary}\n${status}`
 }
 
+/** Left 3px rail for a chat card (D30 / D47). */
+function chatRail(chat: Pick<PanelChat, 'inFlight' | 'attention'>): RailState {
+  if (chat.inFlight !== undefined) return 'running'
+  if (chat.attention === 'error') return 'error'
+  if (chat.attention === 'warning') return 'warn'
+  return 'none'
+}
+
 /**
- * One chat row: state dot, name (label, else first-turn title, else short id;
- * one line with an ellipsis), backend badge, and the running time while a turn
- * is in flight. Everything else sits in the hover text and the detail tab.
+ * One chat card (D47 three-layer layout): PanelCard with optional left status
+ * rail, main row (state dot, full-width name, multi-backend tag, live or hybrid
+ * time, `⋯` Menu for release/delete), compact secondary row (model/effort +
+ * cleaned preview), and optional collapsible ChatSettings.
  */
 function ChatCard({ chat, settings, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
+  const [menuOpen, setMenuOpen] = useState(false)
   const short = shortChatId(chat.chatId)
   const name = chat.label ?? chat.title ?? short
+  const modelText = [chat.currentModel, chat.currentEffort].filter(Boolean).join(' · ')
+  const previewSource = chat.inFlight !== undefined
+    ? chat.inFlight.message
+    : chat.label !== undefined && chat.title !== undefined
+      ? chat.title
+      : undefined
+  const previewText = previewSource === undefined ? '' : cleanPreview(previewSource, { maxLines: 1, maxChars: 120 })
+  const menuItems: MenuEntry[] = [
+    { id: 'release', label: t('releaseProcess'), disabled: pending || !chat.active },
+    { type: 'separator', id: 'sep' },
+    { id: 'delete', label: t('deleteRecord'), disabled: pending, danger: true },
+  ]
   return (
-    <li style={styles.card} data-chat-id={chat.chatId} title={rowHint(t, chat, now)} onClick={() => { onOpen(chat) }}>
-      <div style={styles.cardHead}>
-        <ChatStateDot state={chatDotState(chat)} />
-        {/* The click is handled by the card; this button is the keyboard and screen-reader way in. */}
-        <button type="button" style={styles.nameButton} aria-label={t('viewDetail', { chatId: short })}>
-          <span style={styles.name} data-name>
-            {name}
-            {name === short ? null : <span style={styles.id}> {short}</span>}
-          </span>
-        </button>
-        {(chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? <Tag tone="neutral">{t('backendBadge', { name: chat.backendDisplay ?? chat.backend })}</Tag> : null}
-        {chat.inFlight === undefined ? null : <LiveElapsed startedAt={chat.inFlight.startedAt} now={now} t={t} />}
-        <Button size="sm" variant="ghost" disabled={pending || !chat.active} aria-label={t('releaseLabel', { chatId: short })}
-          onClick={(event: MouseEvent) => { event.stopPropagation(); onRelease(chat) }}>{t('release')}</Button>
-        <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}
-          onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
-      </div>
-      {chat.currentModel || chat.currentEffort ? <div>{[chat.currentModel, chat.currentEffort].filter(Boolean).join(' · ')}</div> : null}
-      {settings && <ChatSettings key={chat.connectionId ?? 'released'} chat={chat} actions={settings} t={t} />}
+    <li style={styles.cardItem} data-chat-id={chat.chatId} title={rowHint(t, chat, now)} onClick={() => { onOpen(chat) }}>
+      <PanelCard rail={chatRail(chat)} style={styles.card}>
+        <div style={styles.cardHead}>
+          <ChatStateDot state={chatDotState(chat)} />
+          {/* The click is handled by the card; this button is the keyboard and screen-reader way in. */}
+          <button type="button" style={styles.nameButton} aria-label={t('viewDetail', { chatId: short })}>
+            <span style={styles.name} data-name>{name}</span>
+          </button>
+          {(chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? <Tag tone="neutral">{t('backendBadge', { name: chat.backendDisplay ?? chat.backend })}</Tag> : null}
+          {chat.inFlight !== undefined
+            ? <LiveElapsed startedAt={chat.inFlight.startedAt} now={now} t={t} />
+            : <span style={styles.elapsed} data-time="" title={formatTurnTimeTitle(t, { at: chat.lastActive }, now)}>{formatHybridTime(t, chat.lastActive, now)}</span>}
+          <div style={styles.menuWrap} onClick={(event: MouseEvent) => { event.stopPropagation() }}>
+            <Menu
+              open={menuOpen}
+              align="end"
+              onClose={() => { setMenuOpen(false) }}
+              items={menuItems}
+              onSelect={(id) => {
+                setMenuOpen(false)
+                if (id === 'release') onRelease(chat)
+                else if (id === 'delete') onDelete(chat)
+              }}
+              anchor={(
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  icon={<IconEllipsisOutlineRegular size={14} />}
+                  aria-label={t('moreActions')}
+                  aria-expanded={menuOpen}
+                  onClick={(event: MouseEvent) => { event.stopPropagation(); setMenuOpen(open => !open) }}
+                />
+              )}
+            />
+          </div>
+        </div>
+        {previewText !== '' ? <div style={styles.cardPreview} data-preview="">{previewText}</div> : null}
+        {modelText !== '' || chat.turnCount !== undefined ? (
+          <div style={styles.cardMeta}>
+            {modelText !== '' ? <span data-model="">{modelText}</span> : null}
+            {chat.turnCount !== undefined ? <span data-turns="">{t('turns', { count: chat.turnCount })}</span> : null}
+          </div>
+        ) : null}
+        {settings && <ChatSettings key={chat.connectionId ?? 'released'} chat={chat} actions={settings} t={t} />}
+      </PanelCard>
     </li>
   )
 }
@@ -693,6 +768,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
   const [confirming, setConfirming] = useState<{ readonly chat: PanelChat; readonly kind: 'delete' | 'release' } | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [releasedOpen, setReleasedOpen] = useState(false)
+  const toggleReleased = useCallback(() => { setReleasedOpen(open => !open) }, [])
   const [activeOpen, setActiveOpenState] = useState(activeExpanded)
   const setActiveOpen = (open: boolean): void => {
     activeExpanded = open
@@ -746,19 +822,32 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
       : (backendView.status === 'ready' && backendView.data?.dispatchEnabled === false)
         ? 'no-dispatch'
         : undefined
+  const backendSection = backendStatus === undefined || backendView === undefined
+    ? <UsageLines usage={snapshot.usage} now={now} t={t} />
+    : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} usage={snapshot.usage} now={now} expanded={backendExpanded} onToggle={toggleBackend} t={t} />
   return (
     <section style={styles.root} aria-label={t('title')}>
-      <div style={styles.header}>
-        <h2 style={styles.heading}>{t('title')}</h2>
-        <div style={styles.controls}>
-          <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular size={14} />}
-            aria-label={t('refresh')} title={t('refresh')} onClick={() => { refresh() }} />
-          {profileForms && (
-            <Button size="sm" variant="ghost" icon={<IconSettingsOutlineRegular size={14} />}
-              aria-label={t('profileSettings')} title={t('profileSettings')} aria-expanded={showSettings}
-              onClick={() => { setShowSettings(open => !open) }} />
-          )}
+      <div style={styles.headerWrap} data-section="header">
+        <div style={styles.header}>
+          <h2 style={styles.heading}>{t('title')}</h2>
+          <div style={styles.controls}>
+            <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular size={14} />}
+              aria-label={t('refresh')} title={t('refresh')} onClick={() => { refresh() }} />
+            {profileForms && (
+              <Button size="sm" variant="ghost" icon={<IconSettingsOutlineRegular size={14} />}
+                aria-label={t('profileSettings')} title={t('profileSettings')} aria-expanded={showSettings}
+                onClick={() => { setShowSettings(open => !open) }} />
+            )}
+          </div>
         </div>
+        {snapshot.status !== 'loading' && visible.length > 0 ? (
+          <>
+            <p style={styles.countNote} data-count="mine">{t('countMine', { count: visible.length, total: snapshot.chats.length })}</p>
+            <p style={styles.countNote} data-count="states">
+              {t('statsLine', { running: runningCount, idle: activeChats.length - runningCount, released: releasedChats.length })}
+            </p>
+          </>
+        ) : null}
       </div>
       {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => b.id)}
         t={t} onSaved={path => { if (path === 'workflow') void features.refresh() }} />}
@@ -773,47 +862,62 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
           <span style={styles.backendAlertText}>{t(backendAlert === 'check-failed' ? 'backendAlertCheckFailed' : 'backendAlertNoDispatch')}</span>
         </button>
       )}
-      {backendStatus === undefined || backendView === undefined
-        ? <UsageLines usage={snapshot.usage} now={now} t={t} />
-        : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} usage={snapshot.usage} now={now} expanded={backendExpanded} onToggle={toggleBackend} t={t} />}
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}
       {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
       {snapshot.status === 'loading'
-        ? <p style={styles.notice}>{t('loading')}</p>
+        ? (
+          <>
+            {backendSection}
+            <p style={styles.notice}>{t('loading')}</p>
+          </>
+        )
         : visible.length === 0
           ? (
-            <div style={styles.empty} data-empty="session">
-              <p style={styles.heading}>{snapshot.chats.length === 0 ? t('emptyTitle') : t('countMine', { count: 0, total: snapshot.chats.length })}</p>
-              {backendPending ? null : <p style={styles.notice}>{backendView?.data?.dispatchEnabled === false
-                ? t('backendEmptyChatHint')
-                : snapshot.chats.length > 0 ? t('emptySessionHint')
-                  : config ? t('emptyHint', { tool: config.startToolName }) : t('emptyGenericHint')}</p>}
-            </div>
+            <>
+              {backendSection}
+              <div style={styles.empty} data-empty="session">
+                <p style={styles.heading}>{snapshot.chats.length === 0 ? t('emptyTitle') : t('countMine', { count: 0, total: snapshot.chats.length })}</p>
+                {backendPending ? null : <p style={styles.notice}>{backendView?.data?.dispatchEnabled === false
+                  ? t('backendEmptyChatHint')
+                  : snapshot.chats.length > 0 ? t('emptySessionHint')
+                    : config ? t('emptyHint', { tool: config.startToolName }) : t('emptyGenericHint')}</p>}
+              </div>
+            </>
           )
           : (
             <>
-              <p style={styles.countNote} data-count="mine">{t('countMine', { count: visible.length, total: snapshot.chats.length })}</p>
-              <p style={styles.countNote} data-count="states">
-                {t('statsLine', { running: runningCount, idle: activeChats.length - runningCount, released: releasedChats.length })}
-              </p>
-              {activeChats.length === 0 ? null : cards(shownActive)}
-              {!foldable ? null : (
-                <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={activeOpen}
-                  onClick={() => { setActiveOpen(!activeOpen) }}>
-                  {activeOpen ? t('collapseActive') : t('showRest', { count: activeChats.length - ACTIVE_FOLD_SHOWN })}
-                </Button>
-              )}
+              {/* ② Team dispatch (Step 5 reserved) */}
               <WorkflowsSection source={workflowsFor?.(config?.workflowEnabled ?? true) ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
+              {activeChats.length === 0 ? null : (
+                <section style={styles.section} data-section="active-chats">
+                  <SectionHeading title={t('activeChatsHeading')} aside={t('chatCountShort', { count: activeChats.length })} />
+                  {cards(shownActive)}
+                  {!foldable ? null : (
+                    <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={activeOpen}
+                      onClick={() => { setActiveOpen(!activeOpen) }}>
+                      {activeOpen ? t('collapseActive') : t('showRest', { count: activeChats.length - ACTIVE_FOLD_SHOWN })}
+                    </Button>
+                  )}
+                </section>
+              )}
+              {backendSection}
               {releasedChats.length === 0 ? null : (
-                <>
-                  <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={releasedOpen}
-                    onClick={() => { setReleasedOpen(open => !open) }}>
-                    {t('releasedGroup', { count: releasedChats.length })} · {releasedOpen ? t('collapse') : t('expand')}
-                  </Button>
-                  {releasedOpen ? cards(releasedChats) : null}
-                </>
+                <section style={styles.section} data-section="released-chats">
+                  <DisclosureRow
+                    icon={<IconArchiveOutlineRegular size={14} />}
+                    title={t('releasedGroup', { count: releasedChats.length })}
+                    open={releasedOpen}
+                    expandable
+                    expandOnRowClick
+                    keepContentWhenOpen
+                    onToggle={toggleReleased}
+                    collapsedContent={<>{' · '}{releasedOpen ? t('collapse') : t('expand')}</>}
+                  >
+                    {cards(releasedChats)}
+                  </DisclosureRow>
+                </section>
               )}
             </>
           )}

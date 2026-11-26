@@ -13,8 +13,13 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Switch: ({ checked, onChange, label, disabled, title }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; title?: string }) =>
     <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} title={title} onClick={() => onChange(!checked)} />,
   DisclosureRow: () => null,
+  IconArchiveOutlineRegular: () => null,
+  IconChevronDownOutlineRegular: () => null,
+  IconChevronUpOutlineRegular: () => null,
+  IconEllipsisOutlineRegular: () => null,
   IconRefreshOutlineRegular: () => null,
   IconSettingsOutlineRegular: () => null,
+  IconSlidersTwoOutlineRegular: () => null,
   IconWarningOutlineRegular: () => null,
   MarkdownText: () => null,
   Menu: () => null,

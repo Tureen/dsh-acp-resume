@@ -256,6 +256,9 @@ export const zh = {
   startedAtTooltip: '开始于 {time}',
   backendAlertNoDispatch: '暂无就绪后端，无法派工。点击展开「后端状态」查看原因。',
   backendAlertCheckFailed: '后端检测未完成，点击展开「后端状态」重试。',
+  activeChatsHeading: '活跃会话',
+  otherActiveChatsHeading: '其他活跃会话',
+  chatCountShort: '{count} 条',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -510,6 +513,9 @@ export const en: Record<PanelCopyKey, string> = {
   startedAtTooltip: 'Started {time}',
   backendAlertNoDispatch: 'No backend is ready for dispatch. Open Backend status to see why.',
   backendAlertCheckFailed: 'Backend check did not finish. Open Backend status to retry.',
+  activeChatsHeading: 'Active chats',
+  otherActiveChatsHeading: 'Other active chats',
+  chatCountShort: '{count}',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */
