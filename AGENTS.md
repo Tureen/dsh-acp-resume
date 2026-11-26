@@ -81,7 +81,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 635 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 45 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 20 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 16 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 636 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 45 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 20 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

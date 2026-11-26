@@ -126,6 +126,25 @@ it('ignores the deprecated skill flag in both directions', () => {
   expect(preset({ readOnlyFs: true, skill: false })).toEqual(preset({ readOnlyFs: true }))
 })
 
+it('warns when the deprecated skill flag is set without readOnlyFs, and stays silent otherwise', async () => {
+  const deprecated = 'dispatcherTools.skill is deprecated and has no effect'
+  const load = async (dispatcherTools: Record<string, unknown>) => {
+    const { ctx } = await host()
+    const warnings: unknown[] = []
+    ctx.logger.exporter({ export(message) { if (message.type === 'warn') warnings.push(...message.args) } })
+    await ctx.plugin(dispatcher, { dispatcherTools })
+    await ctx.loader.await()
+    return warnings.filter(warning => String(warning).includes(deprecated))
+  }
+  // skill:true alone must not be dropped silently: it asks for a capability only readOnlyFs grants now.
+  expect(await load({ skill: true })).toHaveLength(1)
+  expect(await load({ skill: true, readOnlyFs: false })).toHaveLength(1)
+  // Already covered by readOnlyFs, or not written at all: nothing to tell the user.
+  expect(await load({ skill: true, readOnlyFs: true })).toHaveLength(0)
+  expect(await load({ readOnlyFs: true })).toHaveLength(0)
+  expect(await load({})).toHaveLength(0)
+})
+
 it('resolves the installed preset skills from the Loader baseUrl and loads dsh-doc through the Agent skill tool', async () => {
   const { ctx, dir, skillFilesystemApply } = await host()
   const presetDir = dirname(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-agent-preset/package.json'))
