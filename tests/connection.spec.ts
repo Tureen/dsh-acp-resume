@@ -17,7 +17,7 @@ import type { AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { Context } from '@deepseek-ai/cordis'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import { AcpConnectionError, isLoadSessionMissing, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpRunSpec } from '../src/connection.ts'
+import { AcpConnectionError, isLoadSessionMissing, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpSessionSpec } from '../src/connection.ts'
 import { userQuestionPermissionResolver } from '../src/permission-request.ts'
 import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -34,9 +34,9 @@ function tempDir(prefix = 'acp-resume-conn-'): string {
   return dir
 }
 
-function makeSpec(env: Record<string, string> = {}, cwd?: string, overrides: Partial<AcpRunSpec> = {}): { spec: AcpRunSpec; dir: string } {
+function makeSpec(env: Record<string, string> = {}, cwd?: string, overrides: Partial<AcpSessionSpec> = {}): { spec: AcpSessionSpec; dir: string } {
   const dir = cwd ?? tempDir()
-  const spec: AcpRunSpec = {
+  const spec: AcpSessionSpec = {
     command: process.execPath,
     args: [mockServer],
     cwd: dir,
@@ -50,7 +50,7 @@ function makeSpec(env: Record<string, string> = {}, cwd?: string, overrides: Par
   return { spec, dir }
 }
 
-async function open(spec: AcpRunSpec, mode: Parameters<typeof openAcpConnection>[1] = { mode: 'new' }): Promise<AcpConnection> {
+async function open(spec: AcpSessionSpec, mode: Parameters<typeof openAcpConnection>[1] = { mode: 'new' }): Promise<AcpConnection> {
   const conn = await openAcpConnection(spec, mode)
   connections.push(conn)
   return conn
@@ -610,3 +610,37 @@ describe('sessionEffort (session/set_config_option effortLevel)', () => {
   })
 })
 
+
+describe('agy session effort (D40)', () => {
+  it('sets thought_level once after selecting the model on both new and load', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'options.log')
+    const env = { MOCK_SESSION_STORE: join(dir, 'sessions.json'), MOCK_SET_MODEL_FILE: log, MOCK_SET_CONFIG_FILE: log, MOCK_EFFORT_OPTION_ID: 'thought_level' }
+    const warnings: string[] = []
+    const { spec } = makeSpec(env, dir, { onError: e => { warnings.push(e.message) } })
+    const settings = { ...spec, sessionModel: 'gemini-4-neon', sessionEffort: 'high', effortOptionId: 'thought_level' } as const
+    const first = await open(settings)
+    const sid = first.remoteSessionId
+    await first.dispose()
+    expect((await open(settings, { mode: 'load', sessionId: sid })).remoteSessionId).toBe(sid)
+    const expected = [`set_model ${sid} gemini-4-neon`, `set_config_option ${sid} thought_level high`]
+    expect(lines(log)).toEqual([...expected, ...expected])
+    expect(warnings).toEqual([])
+  })
+
+  it.each([
+    ['unchanged', { MOCK_EFFORT_OPTION_ID: 'thought_level', MOCK_EFFORT_LAG: '1' }, 'thought_level stayed medium'],
+    ['absent', { MOCK_EFFORT_OPTION_ID: 'thought_level', MOCK_EFFORT_ABSENT: '1' }, 'lists no thought_level option'],
+    ['rejected', { MOCK_SET_CONFIG_FAIL: '1' }, 'failed:'],
+    ['unverifiable', {}, 'the reply contains no configOptions'],
+  ] as const)('warns once without retrying or blocking for an %s option response', async (_kind, env, reason) => {
+    const log = join(tempDir(), 'options.log')
+    const warnings: string[] = []
+    const { spec } = makeSpec({ ...env, MOCK_SET_CONFIG_FILE: log }, undefined, { onError: e => { warnings.push(e.message) } })
+    const conn = await open({ ...spec, sessionEffort: 'high', effortOptionId: 'thought_level' })
+    expect(lines(log)).toEqual([`set_config_option ${conn.remoteSessionId} thought_level high`])
+    expect(warnings).toEqual([expect.stringContaining('session/set_config_option(thought_level=high)')])
+    expect(warnings[0]).toContain(reason)
+    expect((await conn.prompt(ask('still available'), live())).stopReason).toBe('completed')
+  })
+})

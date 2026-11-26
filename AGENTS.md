@@ -14,7 +14,7 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 
 ```
 src/
-  index.ts       插件入口:Config(全字段见 README「配置」;`roles` 默认 true、`workflow` 默认 false,`roles: false` + `workflow: true` 加载即报错,D33)+ provider 与工具注册
+  index.ts       插件入口:Config(全字段见 README「配置」;`roles` 默认 true、`workflow` 默认 false,`roles: false` + `workflow: true` 加载即报错,D33)+ provider 与工具注册；按命令识别 ACP 强度项并校验档位(D40)
   backend-compatibility.ts D31:发布的 CLI 版本范围；`pnpm check:compatibility` 校验生成文档
   backend-status.ts / backend-readiness.ts / backend-verification.ts D31:共享状态、启动版本探测、自动无会话验证与派工准入
   command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
@@ -22,7 +22,7 @@ src/
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
   connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose;
                  `modelSelect: session` 时开会话后应用 sessionModel(set_model,回退 set_config_option(model))
-                 与 sessionEffort(set_config_option(effortLevel),按回复确认并有限重试,D34)
+                 与 sessionEffort：Kiro effortLevel 核对并有限重试(D34)，agy thought_level 新建/重连各设一次并核对(D40)
   codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
   connection-codex.ts Codex app-server 私有协议连接层(D25;与 AcpConnection 同形状,自带 JSON-RPC 行传输,不用 ACP SDK)
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
@@ -81,7 +81,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 636 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 45 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 20 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 643 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 50 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

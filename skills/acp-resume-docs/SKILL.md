@@ -19,6 +19,7 @@ description: 用户询问 dsh-acp-resume 怎么配置、怎么派工和续聊、
 - 独立行 `acp-dispatcher-settings` 的 `config.dispatcherTools` 有六项。默认 `readOnlyFs: false`；`web: true`、`present: true`、`todo: true`、`askUser: true`、`compaction: true`。开启只读文件也开启 skill 加载。
 - 同一行的 `config.dispatcherPrompt.extraRules` 默认空，非空文字在自带规则后追加；`overrideRules: true` 需要非空文字，只替换调度流程，保留身份和工具指引。手改 profile 后重启 DSH，在新会话选模式。
 - 工作区角色定义放在 `.agents/acp-team.yml`。默认 `roles: true`、`workflow: false`。先确认任务目标的绝对目录，再建 chat；追问用原 chatId，后台 job 完成通知到达后用 job_output 收结果。
+- agy 的持久会话可设 `modelSelect: session`、`effort: high`。agy 的 `thought_level` 支持 low/medium/high/xhigh，实际档位随模型而异；Kiro 另支持 max，Codex 用自己的每轮强度。
 
 ## 常见报错
 

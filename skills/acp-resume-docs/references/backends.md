@@ -6,7 +6,7 @@
 |---|---|---|
 | Kiro | kiro-cli acp。默认 v3。持久会话用 modelSelect: session，在建会话和重连时应用模型与 effortLevel；v2 可接受 --model 和 --effort。 | v3 拒绝这两个启动旗标，检查用户 args。强度限 low、medium、high、xhigh、max，各模型可能更窄；不支持某档会告警。可恢复，支持协商后的插话。 |
 | Codex | protocol: codex 走 codex app-server。显式模型优先，否则标准 CLI 验证用户已有模型；没有用户模型时才选目录中唯一公布的、可用的文本默认模型。effort 随每轮 turn/start 传递。 | 自动项为 read-only / never / reject。账号或自定义包装器未必有可用默认模型。命令和文件审批可逐项确认，某些可选扩展审批不在兼容承诺内。 |
-| Antigravity | agy acp。手配通常置 agentEngine: none；要选模型用 modelSelect: session。强度编码在模型 ID 里，省略 effort。 | 自动项拒绝权限请求；显式可设 ask。握手通过后首次建会话仍可能要求登录。恢复能力不等于支持私有 steer。 |
+| Antigravity | agy acp。手配通常置 agentEngine: none；要选模型用 modelSelect: session。在此模式下可设 effort: high。1.5.13 使用 thought_level，配置可填 low、medium、high、xhigh；Gemini 4 Neon 有四档，Claude Sonnet 5.5 有前三档，Orchestrator (Neon) 无此项。新建与重连均先选模型，再设一次强度并核对回复，失败只告警。 | 自动项拒绝权限请求；显式可设 ask。握手通过后首次建会话仍可能要求登录。恢复能力不等于支持私有 steer。 |
 
 ## 命名后端的 12 个字段
 

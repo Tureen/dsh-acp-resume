@@ -868,6 +868,8 @@ Config 新增 `roles`(`z.boolean().default(true)`),与 `workflow` 分工如下:
 
 后果:kiro v3 可用 `modelSelect: session` + `model` + `effort` 同时钉模型与强度;`model` 缺省时强度作用于该账号的默认模型。新建会话的启动在强度未立即生效时最多多等约 1 秒。测试 591 → 597:engine.spec 3 例(session 模式经插件实际发 effortLevel 且不带 `--effort`;flag 模式与未设 effort 都不发;非法值加载报错且 Codex 的 `ultra` 不受影响),connection.spec 3 例(新建与重连各一次且在模型之后;回复显示旧值时重试到生效;选项缺席与请求失败只告警),engine helper 的 session 模式用例补 `--effort` 断言。
 
+修订（2026-11-26，0.6.1）：D34 的五档和初始化重试保留给 Kiro；agy 持久会话从 D40 起使用独立选项与四档校验。此前省略 agy effort 的说明仅适用于旧实现。
+
 ## D35 能力查询与客户端开关感知（2026-11-25，目标 0.5.0）
 
 rc.5 的浏览器 Loader 按客户端模块名建行，没有将宿主插件 Config 随行交给浏览器。面板需要区分宿主关闭持久会话、后端暂时不能派工和旧宿主缺少新方法。
@@ -924,3 +926,19 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - bundle 单独插入全局 `acp-resume-skill-filesystem` 行，只注入本包文档根，provider 名为 `acp-resume-docs`。关闭默认根扫描和目录监听；用 Loader 的 `baseUrl` 与 `createRequire` 运行时解析本包导出的 package.json，再取同级 skills 目录。标准模式和具备 skill 工具的 Dispatcher 均继承这个 provider。Dispatcher 的作用域 provider 继续负责用户根及官方 dsh-doc。
 - 入口自带配置位置、六项默认开关、调度规则追加与替换、常见故障分流，使一次加载即可处理高频问题。深层字段以当前安装的 Config、工作区解析器和工具 schema 为准，运行状态由当前宿主核对；参考页和 README 不能代替现场证据。
 - 门槛实测使用 rc.5 标准 preset 的原始组合、真实 Loader、skills 注册表、文件系统 provider 和加载工具。标准模式加全局行前后，11 个用户 skill 完整保留，新增文档来源 custom，官方 dsh-doc 仍在；两种会话均能加载全局文档。此项不代表完整桌面组合验收。
+
+## D40 agy 按模型设置会话思考强度（2026-11-26，0.6.1）
+
+在单独的 agy 1.5.13 ACP 子进程中验证，工作目录使用临时目录，全程未发 prompt。探针结束时显式发 session/close 并回收自建进程。
+
+| 实测条件 | 本机协议回复 |
+|---|---|
+| Gemini 4 Neon 新建后从 high 设为 xhigh | `session/set_config_option { configId: 'thought_level', value: 'xhigh', sessionId }` 返回 `result.configOptions`，其中 currentValue 变为 xhigh。立即发 3/3、等 300 ms 再发 3/3 均首次生效。 |
+| 设 max 或 probe-invalid-level | 均返回 -32602：`Thinking level "<值>" is not offered for model "Gemini 4 Neon"`。 |
+| 设 xhigh，关闭会话，新进程加载同一 sessionId | 首次 11 秒内无 load 回复；独立补测允许 EOF 收尾并延长读取时限，load 成功，thought_level.currentValue 为 high。实测边界为未发送业务消息的会话。 |
+| 使用旧配置项 effortLevel | -32602：`Unknown config option: effortLevel`。 |
+| 从 Gemini 4 Neon 切到 Claude Sonnet 5.5 / Orchestrator (Neon) | 前者只列 low、medium、high，high 成功；后者移除 thought_level，设 high 返回 -32602。Gemini 4 Neon 另提供 xhigh。 |
+
+配置阶段按 command 短名识别 agy（沿用后端探测的路径和平台后缀识别），ACP session 模式将 `effortOptionId` 与配置的强度一起放入后端连接规格。agy 拒绝四档以外的配置；其余 ACP 沿用 effortLevel 与五档。Codex 继续由 turn/start 传 effort，含 ultra 的配置不经过 ACP 校验。
+
+池在新建和成功重连后，都先应用配置的模型，再发一次 agy 强度请求，核对该项的 currentValue。没有选项、值未变、回复无可核对的选项表或请求失败均告警，保留连接；不猜档位、不循环重发。Kiro 保留 D34 的既有重试、空回复兼容及告警文字。此决策不改一次性委派或后端版本支持范围。

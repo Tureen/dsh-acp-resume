@@ -48,7 +48,7 @@ function hasFlag(args: readonly string[], flag: string): boolean {
 /**
  * How `model` and `effort` reach the agent: `--model` / `--effort` CLI flags, or,
  * for `'session'`, ACP calls after the session opens (`session/set_model`, falling
- * back to `session/set_config_option`; effort as `set_config_option(effortLevel)`).
+ * back to `session/set_config_option`; effort via the backend’s session config option).
  */
 export type ModelSelect = 'flag' | 'session'
 

@@ -72,6 +72,7 @@
  * - `MOCK_SET_CONFIG_FILE` — every received `session/set_config_option` appends
  *                        one line (`set_config_option <sessionId> <configId> <value>`);
  *                        with `MOCK_SET_CONFIG_FAIL=1` it then rejects.
+ * - `MOCK_EFFORT_OPTION_ID` — backend option name, defaults to effortLevel (Kiro); agy uses thought_level.
  * - `MOCK_EFFORT_LAG`  — `N`: an `effortLevel` set replies with `configOptions` (as kiro v3)
  *                        whose `effortLevel` stays `medium` for the first N sets of this
  *                        process, then shows the requested value.
@@ -413,13 +414,14 @@ agentApp.onRequest(
     const file = process.env.MOCK_SET_CONFIG_FILE
     if (file !== undefined) appendFileSync(file, `set_config_option ${params.sessionId} ${params.configId} ${params.value}\n`)
     if (process.env.MOCK_SET_CONFIG_FAIL === '1') return Promise.reject(new Error('mock: set_config_option rejected'))
-    if (params.configId === 'effortLevel') {
+    const effortOptionId = process.env.MOCK_EFFORT_OPTION_ID ?? 'effortLevel'
+    if (params.configId === effortOptionId) {
       if (process.env.MOCK_EFFORT_ABSENT === '1') return Promise.resolve({ configOptions: [{ id: 'model', currentValue: 'auto' }] })
       const lag = process.env.MOCK_EFFORT_LAG
-      if (lag !== undefined) {
+      if (lag !== undefined || effortOptionId === 'thought_level') {
         effortSets += 1
-        const current = effortSets > Number(lag) ? params.value : 'medium'
-        return Promise.resolve({ configOptions: [{ id: 'model', currentValue: 'm' }, { id: 'effortLevel', currentValue: current }] })
+        const current = effortSets > Number(lag ?? 0) ? params.value : 'medium'
+        return Promise.resolve({ configOptions: [{ id: 'model', currentValue: 'm' }, { id: effortOptionId, currentValue: current }] })
       }
     }
     return Promise.resolve({})

@@ -12,7 +12,7 @@
 | agentEngine | v3 | 可选 v1、v2、v3、none。非 Kiro 通常设 none，使插件停止追加引擎旗标；手写在 args 中的旗标仍在。 |
 | model | 未设 | 需要固定 ACP 模型时填写。省略时使用后端自身选择。 |
 | modelSelect | flag | flag 模式按需追加模型和强度旗标。session 模式在持久会话建立或恢复后设置；一次性委派没有池的会话级选择步骤。 |
-| effort | 未设 | flag 模式传 --effort；ACP session 模式允许 low、medium、high、xhigh、max，具体档位看模型。 |
+| effort | 未设 | flag 模式传 --effort；session 模式下 agy 配 thought_level（low、medium、high、xhigh），Kiro 配 effortLevel（另有 max）。模型可提供更少档位。 |
 | permission | reject | allow 自动答允，reject 拒绝，ask 逐次询问宿主用户；确认服务缺席或回答无效时取消。 |
 | env | 空对象 | 字符串键值，叠加到清洗后的子进程环境；按实际需要给路径或凭据。排障时避免输出凭据。 |
 | disposeEofGraceMs | 6000 | 关闭时等待 EOF 自然退出和冲洗数据的毫秒数。外部 agent 需要更长退出时间时调整。 |

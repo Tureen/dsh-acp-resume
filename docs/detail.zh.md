@@ -41,12 +41,12 @@
 - `allowUnverifiedBackends: true`：允许显式尝试自动发现的范围外 CLI，但不会把它加入自动选择。已配置后端的版本检查只告警；已有会话发送和重连不受检测状态影响。
 - `permission`：`allow` 自动允许、`reject` 自动拒绝、`ask` 将每次请求交给宿主用户确认。bundle 默认 `allow`；无确认服务或有效回答时 `ask` 会拒绝。
 - `agentEngine: none`：所用 agent 不接受 kiro 的 `--agent-engine` 参数时设置，避免追加该参数。
-- `model` / `effort`：kiro v2 可通过 CLI 旗标设置。kiro v3 的持久会话使用 `modelSelect: session`，在建会话或重连时设置强度，不追加 `--effort`。可填 `low`、`medium`、`high`、`xhigh`、`max`，具体档位随模型而异。agy 的强度由模型 ID 决定，请省略 `effort`。
+- `model` / `effort`：kiro v2 可通过 CLI 旗标设置。kiro v3 的持久会话使用 `modelSelect: session`，在建会话或重连时设置强度，不追加 `--effort`。可填 `low`、`medium`、`high`、`xhigh`、`max`，具体档位随模型而异。agy 在同一模式下接受前四档，经 `thought_level` 设置；例如 `effort: high`。
 
 ### 后端支持等级
 
 - **一等支持：kiro-cli。** 默认后端，支持 `_session/steer`、`--agent-engine v3`、跨进程 `session/load`。v3（默认）用 `modelSelect: session` + `model` 选模型、+ `effort` 选思考强度（都经 `session/set_config_option`；所选模型不支持该强度时只记告警）；不设 `modelSelect: session` 时直接设 model/effort 会追加 v3 拒绝的 CLI 旗标，导致启动失败。v2（遗留）才支持 `--model` / `--effort` 旗标。
-- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；可自动接入（使用 CLI 的模型设置，拒绝权限请求）；显式配置时应设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，任何情况都不要设 `effort`（已内嵌在模型 ID）；建议 `permission: ask`。
+- **一等支持：agy / Antigravity。** 支持 update 归一化、`session/set_model` 和跨进程 `session/load`；可自动接入（使用 CLI 的模型设置，拒绝权限请求）；显式配置时应设 `agentEngine: 'none'`；选模型用 `modelSelect: session` + `model`（经 `session/set_model`），不设 `modelSelect: session` 时不要设 `model`，会话模式可设 `effort: high`，新建和重连后各确认一次；建议 `permission: ask`。
 - **一等支持：Codex。** 走 `codex app-server` 私有协议（可自动接入；手动配置时用 `protocol: codex` 声明命名后端）：原生 steer、`thread/resume` 跨进程恢复、分项审批（`permission: ask` 逐次问用户）。可覆盖 `model`，也可使用 Codex 的默认模型；可设 `sandbox`、`approvalPolicy`、`effort`（`low` / `medium` / `high` / `xhigh` / `max` / `ultra`，`ultra` 仅部分模型）。Codex 模型清单来自 `codex app-server` 的 `model/list`。
 - **通用 ACP（Other）。** 适用于 opencode、gemini-cli 等标准 ACP CLI；必须设 `agentEngine: 'none'`。steer、loadSession、model/effort 是否可用取决于该 agent 的能力和 CLI 旗标支持。
 

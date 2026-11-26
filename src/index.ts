@@ -46,12 +46,13 @@ const FIBER_ACTIVE = 2 satisfies FiberState.ACTIVE
 export const name = 'acp-resume'
 
 /**
- * Values `effort` may take on an ACP backend with `modelSelect: 'session'`:
+ * Default ACP levels for session effort (Kiro). agy has a narrower option below:
  * kiro v3's `effortLevel` set (probe 2026-11-25). The agent accepts any value
  * without an error and keeps the old one, so the plugin rejects others at load.
  * Codex `effort` has its own set and is not checked against this one.
  */
 export const SESSION_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const AGY_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const
 export const inject = ['subagents', 'subprocess']
 
 /** Per-chat ACP backend settings added by D24. */
@@ -64,8 +65,7 @@ export interface BackendConfig {
   modelSelect?: ModelSelect
   /**
    * ACP with `modelSelect: 'flag'`: `--effort` flag. ACP with `'session'`:
-   * `session/set_config_option(effortLevel)` after open, one of
-   * {@link SESSION_EFFORT_LEVELS}. Codex: `effort` of every `turn/start`.
+   * set the backend's effort option after open (agy: thought_level; Kiro: effortLevel). Codex: `effort` of every `turn/start`.
    */
   effort?: string
   permission: PermissionPolicy
@@ -116,7 +116,7 @@ export interface Config {
    * and, right after `session/new` / `session/load`, calls `session/set_model`
    * (for agents such as agy that reject `--model`; on `-32601` or `-32603` it
    * falls back to `session/set_config_option`, kiro v3) and then
-   * `session/set_config_option(effortLevel)`. A failure is logged and does
+   * the backend's effort option via `session/set_config_option`. A failure is logged and does
    * not block the chat.
    */
   modelSelect?: ModelSelect
@@ -125,9 +125,8 @@ export interface Config {
    * `modelSelect: 'flag'` it is appended as `--effort <level>` (the accepted
    * set depends on the agent and model; if {@link args} already contains
    * `--effort`, that explicit choice wins). With `modelSelect: 'session'` it is
-   * set per session (kiro v3 `effortLevel`) and must be one of
-   * {@link SESSION_EFFORT_LEVELS}, checked at load because the agent ignores
-   * unknown values silently. Left unset by default (the model's own default).
+   * set per session (Kiro: effortLevel, agy: thought_level). Configuration
+   * validation admits low/medium/high/xhigh for agy and also max for Kiro. Left unset by default (the model's own default).
    * Applied on the next reconnect, not on a live process.
    */
   effort?: string
@@ -304,12 +303,12 @@ class AcpProvider implements SubagentProvider {
 }
 
 function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string, BackendSpec> {
-  const base = (backend: BackendConfig): Omit<AcpSessionSpec, 'cwd'> => ({
+  const base = (backend: BackendConfig, name: string = DEFAULT_BACKEND): Omit<AcpSessionSpec, 'cwd'> => ({
     command: backend.command,
     // Codex has no ACP engine/model/effort flags: its args are exactly the user's (default `app-server`).
     args: backend.protocol === 'codex' ? (backend.args.length === 0 ? ['app-server'] : backend.args) : buildChildArgs(backend.args, { engine: backend.agentEngine, ...(backend.model === undefined ? {} : { model: backend.model }), ...(backend.modelSelect === undefined ? {} : { modelSelect: backend.modelSelect }), ...(backend.effort === undefined ? {} : { effort: backend.effort }) }),
     ...(backend.modelSelect === 'session' && backend.model !== undefined && backend.model !== '' ? { sessionModel: backend.model } : {}),
-    ...(backend.protocol !== 'codex' && backend.modelSelect === 'session' && backend.effort !== undefined && backend.effort !== '' ? { sessionEffort: backend.effort } : {}),
+    ...sessionEffortSettings(name, backend),
     permission: backend.permission, env: { ...config.env, ...backend.env }, disposeEofGraceMs: config.disposeEofGraceMs, disposeGraceMs: config.disposeGraceMs,
     spawn: spec => ctx.subprocess.spawn(spec),
     onError: (error, stopReason) => { ctx.logger.warn(`acp-resume chat child failed (${stopReason}): ${error.message}`) },
@@ -317,11 +316,10 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.modelSelect === undefined ? {} : { modelSelect: config.modelSelect }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
   const named = Object.entries(config.backends ?? {})
   if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
-  for (const [name, backend] of [[DEFAULT_BACKEND, defaultBackend] as const, ...named]) assertSessionEffort(name, backend)
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
     name,
     {
-      name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value),
+      name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value, name),
       ...(value.protocol === 'codex' ? { protocol: 'codex' as const, codex: {
         ...(value.model?.trim() ? { model: value.model.trim() } : {}),
         ...(value.sandbox === undefined ? {} : { sandbox: value.sandbox }),
@@ -360,12 +358,16 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   return new Map(entries)
 }
 
-/** Reject a session-mode ACP `effort` outside {@link SESSION_EFFORT_LEVELS}; flag mode and Codex keep their own value sets. */
-function assertSessionEffort(name: string, backend: BackendConfig): void {
-  if (backend.protocol === 'codex' || backend.modelSelect !== 'session' || backend.effort === undefined || backend.effort === '') return
-  if ((SESSION_EFFORT_LEVELS as readonly string[]).includes(backend.effort)) return
-  const where = name === DEFAULT_BACKEND ? 'effort' : `backends.${name}.effort`
-  throw new Error(`acp-resume: ${where} ${JSON.stringify(backend.effort)} is not a session effort level; with modelSelect: session it must be one of ${SESSION_EFFORT_LEVELS.join(', ')}`)
+/** Validate only ACP session-mode effort and carry its wire option id to the pool. */
+function sessionEffortSettings(name: string, backend: BackendConfig): Pick<AcpSessionSpec, 'sessionEffort' | 'effortOptionId'> {
+  if (backend.protocol === 'codex' || backend.modelSelect !== 'session' || !backend.effort) return {}
+  const agy = commandKind(backend.command) === 'agy'
+  const levels: readonly string[] = agy ? AGY_EFFORT_LEVELS : SESSION_EFFORT_LEVELS
+  if (!levels.includes(backend.effort)) {
+    const where = name === DEFAULT_BACKEND ? 'effort' : `backends.${name}.effort`
+    throw new Error(`acp-resume: ${where} ${JSON.stringify(backend.effort)} is not a session effort level${agy ? ' for agy' : ''}; with modelSelect: session it must be one of ${levels.join(', ')}`)
+  }
+  return { sessionEffort: backend.effort, effortOptionId: agy ? 'thought_level' : 'effortLevel' }
 }
 
 function commandKind(command: string): 'kiro-cli' | 'agy' | 'codex' | undefined {

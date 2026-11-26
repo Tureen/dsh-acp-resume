@@ -39,7 +39,7 @@ dsh plugin --profile <name> add dsh-acp-resume
 | 后端 | 支持能力 |
 | --- | --- |
 | **kiro-cli**（默认） | 自带配置使用 `kiro-cli acp` 和 v3 引擎，支持跨进程恢复会话和在当前轮插话；可用 `modelSelect: session` + `effort` 指定思考强度（`low`、`medium`、`high`、`xhigh`、`max`）。 |
-| **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型，推理强度由模型 ID 决定。 |
+| **Antigravity**（agy） | 自动通过 `agy acp` 接入，支持恢复会话和按会话选择模型、思考强度（具体档位取决于模型）。 |
 | **Codex** | 通过私有 `codex app-server` 协议恢复会话、插话并逐项审批；支持自动接入，也可显式配置命名后端。 |
 
 插件默认开启 `discoverBackends`：启动时用 DSH 的 `PATH` 和显式配置路径检测 CLI，按[发布兼容表](docs/backend-compatibility.md)判断版本，并验证符合条件的内置后端。检测不会创建会话或发送提示词；CLI 自身可能联网。在 **右侧栏 → ACP 会话** 展开 **后端状态**，可查看版本、就绪情况和失败原因。升级 CLI、登录或更换默认模型后，可以直接点击同一行的 **重新检测后端**，无需展开或重启 DSH；不会删除会话、退出登录或修改配置。
@@ -63,9 +63,12 @@ dsh plugin --profile <name> add dsh-acp-resume
         args: [acp]
         agentEngine: none
         permission: ask
+        modelSelect: session
+        model: gemini-4-neon
+        effort: high
 ```
 
-如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`。kiro v3 的持久会话还可在此模式下设置 `effort`：建会话和重连时应用，不追加 `--effort` 启动旗标。可填 `low`、`medium`、`high`、`xhigh`、`max`，其他值会在加载时报配置错误。具体档位随模型而异，模型不支持所选档位时只记告警。agy 的强度写在模型 ID 里，请省略 `effort`。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
+如修改配置，请重启 DSH。要固定模型，kiro v3 和 agy 都需同时设置 `modelSelect: session` 和 `model`。kiro v3 的持久会话还可在此模式下设置 `effort`：建会话和重连时应用，不追加 `--effort` 启动旗标。可填 `low`、`medium`、`high`、`xhigh`、`max`，其他值会在加载时报配置错误。具体档位随模型而异，模型不支持所选档位时只记告警。agy 1.5.13 通过 `thought_level` 设置强度，可填 `low`、`medium`、`high`、`xhigh`。上例会在新建和重连时先选模型，再设置并核对一次 `high`；模型不提供该档时只告警。插件会自动使用 Codex 已有的用户级模型设置，或在未设置时验证 Codex 唯一明确公布的默认模型。没有可用默认时会明确提示，不会猜一个模型。
 
 ### 让模型在多个后端中选择
 

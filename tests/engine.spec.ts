@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -245,5 +245,46 @@ describe('session effort on ACP backends (kiro v3 effortLevel)', () => {
       .rejects.toThrow('acp-resume: backends.kiro.effort "High" is not a session effort level')
     const accepted = await (await host()).plugin(acp, { ...base, effort: 'ultra', backends: { codex: { command: 'codex', protocol: 'codex', model: 'gpt-x', modelSelect: 'session', effort: 'ultra' } } })
     cleanups.push(() => accepted.dispose())
+  })
+})
+
+describe('backend-specific session effort (D40)', () => {
+  it('selects thought_level from the command of a named backend, regardless of its alias', async () => {
+    const ctx = await host()
+    const dir = mkdtempSync(join(tmpdir(), 'acp-resume-agy-'))
+    dirs.push(dir)
+    const command = join(dir, process.platform === 'win32' ? 'agy.exe' : 'agy')
+    const log = join(dir, 'options.log')
+    const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+    const spy = vi.spyOn(ctx.subprocess, 'spawn').mockImplementation(spec =>
+      spawn(spec.argv[0] === command ? { ...spec, argv: [process.execPath, mockServer, ...spec.argv.slice(1)] } : spec))
+    cleanups.push(() => spy.mockRestore())
+    const fiber = await ctx.plugin(acp, { command: process.execPath, registryPath: join(dir, 'registry.json'),
+      discoverBackends: false, defaultBackend: 'worker', backends: {
+        worker: { command, args: ['acp'], agentEngine: 'none', modelSelect: 'session', effort: 'high',
+          env: { MOCK_ECHO_ARGV: '1', MOCK_EFFORT_OPTION_ID: 'thought_level', MOCK_SET_CONFIG_FILE: log } },
+      } })
+    cleanups.push(() => fiber.dispose())
+    const tools = (ctx.get('tools') as unknown as StubTools).registered
+    const chat = await tools.get('acp_chat_start')!.execute({ cwd: dir }, exec()) as { chatId: string; remoteSessionId: string }
+    expect(readFileSync(log, 'utf8').trim()).toBe(`set_config_option ${chat.remoteSessionId} thought_level high`)
+    const { text } = await tools.get('acp_chat_send')!.execute({ chatId: chat.chatId, message: 'argv?' }, exec()) as { text: string }
+    expect(JSON.parse(text)).toEqual(['acp'])
+  })
+
+  it('rejects max for agy at load, while Kiro accepts max and Codex accepts ultra', async () => {
+    const ctx = await host()
+    const config = { command: 'kiro-cli', args: ['acp'], enableChatTools: false, modelSelect: 'session', effort: 'max' } as const
+    await expect(Promise.resolve(ctx.plugin(acp, { ...config, backends: {
+      worker: { command: '/fixture/agy', modelSelect: 'session', effort: 'max' },
+    } }))).rejects.toThrow('backends.worker.effort "max" is not a session effort level for agy; with modelSelect: session it must be one of low, medium, high, xhigh')
+    await expect(Promise.resolve(ctx.plugin(acp, { ...config, command: 'agy' })))
+      .rejects.toThrow('effort "max" is not a session effort level for agy')
+    const fiber = await ctx.plugin(acp, { ...config, backends: {
+      worker: { command: 'agy', modelSelect: 'session', effort: 'xhigh' },
+      codex: { command: 'codex', protocol: 'codex', modelSelect: 'session', effort: 'ultra' },
+    } })
+    cleanups.push(() => fiber.dispose())
+    expect(ctx.subagents.getProvider('acp-resume')).toBeDefined()
   })
 })

@@ -15,7 +15,7 @@
 | defaultBackend must name an available backend definition or default | 固定默认项找不到 | 选已定义键或 default。 |
 | registryPath must be an absolute path | 相对路径 | 改绝对路径或空串。 |
 | must be a positive finite number no greater than 2147483647 | 空闲或关停越界 | 填合法毫秒数。 |
-| is not a session effort level | 会话强度值无效 | 选模型支持的合法档位。 |
+| is not a session effort level | 会话强度值无效 | agy 选 low、medium、high、xhigh；Kiro 还允许 max，均须模型支持。 |
 | skill "<name>" is unknown or no longer available | 目录无此技能 | 查安装文件和全局行；Dispatcher 查 readOnlyFs。 |
 
 ## 新建后端

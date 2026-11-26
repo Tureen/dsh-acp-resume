@@ -41,10 +41,14 @@ export type { PermissionPolicy }
  * {@link AcpRunSpec} plus the pool-only per-session settings applied after
  * `session/new` / `session/load`: `sessionModel` by `session/set_model` (on
  * -32601/-32603: `session/set_config_option(model)`), then `sessionEffort` by
- * `session/set_config_option(effortLevel)` (kiro v3; the value is validated at
- * config time because the agent ignores unknown values without an error).
+ * the backend-specific config option (D34/D40).
  */
-export type AcpSessionSpec = AcpRunSpec & { sessionModel?: string; sessionEffort?: string }
+export type AcpSessionSpec = AcpRunSpec & {
+  sessionModel?: string
+  sessionEffort?: string
+  /** ACP config option for session effort; Kiro's effortLevel is the legacy default. */
+  effortOptionId?: 'effortLevel' | 'thought_level'
+}
 
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
 
@@ -578,26 +582,31 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
           }
         }
         if (spec.sessionEffort !== undefined && remoteSessionId !== undefined) {
-          // After the model: kiro v3 lists effortLevel only for a model with hasEffort. No dedicated
-          // method exists. A failure or a value that never takes leaves the model's default effort.
+          // agy 1.5.13 applies the first set immediately but loses xhigh on load (D40).
+          // Kiro can report its previous value while the model settles (D34).
           const effort = spec.sessionEffort
+          const optionId = spec.effortOptionId ?? 'effortLevel'
+          const attempts = optionId === 'thought_level' ? 1 : EFFORT_ATTEMPTS
+          const operation = `session/set_config_option(${optionId}=${effort})`
           try {
             let current: string | null | undefined
-            for (let attempt = 1; attempt <= EFFORT_ATTEMPTS; attempt += 1) {
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
               if (flags.cancelled) break
-              const reply = await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'effortLevel', value: effort })
-              current = configOptionValue(reply, 'effortLevel')
-              // No configOptions in the reply: nothing to check, take the answer as applied.
+              const reply = await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: optionId, value: effort })
+              current = configOptionValue(reply, optionId)
+              // Preserve Kiro compatibility with agents that return no option list.
               if (current === undefined || current === effort) break
-              if (attempt < EFFORT_ATTEMPTS) await new Promise(resolve => setTimeout(resolve, EFFORT_RETRY_MS))
+              if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, EFFORT_RETRY_MS))
             }
-            if (!flags.cancelled && current !== undefined && current !== effort) {
+            if (!flags.cancelled && current === undefined && optionId === 'thought_level') {
+              warn(`${operation} not confirmed: the reply contains no configOptions`)
+            } else if (!flags.cancelled && current !== undefined && current !== effort) {
               warn(current === null
-                ? `session/set_config_option(effortLevel=${effort}) not applied: the session's model lists no effortLevel option (it may not support effort)`
-                : `session/set_config_option(effortLevel=${effort}) not applied: effortLevel stayed ${current} (the model may not offer that level)`)
+                ? `${operation} not applied: the session's model lists no ${optionId} option (it may not support effort)`
+                : `${operation} not applied: ${optionId} stayed ${current} (the model may not offer that level)`)
             }
           } catch (error: unknown) {
-            warn(`session/set_config_option(effortLevel=${effort}) failed: ${toError(error).message}`)
+            warn(`${operation} failed: ${toError(error).message}`)
           }
         }
         if (flags.cancelled) throw new Error('subagent cancelled before the ACP session started')

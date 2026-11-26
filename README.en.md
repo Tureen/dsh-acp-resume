@@ -39,7 +39,7 @@ The bundle includes the **ACP Resume Docs** skill (`acp-resume-docs`). In standa
 | Backend | Capabilities |
 | --- | --- |
 | **kiro-cli** (default) | The bundle runs `kiro-cli acp` with the v3 engine and supports both session recovery across processes and mid-turn instructions. Set `modelSelect: session` with `effort` to choose the reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). |
-| **Antigravity** (agy) | Connects automatically through `agy acp` and supports session recovery and per-session model selection, with reasoning effort encoded in the model ID. |
+| **Antigravity** (agy) | Connects automatically through `agy acp` and supports session recovery and per-session model and reasoning effort selection. Available effort levels depend on the model. |
 | **Codex** | Uses the private `codex app-server` protocol for session recovery, mid-turn instructions, and per-action approvals, and can be discovered automatically or configured as a named backend. |
 
 With `discoverBackends` on by default, the plugin checks CLIs on DSH’s `PATH` and at configured paths against the [published version ranges](docs/backend-compatibility.md), then verifies eligible built-in backends. Checks do not create a session or send a prompt; the CLI itself may access the network. Open **Right sidebar → ACP chats** and expand **Backend status** to see versions, readiness, and failure reasons. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without expanding it or restarting DSH. This does not delete chats, sign you out, or change settings.
@@ -63,9 +63,12 @@ Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and den
         args: [acp]
         agentEngine: none
         permission: ask
+        modelSelect: session
+        model: gemini-4-neon
+        effort: high
 ```
 
-Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model`. In this mode, persistent kiro v3 chats apply `effort` when the session opens or reconnects, without appending the `--effort` CLI flag. The configuration accepts `low`, `medium`, `high`, `xhigh`, or `max`. Other values cause a configuration error at load time. Support varies by model, and a configured level the model does not offer produces a warning. agy encodes effort in the model ID, so omit `effort` there. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
+Restart DSH if you change the configuration. To pin a model on kiro v3 or agy, set both `modelSelect: session` and `model`. In this mode, persistent kiro v3 chats apply `effort` when the session opens or reconnects, without appending the `--effort` CLI flag. The configuration accepts `low`, `medium`, `high`, `xhigh`, or `max`. Other values cause a configuration error at load time. Support varies by model, and a configured level the model does not offer produces a warning. agy 1.5.13 uses `thought_level` and accepts `low`, `medium`, `high`, or `xhigh`. On each new or resumed chat, the example selects the model, then sets and checks `high` once. A level the model does not offer produces a warning. For Codex, the plugin verifies your existing model setting, or a single default explicitly advertised by Codex if you have no model set. It never guesses a model.
 
 ### Let the model choose between backends
 
