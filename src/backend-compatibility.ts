@@ -12,10 +12,11 @@ export type KnownBackendKind = 'kiro-v2' | 'kiro-v3' | 'codex' | 'agy'
 type VersionInterval = readonly [minInclusive: string, maxExclusive: string]
 
 // End at the next unverified minor line, not at the last reviewed patch.
-const KIRO_RELEASES = [['2.36.0', '2.38.0'], ['3.0.0', '3.6.0']] as const
+const KIRO_2_X = ['2.36.0', '2.38.0'] as const
+// Kiro V3 3.6.0 was verified in D34 (2026-11-25). Admit the 3.6 line; reverify before admitting 3.7.
 const RELEASES = {
-  'kiro-v2': KIRO_RELEASES,
-  'kiro-v3': KIRO_RELEASES,
+  'kiro-v2': [KIRO_2_X, ['3.0.0', '3.6.0']],
+  'kiro-v3': [KIRO_2_X, ['3.0.0', '3.7.0']],
   codex: [['0.154.0', '0.172.0']],
   agy: [['1.5.4', '1.6.0']],
 } as const satisfies Readonly<Record<KnownBackendKind, readonly VersionInterval[]>>

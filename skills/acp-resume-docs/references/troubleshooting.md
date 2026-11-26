@@ -25,7 +25,7 @@
 | ACP agent command was not found (ENOENT). / executable not found in the DSH runtime | 宿主找不到 CLI | 查 DSH PATH、执行权限或改绝对路径。 |
 | acp-resume: cannot dispatch: | 新建被拒 | 读状态行的具体原因。 |
 | No dispatch backend is ready. / waiting for the automatic backend check | 无就绪项或检测中 | 等检测结束，修复后重查。 |
-| could not read the CLI version / CLI version is outside the verified range | 版本未知或范围外 | 核对命令与版本，见[后端](backends.md)。 |
+| could not read the CLI version / CLI version is outside the verified range | 版本未知或范围外 | 核对命令与版本，先升级本插件再重新检测；支持策略见[后端](backends.md)。 |
 | configured CLI launch mode or flags are not supported | 启动模式错 | 查 v3 模型旗标、agy 引擎旗标、Codex 协议。 |
 | CLI detected but not configured as a dispatch backend / custom ACP executable has no published compatibility range | 候选未配置或包装器未知 | 核对命名配置与启动方式。 |
 | sign in to the CLI, then run backend detection again | 需认证 | 登录 CLI 后重查。 |

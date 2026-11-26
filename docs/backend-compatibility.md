@@ -6,7 +6,7 @@
 | 后端 | 稳定正式版范围（含下限，不含上限） |
 | --- | --- |
 | Kiro ACP V2 | `>=2.36.0 <2.38.0` 或 `>=3.0.0 <3.6.0` |
-| Kiro ACP V3 | `>=2.36.0 <2.38.0` 或 `>=3.0.0 <3.6.0` |
+| Kiro ACP V3 | `>=2.36.0 <2.38.0` 或 `>=3.0.0 <3.7.0` |
 | Codex app-server | `>=0.154.0 <0.172.0` |
 | Google Antigravity CLI (`agy acp`) | `>=1.5.4 <1.6.0` |
 <!-- compatibility:end -->
@@ -21,8 +21,10 @@
 
 - [2.36.0 发行说明（Improvements）](https://kiro.dev/changelog/cli/2-36/)说明 `acp.agentEngine` 支持 `v1`、`v2`、`v3`，`kiro-cli acp --agent-engine` 覆盖该值，未指定时跑 V2；[ACP 文档「Choose the agent harness」](https://kiro.dev/docs/cli/acp/#choose-the-agent-harness)也注明 CLI 2.36 起支持这一选择。用它作为显式选择两种引擎的下界，而不是声称 2.35 以前从未实现 ACP。
 - [2.37.1 补丁发行说明](https://kiro.dev/changelog/cli/2-37/#patch-2-37-1)和 [D19](../DECISIONS.md#d19-默认切-kiro-v3-引擎--插话工具-acp_chat_steer2026-11-04)：本项目在 CLI 2.37.1 确认两个引擎的握手及私有 `_session/steer`，并确认 V2 创建的会话能由 V3 `session/load` 恢复。`2.37.1` 是 2.37 线的核对点，不是该线的补丁上限；不因此纳入 2.38 或更高次版本。
-- [3.0.0 发行说明](https://kiro.dev/changelog/cli/3-0/#start-on-v3-by-default)记录 ACP 默认切换到 V3 与 V2 共存；[引擎选择文档](https://kiro.dev/docs/cli/agent-harness/#acp-clients)确认显式指定引擎优先。最新核对点见 [3.5.0 发行说明](https://kiro.dev/changelog/cli/3-5/)和 [ACP 参考文档](https://kiro.dev/docs/cli/acp/#default-agent-and-model-on-v3)中写明的 3.5.0 行为。不给 V1 单列支持范围：识别 `v1` 参数的说明不是持久会话协议证据，且 3.0 已退役 Classic 交互界面。
+- [3.0.0 发行说明](https://kiro.dev/changelog/cli/3-0/#start-on-v3-by-default)记录 ACP 默认切换到 V3 与 V2 共存；[引擎选择文档](https://kiro.dev/docs/cli/agent-harness/#acp-clients)确认显式指定引擎优先。3.5 系列的核对点见 [3.5.0 发行说明](https://kiro.dev/changelog/cli/3-5/)和 [ACP 参考文档](https://kiro.dev/docs/cli/acp/#default-agent-and-model-on-v3)中写明的 3.5.0 行为。不给 V1 单列支持范围：识别 `v1` 参数的说明不是持久会话协议证据，且 3.0 已退役 Classic 交互界面。
 - [V3 ACP 客户端迁移](https://kiro.dev/docs/cli/v3/acp-migration/)列出 `initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel`，并区分 V2 的 `session/set_model` 与 V3 的 `session/set_config_option`；两种引擎都协商 ACP v1，不能靠 `protocolVersion` 区分。文档也明确要求按握手能力决定运行期的可选方法，明确指出现在的 V3 ACP 会拒绝 V2 专用启动旗标（含 `--model` 和 `--effort`）。上表针对核心 ACP 的启动、会话和轮次，不承诺任意组合的启动参数、会话选项或私有 `_session/steer`；本文档不改变用户 wrapper 的参数处理。
+
+- 2026-11-25 已用 Kiro 3.6.0 实测 v3 引擎的建会话、恢复和会话级思考强度（D34），因此 V3 纳入 3.6.x；3.7 发布后重验。V2 的范围沿用原证据。
 
 ## Codex app-server
 

@@ -797,10 +797,10 @@ exec "${process.execPath}" "${mockServer}"
     expect(panel.list()).toContainEqual(expect.objectContaining({ chatId: chat.chatId, backend: 'agy' }))
   }, CASE_TIMEOUT_MS)
 
-  it.skipIf(process.platform === 'win32').each([true, false])('warns but starts configured Kiro 3.6.0 with ready Codex: %s', async (codexReady) => {
+  it.skipIf(process.platform === 'win32').each([true, false])('warns but starts configured Kiro 3.7.0 with ready Codex: %s', async (codexReady) => {
     const ctx = await host()
     const fixture = autoFixture()
-    fixture.writeKiro('3.6.0')
+    fixture.writeKiro('3.7.0')
     if (!codexReady) fixture.writeCodex('0.153.0')
     const warnings: string[] = []
     ctx.logger.warn = ((message: unknown) => { warnings.push(String(message)) }) as typeof ctx.logger.warn
@@ -809,9 +809,9 @@ exec "${process.execPath}" "${mockServer}"
     const panel = ctx.get('acpResume')!
     const status = await panel.checkBackends()
     expect(status.defaultBackend).toBe('default')
-    expect(status.backends).toContainEqual(expect.objectContaining({ id: 'default', version: '3.6.0', compatibility: 'unverified-version', readiness: 'unverified' }))
+    expect(status.backends).toContainEqual(expect.objectContaining({ id: 'default', version: '3.7.0', compatibility: 'unverified-version', readiness: 'unverified' }))
     expect(status.backends.find(row => row.id === 'codex')?.readiness).toBe(codexReady ? 'ready' : 'unverified')
-    expect(warnings.some(warning => warning.includes('configured backend default version 3.6.0') && warning.includes('outside verified range'))).toBe(true)
+    expect(warnings.some(warning => warning.includes('configured backend default version 3.7.0') && warning.includes('outside verified range'))).toBe(true)
     expect(existsSync(fixture.touchedKiro)).toBe(false)
     const start = stubTools(ctx).registered.get('acp_chat_start')!
     expect(await start.execute({ cwd: process.cwd() }, exec())).toMatchObject({ backend: 'default', cwd: process.cwd() })
