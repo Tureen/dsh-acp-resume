@@ -4,7 +4,24 @@ export type BackendReadiness = 'ready' | 'needs-configuration' | 'needs-login' |
 export type BackendStatusReason = 'missing-executable' | 'version-unreadable' | 'unsupported-version' | 'unsupported-mode'
   | 'not-configured' | 'model-required' | 'model-override-unavailable' | 'custom-unverified' | 'login-required' | 'handshake-failed' | 'backend-unready'
 
+/** Values actually returned by a backend. Missing fields stay unknown. */
+export interface ReportedSettings {
+  readonly model?: string
+  readonly modelName?: string
+  readonly effort?: string
+}
+
+export type BackendReport = ReportedSettings & (
+  | { readonly source: 'probe' }
+  | { readonly source: 'session'; readonly chatId: string; readonly at: number }
+)
+
 export interface BackendStatus {
+  /** Panel-only comparison and provenance; the D31 model tool retains its text contract. */
+  readonly configuredModel?: string
+  readonly configuredEffort?: string
+  readonly sessionReporting?: true
+  readonly report?: BackendReport
   readonly id: string
   readonly label: string
   readonly version?: string

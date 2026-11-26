@@ -4,7 +4,7 @@
 
 | 工具 | 参数 | 读回什么 |
 |---|---|---|
-| acp_backend_status | 无 | 各后端版本、兼容范围、就绪情况、新建默认项与行动建议。读缓存不会启动 CLI。 |
+| acp_backend_status | 无 | 各后端版本、兼容范围、就绪情况、新建默认项与行动建议。读缓存不会启动 CLI。模型与强度的报告及配置对比见面板「后端状态」，不在该工具回执中。 |
 | acp_chat_start | cwd 必填绝对工作目录；可选 label（最多 80 个字符）。有 backend 参数的变体才传后端名。 | chatId 与 remoteSessionId；多后端变体还给实际 backend、cwd，发生改派时给 fallbackNotice。 |
 | acp_chat_send | chatId 或 role，另加 message | 有 jobs 时立即返回 jobId 和回执，回答流入 job；同步时返回最终回答，非 completed 转工具错误并附可用的部分输出。 |
 | acp_chat_list | 无 | 当前主会话的活跃和已释放 chat、后端、状态和角色；团队文件的问题也可能在末行报告。无调用会话时才退回全局列表。 |

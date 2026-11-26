@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { backendCompatibility, backendSupportRange, parseBackendVersion, type KnownBackendKind } from './backend-compatibility.js'
 
-import type { BackendStatus, BackendStatusReason, BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
+import type { ReportedSettings, BackendStatus, BackendStatusReason, BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
 
 export type { BackendStatus, BackendStatusReason, BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
 
@@ -16,6 +16,9 @@ export interface BackendCandidate {
   readonly kind: KnownBackendKind | null | undefined
   readonly configured: boolean
   readonly automatic?: true
+  readonly configuredModel?: string
+  readonly configuredEffort?: string
+  readonly sessionReporting?: true
   readonly configurationIssue?: 'model-required' | 'unsupported-mode'
 }
 
@@ -25,8 +28,8 @@ export interface DispatchRoute {
   readonly fallbackFrom?: string
 }
 
-export type Verification = { readonly status: 'ready'; readonly model?: string }
-  | { readonly status: 'login-required' | 'handshake-failed' | 'model-required' | 'model-override-unavailable' }
+export type Verification = ({ readonly status: 'ready'; readonly model?: string }
+  | { readonly status: 'login-required' | 'handshake-failed' | 'model-required' | 'model-override-unavailable' }) & { readonly reported?: ReportedSettings }
 
 interface ProbeHost {
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
@@ -78,6 +81,9 @@ export function describeBackendSnapshot(status: BackendStatusSnapshot): string {
 
 function initialRow(candidate: BackendCandidate): BackendStatus {
   return { id: candidate.id, label: candidate.label, configured: candidate.configured,
+    ...(candidate.configuredModel && { configuredModel: candidate.configuredModel }),
+    ...(candidate.configuredEffort && { configuredEffort: candidate.configuredEffort }),
+    ...(candidate.sessionReporting && { sessionReporting: true }),
     ...(candidate.automatic === true ? { automatic: true } : {}),
     ...(candidate.kind == null ? {} : { range: backendSupportRange(candidate.kind) }), compatibility: 'unknown', readiness: 'unverified', reason: 'backend-unready' }
 }
@@ -332,11 +338,12 @@ export class BackendReadinessService implements BackendStatusService {
     const verifySignal = AbortSignal.any([this.life.signal, AbortSignal.timeout(this.timeoutMs)])
     let result: Verification
     try { result = await this.options.verify(candidate, executable, verifySignal) } catch { result = { status: 'handshake-failed' } }
+    const observed = result.reported ? { ...known, report: { ...result.reported, source: 'probe' as const } } : known
     if (result.status === 'ready') {
       executables.set(row.id, executable)
       if (result.model !== undefined) models.set(row.id, result.model)
-      return { ...known, readiness: 'ready', ...(supported ? {} : { reason: 'unsupported-version' as const }) }
+      return { ...observed, readiness: 'ready', ...(supported ? {} : { reason: 'unsupported-version' as const }) }
     }
-    return { ...known, readiness: result.status === 'login-required' ? 'needs-login' : (result.status === 'model-required' || result.status === 'model-override-unavailable') ? 'needs-configuration' : 'unavailable', reason: result.status }
+    return { ...observed, readiness: result.status === 'login-required' ? 'needs-login' : (result.status === 'model-required' || result.status === 'model-override-unavailable') ? 'needs-configuration' : 'unavailable', reason: result.status }
   }
 }

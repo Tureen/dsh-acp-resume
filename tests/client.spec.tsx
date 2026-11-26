@@ -171,6 +171,38 @@ describe('backend readiness', () => {
     expect(backendStatus.check).not.toHaveBeenCalled()
   })
 
+  it.each([['zh', zh], ['en', en]] as const)('renders reported values, mismatches and missing fields in %s', (language, dictionary) => {
+    const chinese = language === 'zh'
+    const row = { id: 'agy', label: 'Antigravity CLI (agy)', configured: true, compatibility: 'supported', readiness: 'ready' } as const
+    const data: BackendStatusSnapshot = { checking: false, dispatchEnabled: true, backends: [
+      { ...row, configuredModel: 'gemini-4-neon', configuredEffort: 'high',
+        report: { source: 'session', chatId: 'chat-d41', at: 0, model: 'gemini-4-neon', modelName: 'Gemini 4 Neon', effort: 'high' } },
+      { ...row, id: 'codex', label: 'Codex', configuredModel: 'requested', configuredEffort: 'high',
+        report: { source: 'probe', model: 'backend-default', effort: 'low' } },
+      { ...row, id: 'default', label: 'kiro-cli', sessionReporting: true, configuredModel: 'invisible', configuredEffort: 'invisible' },
+    ] }
+    const backendStatus = { subscribe: () => () => {}, getSnapshot: () => view, check: async () => {} }
+    const view = { status: 'ready', checking: false, data } as const
+    const panelProps = props(ready([chat({ chatId: 'chat-d41' })]), { backendStatus, t: translator(dictionary) })
+    const mounted = render(<ChatsPanel {...panelProps} />)
+    const toggle = screen.getByRole('button', { expanded: false, name: chinese ? /^后端状态/ : /^Backend status/ })
+    fireEvent.click(toggle)
+    const rows = screen.getAllByRole('listitem')
+    expect(within(rows[0]!).getByText(chinese ? '模型：gemini-4-neon (Gemini 4 Neon)' : 'Model: gemini-4-neon (Gemini 4 Neon)')).toBeTruthy()
+    expect(within(rows[0]!).getByText(chinese ? '思考强度：high' : 'Reasoning effort: high')).toBeTruthy()
+    expect(within(rows[0]!).getByText(/chat-d41 · 1970-01-01T00:00:00.000Z/)).toBeTruthy()
+    expect(within(rows[1]!).getByText(chinese ? '模型：配置 requested，实际 backend-default' : 'Model: configured requested, actual backend-default')).toBeTruthy()
+    expect(within(rows[1]!).getByText(chinese ? '思考强度：配置 high，实际 low' : 'Reasoning effort: configured high, actual low')).toBeTruthy()
+    expect(within(rows[1]!).getByText(chinese ? '无会话检测：后端报告的默认值' : 'Session-free check: backend defaults')).toBeTruthy()
+    expect(within(rows[2]!).getByText(chinese ? '模型：未报告' : 'Model: Not reported')).toBeTruthy()
+    expect(within(rows[2]!).getByText(chinese ? '思考强度：未报告' : 'Reasoning effort: Not reported')).toBeTruthy()
+    expect(within(rows[2]!).getByText(chinese ? '派工后可见会话报告' : 'Session reports are available after dispatch')).toBeTruthy()
+    expect(screen.queryByText(/invisible/)).toBeNull()
+    mounted.rerender(<ChatsPanel {...panelProps} currentSessionId="another-owner" />)
+    expect(screen.queryByText(/chat-d41/)).toBeNull()
+    expect(screen.getByText(chinese ? '最近活跃会话报告 · 1970-01-01T00:00:00.000Z' : 'Latest active session report · 1970-01-01T00:00:00.000Z')).toBeTruthy()
+  })
+
   it('shows automatic startup without offering a setup click, then presents the discovered ready backend', () => {
     const pending = {
       data: { ...backendFixture, checking: true, dispatchEnabled: false, backends: [] },

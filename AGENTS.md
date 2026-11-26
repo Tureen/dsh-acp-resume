@@ -16,7 +16,7 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 src/
   index.ts       插件入口:Config(全字段见 README「配置」;`roles` 默认 true、`workflow` 默认 false,`roles: false` + `workflow: true` 加载即报错,D33)+ provider 与工具注册；按命令识别 ACP 强度项并校验档位(D40)
   backend-compatibility.ts D31:发布的 CLI 版本范围；`pnpm check:compatibility` 校验生成文档
-  backend-status.ts / backend-readiness.ts / backend-verification.ts D31:共享状态、启动版本探测、自动无会话验证与派工准入
+  backend-status.ts / backend-readiness.ts / backend-verification.ts D31/D41:共享状态、启动版本探测、无会话验证与派工准入；模型与强度的探测报告独立于派工选择
   command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
   permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
@@ -25,7 +25,8 @@ src/
                  与 sessionEffort：Kiro effortLevel 核对并有限重试(D34)，agy thought_level 新建/重连各设一次并核对(D40)
   codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
   connection-codex.ts Codex app-server 私有协议连接层(D25;与 AcpConnection 同形状,自带 JSON-RPC 行传输,不用 ACP SDK)
-  pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
+  acp-reported-settings.ts D41:从 ACP 回复与配置更新读取后端报告的模型、展示名和强度
+  pool.ts        D41 只读投影存活连接的最近设置报告；持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
   dispatcher-preset.ts D37/D38:独立全局声明插件；dispatcherTools 六项开关（readOnlyFs 含 skill）控制子行、description 与工具指引，dispatcherPrompt 追加或替换 persona 的调度规则；声明热更新与 ACP 池隔离
   team-prompt.ts D36:在 Dispatcher 实际绑定且本步团队工具可用时注入角色转述规则
   team-config.ts D27:读工作区 .agents/acp-team.yml(向上至多 3 层),角色蓝图 + 模板的解析与校验;不可用时 onWarn 并视为无配置
@@ -37,7 +38,7 @@ src/
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
   panel.ts       面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
 - `src/client/features-source.ts` / `PanelFeatureGate.tsx`（D35）：列表、详情正文和标题共享连接级能力查询，关闭时均不订阅业务数据源。工作流关闭时 `workflows-source.ts` 只在区块打开或手动刷新时读取历史。
-- `src/client/` 详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
+- `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
   job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,拒绝对运行中 acp-chat 任务的 job_output wait:true,有运行中 acp-chat 任务时也拒绝 wait_agent(allowChatJobWait 可关)
   tools.ts       五个模型工具:acp_chat_start / acp_chat_send / acp_chat_list / acp_chat_close / acp_chat_steer
@@ -81,7 +82,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 643 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 50 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 649 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 50 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 25 + `client.spec.tsx` 113 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 19 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 

@@ -18,8 +18,8 @@ async function advertisedModel(
   list: (cursor?: string) => Promise<unknown>,
   requested: string | undefined,
   signal: AbortSignal,
-): Promise<string | undefined> {
-  const defaults = new Set<string>()
+): Promise<{ id: string; label?: string } | undefined> {
+  const defaults = new Map<string, string | undefined>()
   const cursors = new Set<string>()
   let cursor: string | undefined
   for (let page = 0; page < 10; page++) {
@@ -30,9 +30,10 @@ async function advertisedModel(
     for (const item of data) {
       const model = record(item)
       if (model === undefined) continue
+      const label = modelId(model['displayName']) ? model['displayName'] : undefined
       if (requested !== undefined) {
         // Keep explicitly configured models working by either canonical slug or catalog id.
-        if (model['model'] === requested || model['id'] === requested) return requested
+        if (model['model'] === requested || model['id'] === requested) return { id: requested, label }
         continue
       }
       const slug = model['model']
@@ -40,11 +41,14 @@ async function advertisedModel(
       if (model['isDefault'] === true && model['hidden'] === false && modelId(slug)
         && (modalities === undefined || (Array.isArray(modalities) && modalities.includes('text')))) {
         // `model`, not the picker `id`, is the slug accepted by thread/start.
-        defaults.add(slug)
+        defaults.set(slug, label)
       }
     }
     const next = response?.['nextCursor']
-    if (next === undefined || next === null) return defaults.size === 1 ? defaults.values().next().value : undefined
+    if (next === undefined || next === null) {
+      const id = defaults.size === 1 ? defaults.keys().next().value : undefined
+      return id === undefined ? undefined : { id, label: defaults.get(id) }
+    }
     if (typeof next !== 'string' || next.length === 0 || cursors.has(next)) break
     cursors.add(next)
     cursor = next
@@ -79,12 +83,13 @@ export async function verifyBackend(spec: BackendSpec, signal: AbortSignal, onFa
       }
 
       const explicit = spec.codex?.model
+      const readDefaults = async () => record(record(await resultWithin(connection.readConfig(), signal))?.['config'])
+      let config: Record<string, unknown> | undefined
       let requested = explicit
-      if (requested === undefined) {
+      if (explicit === undefined) {
         signal.throwIfAborted()
-        const config = record(record(await resultWithin(connection.readConfig(), signal))?.['config'])
-        if (config === undefined) return { status: 'handshake-failed' }
-        // Honor Codex's configured preference; don't silently substitute a catalog default for it.
+        config = await readDefaults()
+        if (!config) return { status: 'handshake-failed' }
         const configured = config['model']
         if (configured != null) {
           if (typeof configured !== 'string') return { status: 'handshake-failed' }
@@ -93,8 +98,20 @@ export async function verifyBackend(spec: BackendSpec, signal: AbortSignal, onFa
       }
       const unavailable = explicit === undefined ? 'model-required' : 'model-override-unavailable'
       if (requested !== undefined && !modelId(requested)) return { status: unavailable }
-      const model = await advertisedModel(connection.listModels, requested, signal)
-      return model === undefined ? { status: unavailable } : { status: 'ready', model }
+      const selected = await advertisedModel(connection.listModels, requested, signal)
+      if (explicit !== undefined) {
+        // Admission already used the explicit selection. An optional display read cannot veto it.
+        try { config = await readDefaults() } catch { /* leave backend defaults unreported */ }
+      }
+      const actual = explicit === undefined ? selected?.id : modelId(config?.model) ? config.model : undefined
+      const effort = config?.model_reasoning_effort
+      const reported = {
+        ...(actual && { model: actual }),
+        ...(actual && actual === selected?.id && selected.label && { modelName: selected.label }),
+        ...(modelId(effort) && { effort }),
+      }
+      const observation = reported.model || reported.effort ? { reported } : {}
+      return selected ? { status: 'ready', model: selected.id, ...observation } : { status: unavailable, ...observation }
     } finally {
       await connection.dispose()
     }

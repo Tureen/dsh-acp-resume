@@ -318,12 +318,20 @@ function backendName(t: PanelTranslate, backend: BackendStatus): string {
     : backend.label
 }
 
-function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; readonly t: PanelTranslate }): ReactNode {
+/** Format a reported value; an override is shown only alongside conflicting backend evidence. */
+function selectionValue(actual: string | undefined, configured: string | undefined, label: string | undefined, t: PanelTranslate): string {
+  if (!actual) return t('backendNotReported')
+  const value = label && label !== actual ? `${actual} (${label})` : actual
+  return configured && configured !== actual ? t('backendSelectionMismatch', { configured, actual: value }) : value
+}
+
+function BackendStatusRow({ backend, visibleChats, t }: { readonly backend: BackendStatus; readonly visibleChats: readonly PanelChat[]; readonly t: PanelTranslate }): ReactNode {
   const remediation = backend.reason === undefined ? undefined
     : backend.automatic && backend.id === 'agy' && backend.reason === 'login-required' ? 'backendFixAgyLogin' as const
       : backend.reason === 'unsupported-version' && backend.configured ? 'backendFixConfiguredVersion' as const
         : backend.reason === 'unsupported-version' && backend.readiness === 'ready' ? 'backendSelectUnverifiedVersion' as const
           : copyFor(REMEDIATION_COPY, backend.reason)
+  const session = backend.report?.source === 'session' ? backend.report : undefined
   return (
     <li style={styles.backendRow}>
       <div style={styles.backendMeta}>
@@ -338,6 +346,15 @@ function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; rea
         <span style={styles.notice}>{t('backendCompatibility', { status: t(copyFor(COMPATIBILITY_COPY, backend.compatibility) ?? 'backendUnknown') })}</span>
         <span style={styles.notice}>{t('backendReadiness', { status: t(copyFor(READINESS_COPY, backend.readiness) ?? 'backendUnverified') })}</span>
       </div>
+      <div style={styles.backendMeta}>
+        <span>{t('backendModel', { value: selectionValue(backend.report?.model, backend.configuredModel, backend.report?.modelName, t) })}</span>
+        <span>{t('backendEffort', { value: selectionValue(backend.report?.effort, backend.configuredEffort, undefined, t) })}</span>
+      </div>
+      {session ? <p style={styles.notice}>{t(
+        visibleChats.some(chat => chat.chatId === session.chatId) ? 'backendReportSession' : 'backendReportTime',
+        { chat: session.chatId, time: new Date(session.at).toISOString() },
+      )}</p> : backend.report?.source === 'probe' ? <p style={styles.notice}>{t('backendReportProbe')}</p>
+        : backend.sessionReporting ? <p style={styles.notice}>{t('backendAfterDispatch')}</p> : null}
       {backend.automatic && backend.readiness === 'ready' ? (
         <p style={styles.notice}>{t(backend.id === 'agy' ? 'backendAutomaticAgyReady' : 'backendAutomaticReady')}</p>
       ) : null}
@@ -347,7 +364,8 @@ function BackendStatusRow({ backend, t }: { readonly backend: BackendStatus; rea
 }
 
 /** Keep one status line visible; mount diagnostics only when the user expands it. */
-function BackendStatusSection({ source, view, t }: {
+function BackendStatusSection({ source, view, visibleChats, t }: {
+  readonly visibleChats: readonly PanelChat[]
   readonly source: BackendStatusSourceFace
   readonly view: BackendStatusView
   readonly t: PanelTranslate
@@ -416,7 +434,7 @@ function BackendStatusSection({ source, view, t }: {
                   : checking ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}
                 {data.backends.length === 0 ? <p style={styles.notice}>{t('backendNoEntries')}</p> : (
                   <ul style={styles.list}>
-                    {data.backends.map(backend => <BackendStatusRow key={backend.id} backend={backend} t={t} />)}
+                    {data.backends.map(backend => <BackendStatusRow key={backend.id} backend={backend} visibleChats={visibleChats} t={t} />)}
                   </ul>
                 )}
               </>
@@ -639,7 +657,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, backendStatus,
           <Button size="sm" variant="ghost" onClick={() => { refresh() }}>{t('refresh')}</Button>
         </div>
       </div>
-      {backendStatus === undefined || backendView === undefined ? null : <BackendStatusSection source={backendStatus} view={backendView} t={t} />}
+      {backendStatus === undefined || backendView === undefined ? null : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} t={t} />}
       <UsageLines usage={snapshot.usage} t={t} />
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>

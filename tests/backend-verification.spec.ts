@@ -68,11 +68,25 @@ const accountOnly = ['initialize', 'initialized', 'account/read']
 describe('Codex backend verification', () => {
   it('reads only account, effective config and advertised models for automatic dispatch, without opening a thread', async () => {
     const { check, requests, spawnSpecs } = setup({}, undefined, true)
-    expect(await check()).toEqual({ status: 'ready', model: 'mock-model' })
+    expect(await check()).toEqual({ status: 'ready', model: 'mock-model', reported: { model: 'mock-model' } })
     expect(methodNames(requests())).toEqual([...accountOnly, 'config/read', 'model/list'])
     expect(requests()[2]?.params).toEqual({ refreshToken: false })
     expect(requests()[3]?.params).toEqual({ includeLayers: false })
     expect(spawnSpecs[0]?.stdio?.stderr).toBe('pipe')
+  })
+
+  it('reports the backend default model and effort independently of the dispatch override', async () => {
+    const { check, requests } = setup({ MOCK_CODEX_CONFIG_MODEL: 'backend-default', MOCK_CODEX_CONFIG_EFFORT: 'high',
+      ...pages({ '': { data: [advertised('backend-default'), advertised('override')], nextCursor: null } }) }, 'override')
+    expect(await check()).toEqual({ status: 'ready', model: 'override', reported: { model: 'backend-default', effort: 'high' } })
+    expect(methodNames(requests())).toEqual([...accountOnly, 'model/list', 'config/read'])
+  })
+
+  it('uses the matched display name and never infers effective effort from catalog recommendations', async () => {
+    const { check } = setup({ MOCK_CODEX_CONFIG_MODEL: 'chosen', ...pages({
+      '': { data: [advertised('chosen', false, { displayName: 'Chosen', defaultReasoningEffort: 'low' })] },
+    }) })
+    expect(await check()).toEqual({ status: 'ready', model: 'chosen', reported: { model: 'chosen', modelName: 'Chosen' } })
   })
 
   it('stops before model checks when the CLI requires login', async () => {
@@ -103,7 +117,7 @@ describe('Codex backend verification', () => {
       '': { data: [advertised('catalog-default', true)], nextCursor: 'page:two' },
       'page:two': { data: [advertised('chosen-model')], nextCursor: null },
     }) })
-    expect(await check()).toEqual({ status: 'ready', model: 'chosen-model' })
+    expect(await check()).toEqual({ status: 'ready', model: 'chosen-model', reported: { model: 'chosen-model' } })
     expect(requests().filter(request => request.method === 'model/list').map(request => request.params)).toEqual([
       { limit: 100 }, { limit: 100, cursor: 'page:two' },
     ])
@@ -114,12 +128,12 @@ describe('Codex backend verification', () => {
     expect(await check()).toEqual({ status: 'model-required' })
   })
 
-  it('uses an explicit named model by id and skips profile configuration', async () => {
+  it('keeps a verified explicit model usable even if the backend defaults cannot be read', async () => {
     const { check, requests } = setup({ ...pages({
       '': { data: [advertised('catalog-default', true), advertised('named-model', false, { id: 'explicit-id' })] },
-    }), MOCK_CODEX_CONFIG_ERROR: 'must not attempt config/read' }, 'explicit-id')
+    }), MOCK_CODEX_CONFIG_ERROR: 'defaults unavailable' }, 'explicit-id')
     expect(await check()).toEqual({ status: 'ready', model: 'explicit-id' })
-    expect(methodNames(requests())).toEqual([...accountOnly, 'model/list'])
+    expect(methodNames(requests())).toEqual([...accountOnly, 'model/list', 'config/read'])
   })
 
   it('distinguishes an unavailable explicit model override from a missing default', async () => {
@@ -132,7 +146,7 @@ describe('Codex backend verification', () => {
       '': { data: [advertised('not-a-default'), advertised('hidden', true, { hidden: true }), advertised('audio-only', true, { inputModalities: ['audio'] })], nextCursor: 'two' },
       two: { data: [advertised('real-default', true, { id: 'picker-id' })] },
     }))
-    expect(await check()).toEqual({ status: 'ready', model: 'real-default' })
+    expect(await check()).toEqual({ status: 'ready', model: 'real-default', reported: { model: 'real-default' } })
   })
 
   it.each([

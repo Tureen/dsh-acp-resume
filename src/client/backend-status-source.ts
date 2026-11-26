@@ -19,6 +19,15 @@ function isSnapshot(value: unknown): value is BackendStatusSnapshot {
       && typeof row.compatibility === 'string' && typeof row.readiness === 'string'
       && (row.version === undefined || typeof row.version === 'string')
       && (row.range === undefined || typeof row.range === 'string')
+      && (row.configuredModel === undefined || typeof row.configuredModel === 'string')
+      && (row.configuredEffort === undefined || typeof row.configuredEffort === 'string')
+      && (row.sessionReporting === undefined || row.sessionReporting === true)
+      && (row.report === undefined || (row.report !== null && typeof row.report === 'object'
+        && (row.report.source === 'probe' || (row.report.source === 'session' && typeof row.report.chatId === 'string'
+          && Number.isFinite(row.report.at) && Math.abs(row.report.at) <= 8.64e15))
+        && (row.report.model === undefined || typeof row.report.model === 'string')
+        && (row.report.modelName === undefined || typeof row.report.modelName === 'string')
+        && (row.report.effort === undefined || typeof row.report.effort === 'string')))
       && (row.reason === undefined || typeof row.reason === 'string'))
 }
 

@@ -256,7 +256,7 @@ function makeAgent() {
       const id = process.env.MOCK_SESSION_ID ?? randomUUID()
       sessions.set(id, { cwd: params.cwd, prompts: [] })
       saveTable(sessions)
-      return { sessionId: id }
+      return { sessionId: id, ...(process.env.MOCK_CONFIG_OPTIONS && { configOptions: JSON.parse(process.env.MOCK_CONFIG_OPTIONS) }) }
     },
     async loadSession(params: LoadSessionRequest, conn: AgentContext): Promise<LoadSessionResponse> {
       if (LOAD_GATE !== undefined) {
@@ -282,6 +282,7 @@ function makeAgent() {
       }
       return {
         sessionId: params.sessionId,
+        ...(process.env.MOCK_LOAD_MODELS && { models: JSON.parse(process.env.MOCK_LOAD_MODELS) }),
         modes: { currentModeId: 'mock', availableModes: [] },
       }
     },
@@ -291,6 +292,11 @@ function makeAgent() {
     },
     async prompt(params: PromptRequest, conn: AgentContext): Promise<PromptResponse> {
       promptCount += 1
+      if (process.env.MOCK_UPDATED_OPTIONS) {
+        await conn.notify(methods.client.session.update, { sessionId: params.sessionId, update: {
+          sessionUpdate: 'config_option_update', configOptions: JSON.parse(process.env.MOCK_UPDATED_OPTIONS),
+        } })
+      }
       const ordinal = promptCount
       if (CRASH_ON_PROMPT || switchOn('MOCK_CRASH_ON_PROMPT_FILE') || CRASH_PROMPTS.has(ordinal)) process.exit(1)
       const hold = process.env.MOCK_PROMPT_HOLD

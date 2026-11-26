@@ -148,13 +148,22 @@ export class AcpResumePanelService extends TypertRemoteService {
   /** Read the current readiness snapshot without starting discovery or any process. */
   @Remote
   backends(): BackendStatusSnapshot {
-    return this.backendStatus?.snapshot() ?? { backends: [], checking: false, dispatchEnabled: false }
+    return this.withLiveReports(this.backendStatus?.snapshot() ?? { backends: [], checking: false, dispatchEnabled: false })
   }
 
   /** An explicit user action; the readiness service owns the probe limits and cleanup. */
   @Remote
   async checkBackends(): Promise<BackendStatusSnapshot> {
-    return this.backendStatus?.check() ?? this.backends()
+    return this.backendStatus ? this.withLiveReports(await this.backendStatus.check()) : this.backends()
+  }
+
+  private withLiveReports(snapshot: BackendStatusSnapshot): BackendStatusSnapshot {
+    const live = this.pool.liveBackendReports()
+    if (!live.size) return snapshot
+    return { ...snapshot, backends: snapshot.backends.map(row => {
+      const report = live.get(row.id)
+      return report ? { ...row, report } : row
+    }) }
   }
 
   /**

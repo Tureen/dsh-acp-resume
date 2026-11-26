@@ -129,6 +129,53 @@ describe('AcpResumePanelService', () => {
     await expect(panel.checkBackends()).resolves.toEqual(empty)
   })
 
+  it('projects only live ACP reports, including changes in model, missing effort and release', async () => {
+    const select = (id: string, currentValue: string, name: string) => ({ id, name: id, type: 'select', currentValue,
+      options: [{ value: currentValue, name }] })
+    const neon = select('model', 'gemini-4-neon', 'Gemini 4 Neon')
+    const { pool, registryPath } = makePool({
+      MOCK_CONFIG_OPTIONS: JSON.stringify([neon, select('thought_level', 'high', 'High')]),
+      MOCK_UPDATED_OPTIONS: JSON.stringify([select('model', 'other', 'Another model')]),
+      MOCK_SESSION_STORE: join(tempDir('d41-sessions-'), 'store.json'),
+    })
+    const snapshot: BackendStatusSnapshot = { checking: false, dispatchEnabled: true, backends: [
+      { id: 'default', label: 'agy', configured: true, compatibility: 'supported', readiness: 'ready',
+        configuredModel: 'gemini-4-neon', configuredEffort: 'high' },
+    ] }
+    const { panel } = await mountPanel(pool, { snapshot: () => snapshot, check: async () => snapshot })
+    expect(panel.backends().backends[0]?.report).toBeUndefined()
+    const first = await pool.start(process.cwd())
+    const initial = { source: 'session', model: 'gemini-4-neon', modelName: 'Gemini 4 Neon', effort: 'high',
+      chatId: first.chatId, at: expect.any(Number) }
+    expect(panel.backends().backends[0]?.report).toEqual(initial)
+    const second = await pool.start(process.cwd())
+    expect((await panel.checkBackends()).backends[0]?.report).toEqual({ ...initial, chatId: second.chatId })
+    await pool.send(first.chatId, 'report a new model')
+    expect(panel.backends().backends[0]?.report).toEqual({ source: 'session', model: 'other', modelName: 'Another model',
+      chatId: first.chatId, at: expect.any(Number) })
+    await pool.close(first.chatId)
+    expect(panel.backends().backends[0]?.report?.model).toBe('gemini-4-neon')
+    await pool.close(second.chatId)
+    expect(panel.backends().backends[0]?.report).toBeUndefined()
+    expect(readFileSync(registryPath, 'utf8')).not.toContain('gemini-4-neon')
+    expect(snapshot.backends[0]?.report).toBeUndefined()
+  })
+
+  it('reads legacy model state from session/load without falling back to plugin configuration', async () => {
+    const { pool } = makePool({ MOCK_SESSION_STORE: join(tempDir('d41-resume-'), 'store.json'),
+      MOCK_LOAD_MODELS: JSON.stringify({ currentModelId: 'resumed', availableModels: [{ modelId: 'resumed', name: 'Resumed model' }] }) })
+    const snapshot: BackendStatusSnapshot = { checking: false, dispatchEnabled: true, backends: [{
+      id: 'default', label: 'Kiro', configured: true, compatibility: 'supported', readiness: 'ready', configuredEffort: 'high',
+    }] }
+    const { panel } = await mountPanel(pool, { snapshot: () => snapshot, check: async () => snapshot })
+    const { chatId } = await pool.start(process.cwd())
+    expect(panel.backends().backends[0]?.report).toBeUndefined()
+    await pool.close(chatId)
+    await pool.send(chatId, 'resume')
+    expect(panel.backends().backends[0]?.report).toEqual({ source: 'session', chatId, at: expect.any(Number),
+      model: 'resumed', modelName: 'Resumed model' })
+  })
+
   it('list reflects started chats, then title and turnCount after a completed turn', async () => {
     const { pool } = makePool({ MOCK_REMEMBER: '1' })
     const { panel } = await mountPanel(pool)

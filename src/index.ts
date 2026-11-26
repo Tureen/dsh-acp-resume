@@ -379,7 +379,12 @@ function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config:
   const candidates = [...backends.values()].map((backend): BackendCandidate => {
     const spec = backend.specBase
     const cli = commandKind(spec.command)
-    const base = { id: backend.name, label: cli === 'codex' ? 'Codex' : cli === 'agy' ? 'Antigravity CLI (agy)' : cli ?? 'Custom ACP', command: spec.command,
+    const configured = backend.name === DEFAULT_BACKEND ? config : config.backends?.[backend.name]
+    const base = { id: backend.name,
+      ...(configured?.model && { configuredModel: configured.model }),
+      ...(configured?.effort && { configuredEffort: configured.effort }),
+      ...(backend.protocol !== 'codex' && { sessionReporting: true as const }),
+      label: cli === 'codex' ? 'Codex' : cli === 'agy' ? 'Antigravity CLI (agy)' : cli ?? 'Custom ACP', command: spec.command,
       env: spec.env ?? {}, configured: backend.automatic !== true, ...(backend.automatic === true ? { automatic: true as const } : {}),
     }
     const args = spec.args

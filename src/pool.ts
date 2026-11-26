@@ -42,6 +42,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import type { BackendReport } from './backend-status.js'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
@@ -1137,6 +1138,21 @@ export class AcpSessionPool {
 
   private specFor(entry: RegistryEntry): Omit<AcpSessionSpec, 'cwd'> {
     return this.backendFor(entry).specBase
+  }
+
+  /** Latest report per backend from connections still alive; never retained in the registry. */
+  liveBackendReports(): ReadonlyMap<string, Extract<BackendReport, { source: 'session' }>> {
+    const reports = new Map<string, Extract<BackendReport, { source: 'session' }>>()
+    for (const chat of this.live.values()) {
+      const observed = chat.conn.settingsReport
+      if (!observed || (!observed.model && !observed.effort) || chat.conn.processSettled || chat.closing) continue
+      const entry = this.registry.get(chat.chatId)
+      if (!entry) continue
+      const backend = this.backendName(entry)
+      const latest = reports.get(backend)
+      if (!latest || observed.at >= latest.at) reports.set(backend, { ...observed, source: 'session', chatId: chat.chatId })
+    }
+    return reports
   }
 
   /** Every configured backend with its wire protocol (D28), default first. */

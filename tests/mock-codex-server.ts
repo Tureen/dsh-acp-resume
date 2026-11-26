@@ -176,7 +176,7 @@ const handle = (id: unknown, method: string, params: Json): void => {
         process.stderr.write(`${env['MOCK_CODEX_CONFIG_ERROR']}\n`)
         return fail(id, -32603, env['MOCK_CODEX_CONFIG_ERROR'])
       }
-      return reply(id, { config: { model: env['MOCK_CODEX_CONFIG_MODEL'] ?? null }, origins: {} })
+      return reply(id, { config: { model: env['MOCK_CODEX_CONFIG_MODEL'] ?? null, model_reasoning_effort: env['MOCK_CODEX_CONFIG_EFFORT'] ?? null }, origins: {} })
     case 'account/rateLimits/read':
       log(env['MOCK_REQUEST_FILE'], `account/rateLimits/read ${JSON.stringify(params)}`)
       if (env['MOCK_CODEX_RATE_LIMITS_FAIL'] === '1') return fail(id, -32603, 'usage backend unavailable')

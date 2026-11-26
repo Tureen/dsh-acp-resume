@@ -39,6 +39,7 @@
 | 23 | D37 目录修正与 D38 调度规则定制 | 创建 chat 前显式指定目标目录；支持追加规则或仅替换调度流程 | dispatcher-preset 16/16，含 rc.5 Loader 组装最终提示；完整桌面组合与全量回归仍待验收 | ◐ |
 | 24 | D39 随包使用文档与 Dispatcher 只读技能 | 全局自有技能根、六项工具开关、旧键提示、中文入口和参考页 | rc.5 标准模式和 Dispatcher 发现与加载通过；skill-docs 5/5、dispatcher-preset 16/16。本机 11 个用户技能保留。全量与完整桌面组合待验收 | ◐ |
 | 25 | D40 agy 思考强度 | ACP 配置项按后端选择，agy 四档与 Kiro 五档独立；新建、重连在选模型后应用 | agy 1.5.13 真进程无 prompt 探针；connection 50/50、engine 22/22；完整回归留给 CI | ☑ |
+| 26 | D31 范围修订与 D41 后端卡片 | 纳入 Kiro V3 3.6 系列；区分 Codex 默认值、活跃 ACP 报告与未报告 | 三后端无会话探针；compatibility 29/29、verification 19/19、panel 25/25、client 113/113、tools 57/57。追加的 D20 来源编号过滤经类型检查，交 CI 复验；完整桌面组合待验收 | ◐ |
 
 ## 冒烟剧本(第 6 步固定内容)
 

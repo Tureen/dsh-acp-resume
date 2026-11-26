@@ -31,6 +31,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
 import { acpStopReason, acpContentText, disposeAcpChild, type AcpRunSpec, type PermissionPolicy } from './run.js'
+import { readAcpSettings } from './acp-reported-settings.js'
+import type { ReportedSettings } from './backend-status.js'
 import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
 import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestResolver } from './permission-request.js'
 
@@ -138,6 +140,8 @@ export interface AcpConnection {
   readonly remoteSessionId: string
   /** True once the child's fate is known (exited, or `done` rejected); false while live. */
   readonly processSettled: boolean
+  /** Latest backend report on this live connection (D41). */
+  readonly settingsReport?: ReportedSettings & { readonly at: number }
   /**
    * Run one prompt turn to its terminal. Never rejects on a child-level
    * failure: a cancelled turn settles `aborted`, a remote failure settles
@@ -450,9 +454,16 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   // Permission requests are meaningful only while a prompt owns this connection.
   let activePermissionResolver: PermissionRequestResolver | undefined
   let activePermissionSignal: AbortSignal | undefined
+  let remoteSessionId: string | undefined
+  let settingsReport: AcpConnection['settingsReport']
+  const observeSettings = (reply: unknown): void => {
+    const settings = readAcpSettings(reply)
+    if (settings !== undefined) settingsReport = { ...settings, at: Date.now() }
+  }
   const clientApp = createAcpClientApp({ name: 'dsh-acp-resume' })
     .onNotification(methods.client.session.update, ({ params }) => {
       const update = params.update
+      if (update.sessionUpdate === 'config_option_update' && params.sessionId === remoteSessionId) observeSettings(update)
       if (update.sessionUpdate === 'agent_message_chunk' && acceptingUpdates) {
         const text = acpContentText(update.content)
         turnText += text
@@ -485,7 +496,6 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   ))
   const agent = connection.agent
 
-  let remoteSessionId: string | undefined
   let startupStage: AcpStartupStage = 'initialize'
   let signalCancelSettled!: () => void
   const cancelSettled = new Promise<void>((resolve) => { signalCancelSettled = resolve })
@@ -542,6 +552,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
             )
           }
           remoteSessionId = returned
+          observeSettings(session)
         } else {
           startupStage = 'load-session'
           if (init.agentCapabilities?.loadSession !== true) {
@@ -554,11 +565,12 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
           // Reconnect a persisted remote session. The load call repeats the
           // client-owned session inputs (cwd), matching the measured kiro-cli
           // v2 wire: { sessionId, cwd, mcpServers }.
-          await agent.request(methods.agent.session.load, {
+          const loaded = await agent.request(methods.agent.session.load, {
             sessionId: open.sessionId,
             cwd: spec.cwd,
             mcpServers: [],
           })
+          observeSettings(loaded)
         }
         const warn = (message: string): void => {
           try { spec.onError?.(new Error(message), 'error') } catch { /* sink cannot replace the failure */ }
@@ -566,13 +578,13 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
         if (spec.sessionModel !== undefined && remoteSessionId !== undefined) {
           // agy takes no `--model`; switch per session. A failure leaves the agent's default model.
           try {
-            await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel })
+            observeSettings(await agent.request('session/set_model', { sessionId: remoteSessionId, modelId: spec.sessionModel }))
           } catch (error: unknown) {
             if (error instanceof RequestError && (error.code === METHOD_NOT_FOUND || error.code === INTERNAL_ERROR)) {
               // kiro v3 answers set_model with -32603 (probe-verified); other agents with -32601. Fall back to the ACP config option.
               // Param shape {sessionId, configId, value} verified by probe against kiro v3.
               try {
-                await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'model', value: spec.sessionModel })
+                observeSettings(await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: 'model', value: spec.sessionModel }))
               } catch (fallbackError: unknown) {
                 warn(`session/set_config_option(model=${spec.sessionModel}) failed after session/set_model was rejected (-32601/-32603): ${toError(fallbackError).message}`)
               }
@@ -593,6 +605,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
             for (let attempt = 1; attempt <= attempts; attempt += 1) {
               if (flags.cancelled) break
               const reply = await agent.request('session/set_config_option', { sessionId: remoteSessionId, configId: optionId, value: effort })
+              observeSettings(reply)
               current = configOptionValue(reply, optionId)
               // Preserve Kiro compatibility with agents that return no option list.
               if (current === undefined || current === effort) break
@@ -662,6 +675,7 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   return {
     id,
     remoteSessionId: sessionId,
+    get settingsReport() { return settingsReport },
     get processSettled(): boolean {
       return processOutcome !== undefined || processFailure !== undefined
     },
