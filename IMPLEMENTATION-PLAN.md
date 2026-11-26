@@ -46,6 +46,7 @@
 | 30 | D45 右侧栏实时设置 | 15 个字段通过官方 ConfigForm 保存，首次写入确认，工具与声明更新独立于 ACP 池 | 临时 profile 的 15 种变更与拒绝路径通过；D37 即时查询首轮发现重注册间隙，已修正，原用例待复验；完整 Desktop 待验收 | ◐ |
 | 31 | D22 放行 inbox 等待（0.7.1） | 运行中 acp-chat 只拦 job_output wait:true；send、workflow 回执与单飞提示允许 wait_agent | 门测试 14/15，新增真实派发用例的输出 schema 已补 additionalProperties，待复验。jobs 12/12、workflow 19/19、pool 91/91、team 25/25；Desktop goal 场景未重放 | ◐ |
 | 32 | D46 详情页按需推送在途文本 | owner 校验、订阅时取当前轮尾部、150 ms 合帧、取消与日志收尾 | rc.5 Gateway 实测 abort/finally；真实 mock 子进程中途订阅、工作流顺序、100 个 chunk 合帧与 jsdom 交互通过。完整 Desktop UI 待验收 | ◐ |
+| 33 | D47 右侧栏统一规范与团队派工视图（Step 1–5） | 共享时间/视觉原语、顶栏与设置官方控件、后端状态三层卡与条件告警、区块重排与工作流/会话卡对齐、`team-view.ts` 零存储投影 + `TeamSection` 互斥分流、`PREVIEW_CHARS` 320 + `outputLines?` | Step 1–5 已落地（不触碰详情页）；`team-view.spec`、`client.spec`、`pool.spec`、`panel.spec` 逐文件验证，Step 6–9 详情页并行推进中 | ◐ |
 | 待办 | Codex 会话级切换 | 读取并缓存完整模型目录及逐模型强度清单，再接入每轮覆盖 | 当前显示暂不支持；版本待定 | ☐ |
 
 ## 冒烟剧本(第 6 步固定内容)

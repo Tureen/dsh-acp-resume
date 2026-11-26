@@ -2121,13 +2121,23 @@ describe('snapshot-equal (D21)', () => {
     }
   })
 
-  it('chatEqual tracks backend', () => {
-    const base = chat({ backend: 'default', backendCount: 2 })
+  it('chatEqual tracks backend, role and latestTurn', () => {
+    const base = chat({
+      backend: 'default',
+      backendCount: 2,
+      role: 'coder',
+      latestTurn: { seq: 1, startedAt: NOW - 10_000, at: NOW - 5_000, message: 'm', output: 'o', stopReason: 'completed', freshSession: false },
+    })
+    expect(chatEqual(base, { ...base, latestTurn: { ...base.latestTurn! } })).toBe(true)
     expect(chatEqual(base, { ...base, backend: 'review' })).toBe(false)
     expect(chatEqual(base, { ...base, backendCount: 1 })).toBe(false)
     expect(chatEqual(base, { ...base, backendDisplay: 'kiro-cli' })).toBe(false)
     expect(chatEqual(base, { ...base, attention: 'error' })).toBe(false)
     expect(chatEqual(base, { ...base, lastCompleted: true })).toBe(false)
+    expect(chatEqual(base, { ...base, role: 'reviewer' })).toBe(false)
+    expect(chatEqual(base, { ...base, role: undefined })).toBe(false)
+    expect(chatEqual(base, { ...base, latestTurn: { ...base.latestTurn!, output: 'changed' } })).toBe(false)
+    expect(chatEqual(base, { ...base, latestTurn: undefined })).toBe(false)
   })
 
   it('chatsEqual is order- and length-sensitive', () => {
@@ -2152,6 +2162,7 @@ describe('snapshot-equal (D21)', () => {
     expect(detailSnapshotEqual(base, { ...base, total: 2 })).toBe(false)
     expect(detailSnapshotEqual(base, { ...base, entries: [turn(1), turn(2)] })).toBe(false)
     expect(detailSnapshotEqual(base, { ...base, entries: [turn(1, { output: 'changed' })] })).toBe(false)
+    expect(detailSnapshotEqual(base, { ...base, entries: [turn(1, { outputLines: 12 })] })).toBe(false)
     expect(detailSnapshotEqual(base, { status: 'ready', entries: [turn(1)], total: 1 })).toBe(false)
   })
 })
@@ -2442,6 +2453,177 @@ describe('ChatsPanel header icons and settings drawer (D47 Step 2)', () => {
       expect(zh[key].trim().length).toBeGreaterThan(0)
       expect(en[key].trim().length).toBeGreaterThan(0)
     }
+  })
+})
 
+describe('TeamSection & mutual exclusion (D47 Step 5)', () => {
+  const fiveStates = (): PanelChat[] => [
+    chat({
+      chatId: 'chat-role-idle',
+      role: 'planner',
+      active: true,
+      lastActive: NOW - 5 * 60_000,
+    }),
+    chat({
+      chatId: 'chat-role-done',
+      role: 'reviewer',
+      active: false,
+      lastActive: NOW - 2 * 60_000,
+      latestTurn: {
+        seq: 2,
+        startedAt: NOW - 150_000,
+        at: NOW - 120_000,
+        message: '**审核 D47 改动**',
+        output: '结论：`3 处边界` 已核实无误。',
+        stopReason: 'completed',
+        freshSession: false,
+      },
+    }),
+    chat({
+      chatId: 'chat-role-cancel',
+      role: 'auditor',
+      active: true,
+      latestTurn: {
+        seq: 1,
+        startedAt: NOW - 80_000,
+        at: NOW - 60_000,
+        message: '检查配置',
+        output: '部分完成',
+        stopReason: 'aborted',
+        freshSession: false,
+      },
+    }),
+    chat({
+      chatId: 'chat-role-err',
+      role: 'researcher',
+      active: false,
+      attention: 'error',
+      latestTurn: {
+        seq: 1,
+        startedAt: NOW - 50_000,
+        at: NOW - 40_000,
+        message: '调研组件',
+        output: '',
+        stopReason: 'error',
+        freshSession: false,
+      },
+    }),
+    chat({
+      chatId: 'chat-role-run',
+      role: 'coder',
+      active: true,
+      inFlight: { chatId: 'chat-role-run', message: '## 修复 **超时** 用例', startedAt: NOW - 80_000 },
+    }),
+  ]
+
+  it('hides TeamSection when no chat has a role, and renders five urgency-ordered states in zh and en', () => {
+    const { container, rerender } = render(<ChatsPanel {...props(ready([chat()]))} />)
+    expect(container.querySelector('[data-section="team"]')).toBeNull()
+    expect(within(container.querySelector('[data-section="active-chats"]') as HTMLElement).getByRole('heading', { level: 3 }).textContent).toBe(zh.activeChatsHeading)
+
+    rerender(<ChatsPanel {...props(ready(fiveStates()))} />)
+    const section = container.querySelector('[data-section="team"]') as HTMLElement
+    expect(section).toBeTruthy()
+    expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe(zh.teamHeading)
+    expect(section.textContent).toContain('5 角色')
+    const cards = [...section.querySelectorAll('[data-team-role]')] as HTMLElement[]
+    expect(cards.map(c => [c.getAttribute('data-team-role'), c.getAttribute('data-team-state'), c.querySelector('[data-panel-card]')?.getAttribute('data-state')])).toEqual([
+      ['coder', 'running', 'running'],
+      ['researcher', 'error', 'error'],
+      ['auditor', 'cancelled', 'warn'],
+      ['reviewer', 'completed', 'none'],
+      ['planner', 'idle', 'none'],
+    ])
+    // Verify zh rendered copy across all five states (Markdown stripped on task/reply).
+    expect(cards[0]?.querySelector('[data-team-task]')?.textContent).toBe('↗ 修复 超时 用例')
+    expect(cards[0]?.querySelector('[data-team-hint]')?.textContent).toBe(zh.teamRunningHint)
+    expect(within(cards[1]!).getByText(zh.stopError)).toBeTruthy()
+    expect(cards[1]?.querySelector('[data-team-reply]')?.textContent).toBe(zh.noAnswer)
+    expect(within(cards[2]!).getByText(zh.stopAborted)).toBeTruthy()
+    expect(cards[3]?.querySelector('[data-team-task]')?.textContent).toBe('↗ 审核 D47 改动')
+    expect(cards[3]?.querySelector('[data-team-reply]')?.textContent).toBe('结论：3 处边界 已核实无误。')
+    expect(cards[3]?.querySelector('[data-team-released]')?.textContent).toBe(zh.teamRoleReleased)
+    expect(cards[4]?.querySelector('[data-team-hint]')?.textContent).toBe(zh.teamIdleHint)
+
+    // Verify en rendered copy across all five states.
+    rerender(<ChatsPanel {...props(ready(fiveStates()), { t: translator(en) })} />)
+    const enCards = [...container.querySelectorAll('[data-team-role]')] as HTMLElement[]
+    expect(within(container.querySelector('[data-section="team"]') as HTMLElement).getByRole('heading', { level: 3 }).textContent).toBe(en.teamHeading)
+    expect(enCards[0]?.querySelector('[data-team-hint]')?.textContent).toBe(en.teamRunningHint)
+    expect(within(enCards[1]!).getByText(en.stopError)).toBeTruthy()
+    expect(enCards[1]?.querySelector('[data-team-reply]')?.textContent).toBe(en.noAnswer)
+    expect(within(enCards[2]!).getByText(en.stopAborted)).toBeTruthy()
+    expect(enCards[3]?.querySelector('[data-team-released]')?.textContent).toBe(en.teamRoleReleased)
+    expect(enCards[4]?.querySelector('[data-team-hint]')?.textContent).toBe(en.teamIdleHint)
+  })
+
+  it('mutually excludes team chats from standalone lists, enforces owner isolation, and keeps full 6-section order', () => {
+    const view = { status: 'ready', checking: false, data: backendFixture } as const
+    const backendStatus = { getSnapshot: () => view, subscribe: () => () => {}, check: vi.fn(async () => {}) }
+    const wfSnapshot: WorkflowsSnapshot = {
+      status: 'ready',
+      fetchedAt: NOW,
+      running: [{ runId: 'r1', template: 'dual_review', startedAt: NOW - 10_000, currentStep: 'review', steps: [] }],
+      recent: [],
+    }
+    const rows = [
+      chat({ chatId: 'chat-role-live', role: 'coder', active: true }),
+      chat({ chatId: 'chat-role-rel', role: 'reviewer', active: false }),
+      chat({ chatId: 'chat-free-live', active: true, title: '临时会话' }),
+      chat({ chatId: 'chat-free-rel', active: false, title: '旧自由会话' }),
+      chat({ chatId: 'chat-other-owner', ownerSessionId: OTHER_SESSION, role: 'alien', active: true }),
+    ]
+    const { container } = render(<ChatsPanel {...props(ready(rows), {
+      backendStatus,
+      workflowsFor: () => ({ getSnapshot: () => wfSnapshot, subscribe: () => () => {} }),
+    })} />)
+    // Full 6-section authoritative DOM order.
+    const order = [...container.querySelectorAll('[data-section]')].map(el => el.getAttribute('data-section'))
+    expect(order).toEqual(['header', 'team', 'workflows', 'active-chats', 'backend', 'released-chats'])
+    // Standalone active section title switches to "其他活跃会话".
+    expect(within(container.querySelector('[data-section="active-chats"]') as HTMLElement).getByRole('heading', { level: 3 }).textContent).toBe(zh.otherActiveChatsHeading)
+
+    // Expand released standalone chats and assert every chatId appears at most once and cross-owner is absent.
+    fireEvent.click(screen.getByRole('button', { name: '已释放 (1) · 展开' }))
+    const allRenderedIds = [...container.querySelectorAll('[data-chat-id]')].map(el => el.getAttribute('data-chat-id'))
+    expect(new Set(allRenderedIds).size).toBe(allRenderedIds.length)
+    expect(allRenderedIds).toEqual(['chat-role-live', 'chat-role-rel', 'chat-free-live', 'chat-free-rel'])
+    expect(container.querySelector('[data-chat-id="chat-other-owner"]')).toBeNull()
+  })
+
+  it('opens detail when clicking a team card and executes release/delete from its ⋯ menu without opening detail', async () => {
+    const info = tabInfo()
+    const p = props(ready([chat({ chatId: 'chat-role-click', role: 'coder', active: true })]), { useTabInfo: info.hook })
+    const { container } = render(<ChatsPanel {...p} />)
+    const card = container.querySelector('[data-team-role="coder"]') as HTMLElement
+    fireEvent.click(card)
+    expect(info.openResource).toHaveBeenCalledTimes(1)
+    expect(info.openResource).toHaveBeenCalledWith(chatAddress('chat-role-click'))
+
+    fireEvent.click(within(card).getByRole('button', { name: zh.moreActions }))
+    await act(async () => { fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: zh.releaseProcess })) })
+    expect(p.close).toHaveBeenCalledWith('chat-role-click')
+    expect(info.openResource).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not increase acpResume/list polling frequency when rendering team chats', async () => {
+    vi.useFakeTimers()
+    const standaloneRpc = mockRpc(() => [chat({ chatId: 'chat-a', active: true })])
+    const teamRpc = mockRpc(() => [
+      chat({ chatId: 'chat-a', role: 'coder', active: true, latestTurn: { seq: 1, startedAt: NOW - 2000, at: NOW - 1000, message: 'm', output: 'o', stopReason: 'completed', freshSession: false } }),
+      chat({ chatId: 'chat-b', role: 'reviewer', active: true }),
+    ])
+    const standaloneSource = new ChatsSource(standaloneRpc, () => NOW)
+    const teamSource = new ChatsSource(teamRpc, () => NOW)
+    const stopA = standaloneSource.subscribe(() => {})
+    const stopB = teamSource.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(listCalls(teamRpc)).toBe(listCalls(standaloneRpc))
+    expect(teamRpc.calls.every(([, ep]) => ep === 'acpResume/list')).toBe(true)
+    stopA()
+    stopB()
+    standaloneSource.dispose()
+    teamSource.dispose()
   })
 })

@@ -55,6 +55,7 @@ import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import type { DispatchRoute } from './backend-readiness.js'
 import { Roster, toRosterTable, type RosterEntry, type RosterStore, type RosterTable } from './roster.js'
+import { projectChatTeamView, type LatestTurnSummary } from './team-view.js'
 import { readTeamConfig, seedingWithTeam, TEAM_CONFIG_FILE, type RoleBlueprint, type TeamConfig, type Template } from './team-config.js'
 import { WorkflowLog, type WorkflowRunRecord, type WorkflowStepSummary } from './workflow-log.js'
 import type { WorkflowObserver, WorkflowResult } from './workflow-engine.js'
@@ -131,6 +132,10 @@ export interface PooledChatInfo {
   readonly attention?: ChatAttention
   /** The newest turn-log entry is a turn that settled `completed` on its saved session; absent otherwise. */
   readonly lastCompleted?: true
+  /** Bound role name in this chat's ownerSessionId roster (D27 / D47); memory-only projection, never written to the session row. */
+  readonly role?: string
+  /** Latest settled turn summary from the cached turn log (D47); memory-only projection, zero extra disk IO. */
+  readonly latestTurn?: LatestTurnSummary
   /**
    * Set only on the result of the `start` that created the chat, when the
    * configured default's executable was not found and this chat was routed to
@@ -552,12 +557,21 @@ export class AcpSessionPool {
       ...(report?.effort && { currentEffort: report.effort }) }
   }
 
-  /** Add the newest log entry's attention or plain completion; the turn log caches by file stamp, so a poll costs one stat per chat. */
+  /** Add attention, completion, and memory-only team projections (`role` / `latestTurn`); reuses the single cached turn-log read. */
   private withAttention(chatId: string, info: PooledChatInfo): PooledChatInfo {
-    const newest = this.turnLog.read(chatId).at(-1)
+    const entries = this.turnLog.read(chatId)
+    const newest = entries.at(-1)
     const attention = attentionOf(newest)
-    if (attention !== undefined) return { ...info, attention }
-    return newest?.kind === 'turn' && newest.stopReason === 'completed' ? { ...info, lastCompleted: true } : info
+    const team = projectChatTeamView(chatId, info.ownerSessionId, (id, owner) => this.roster.roleOf(id, owner), entries)
+    return {
+      ...info,
+      ...team,
+      ...(attention !== undefined
+        ? { attention }
+        : newest?.kind === 'turn' && newest.stopReason === 'completed'
+          ? { lastCompleted: true as const }
+          : {}),
+    }
   }
 
   /** One chat's registry projection, or undefined when the chatId is unknown. */

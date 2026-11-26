@@ -8,13 +8,14 @@
  * @module dsh-acp-resume/client/panel-chrome
  */
 
-import { useMemo, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import {
   extractMarkdownPlainText,
   type MarkdownLabels,
   type MarkdownPlainTextMode,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PanelTranslate } from './locales.ts'
+import { formatPanelDuration } from './panel-time.ts'
 
 export {
   Button,
@@ -229,4 +230,32 @@ const MARKDOWN_COMPACT_CSS = `
 /** Injects scoped typography rules for `.acp-detail-md`. */
 export function MarkdownCompactStyle(): ReactNode {
   return <style>{MARKDOWN_COMPACT_CSS}</style>
+}
+
+const liveElapsedStyle: CSSProperties = {
+  flex: 'none',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontVariantNumeric: 'tabular-nums',
+}
+
+/**
+ * A running turn's elapsed time, ticking once a second while mounted. Mounted
+ * only for an in-flight turn or workflow, so no clock runs while idle (D21).
+ */
+export function LiveElapsed({ startedAt, now, t, label = 'runningFor' }: {
+  readonly startedAt: number
+  readonly now: number
+  readonly t: PanelTranslate
+  /** Copy key taking `{duration}`; `runningFor` (`已运行 …`) by default. */
+  readonly label?: 'runningFor' | 'inFlightFor'
+}): ReactNode {
+  const [drift, setDrift] = useState(0)
+  useEffect(() => {
+    const base = Date.now()
+    setDrift(0)
+    const timer = setInterval(() => { setDrift(Date.now() - base) }, 1000)
+    return () => { clearInterval(timer) }
+  }, [now, startedAt])
+  return <span style={liveElapsedStyle} data-elapsed>{t(label, { duration: formatPanelDuration(t, now + drift - startedAt) })}</span>
 }

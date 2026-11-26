@@ -34,6 +34,7 @@ src/
   team-config.ts D27:读工作区 .agents/acp-team.yml(向上至多 3 层),角色蓝图 + 模板的解析与校验;不可用时 onWarn 并视为无配置
   usage.ts       D28:后端额度统一结构与缓存(5 分钟，失败 1 分钟，过期先回旧值后台刷新、按后端单飞);Codex 只读 account/read + account/rateLimits/read
   roster.ts      D27:按 ownerSessionId 隔离的花名册(角色 → chatId),持久化在注册表 rosters 节
+  team-view.ts   D47:纯函数团队视图投影(从既有花名册与缓存轮日志派生内存可选 `role?`/`latestTurn?`、五态分类排序与按 owner 互斥分流;零新存储、零额外磁盘 IO)
   workflow-engine.ts D27:按模板执行工作流(parallel 部分容错、{param}/{stepId} 注入、merge 两模式),无状态;可选观察者
   workflow-log.ts D29:按会话的工作流运行日志 workflows/<ownerSessionId>.jsonl(run-start + run-end 摘要，不存原文与 params;同 D18 纪律)
   workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
@@ -44,7 +45,8 @@ src/
 - `src/client/ProfileSettings.tsx`（D45/D47）：两个官方 ConfigForm、逐字段保存，官方 `Switch`/`Input`/`Modal(tone="warning")` 控件与首次写回确认。
 - `src/client/live-source.ts`（D46）：仅展开的可见详情正文共享一条流，切走即取消，轮结束刷新原有详情数据源。
 
-- `src/client/ChatSettings.tsx`（D44）：展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
+- `src/client/ChatSettings.tsx`（D44/D47）：官方 `DisclosureRow` 展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
+- `src/client/TeamSection.tsx`（D47）：团队派工视图，每角色一张三层卡，按进行中/出错/取消/完成/空闲排序，点击直达详情，`⋯` 菜单释放/删除，与自由会话互斥分流。
 - `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；除 D46 展开的流式正文外，数据跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
   job-wait-gate.ts  D22:tools/pre-execute 监听逻辑,只拒绝运行中 acp-chat 任务的 job_output wait:true；allowChatJobWait 为 true 时不挂门
@@ -77,7 +79,7 @@ tests/
   engine.spec.ts         --agent-engine 辅助函数与两条 spawn 路径的 argv
   job-wait-gate.spec.ts  D22 门:decideJobWait 纯函数、allowChatJobWait 开关、真实 ToolRuntime 派发
   turn-log.spec.ts       按轮日志单元(追加/读/截断/容错/裁剪/删除/写失败)
-  panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom);panel-time.spec.ts / panel-chrome.spec.tsx 共享时间与视觉原语(D47)
+  panel.spec.ts          面板 host 半 Remote 方法;client.spec.tsx 面板浏览器半(jsdom);panel-time.spec.ts / panel-chrome.spec.tsx 共享时间与视觉原语(D47);team-view.spec.ts 团队派工纯函数(五态/跨 owner/截断/互斥分流,D47)
   mock-codex-server.ts   Codex app-server mock(D25;无 SDK,会话表落文件支持 thread/resume)
   mock-acp-server.ts     扩展了 session/load 的 mock;会话表落文件以支持跨进程重连(D9/D12)
   fixtures/  helpers/    loader 夹具与测试辅助
@@ -96,7 +98,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 724 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 94 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 130 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 737 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 95 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 137 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5;新套件落地时在此登记。
 
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。

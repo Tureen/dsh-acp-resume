@@ -24,7 +24,7 @@
  * @module dsh-acp-resume/client/ChatsPanel
  */
 
-import { useCallback, useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import {
   Button,
   DisclosureRow,
@@ -35,6 +35,7 @@ import {
   IconRefreshOutlineRegular,
   IconSettingsOutlineRegular,
   IconWarningOutlineRegular,
+  LiveElapsed,
   Menu,
   Modal,
   PanelCard,
@@ -49,8 +50,10 @@ import {
 } from './panel-chrome.tsx'
 import { formatHybridTime, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { BackendStatus } from '../backend-status.ts'
+import { partitionOwnerChats } from '../team-view.ts'
 import { ProfileSettings } from './ProfileSettings.tsx'
 import { ChatSettings } from './ChatSettings.tsx'
+import { TeamSection } from './TeamSection.tsx'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import type { PanelFeatures } from '../panel-features.ts'
@@ -66,19 +69,6 @@ export type ChatsPanelProps = Omit<ChatsPanelInjected, 'hooks'> & {
   /** The DSH session viewing the panel; without one no owned chats are discoverable. */
   readonly currentSessionId: string | undefined
   readonly t: PanelTranslate
-}
-
-/** Newest `lastActive` first. */
-function byLastActive(a: PanelChat, b: PanelChat): number {
-  return b.lastActive - a.lastActive
-}
-
-/** Chats with a turn in flight first (newest prompt first), then the rest by newest `lastActive`. */
-function activeOrder(a: PanelChat, b: PanelChat): number {
-  if (a.inFlight !== undefined && b.inFlight !== undefined) return b.inFlight.startedAt - a.inFlight.startedAt
-  if (a.inFlight !== undefined) return -1
-  if (b.inFlight !== undefined) return 1
-  return byLastActive(a, b)
 }
 
 /** Active chats fold only past this many: the toggle takes a row itself, so hiding a single chat saves nothing. */
@@ -254,28 +244,7 @@ export function elapsedTime(t: PanelTranslate, startedAt: number, now: number): 
   return t('runningFor', { duration: formatDuration(t, now - startedAt) })
 }
 
-/**
- * A running turn's elapsed time, ticking once a second while mounted. It is
- * mounted only for a chat with a turn in flight, so no clock runs when nothing
- * is running, and only this span re-renders on each tick. The base is the
- * snapshot's `fetchedAt` (host time) plus local time passed since mount.
- */
-export function LiveElapsed({ startedAt, now, t, label = 'runningFor' }: {
-  readonly startedAt: number
-  readonly now: number
-  readonly t: PanelTranslate
-  /** Copy key taking `{duration}`; `runningFor` (`已运行 …`) by default. */
-  readonly label?: 'runningFor' | 'inFlightFor'
-}): ReactNode {
-  const [drift, setDrift] = useState(0)
-  useEffect(() => {
-    const base = Date.now()
-    setDrift(0)
-    const timer = setInterval(() => { setDrift(Date.now() - base) }, 1000)
-    return () => { clearInterval(timer) }
-  }, [now, startedAt])
-  return <span style={styles.elapsed} data-elapsed>{t(label, { duration: formatDuration(t, now + drift - startedAt) })}</span>
-}
+export { LiveElapsed }
 
 /** Longest in-flight message excerpt on a card, in characters (code points). */
 const CURRENT_MESSAGE_MAX = 60
@@ -790,26 +759,27 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
   const now = snapshot.fetchedAt ?? 0
   // The session-scoped seat gives the viewer identity. A missing identity has
   // no discoverable owner set, so it deliberately shows no profile-global rows.
-  const visible = currentSessionId === undefined
-    ? []
-    : snapshot.chats.filter(chat => chat.ownerSessionId === currentSessionId)
-  const activeChats = visible.filter(c => c.active).sort(activeOrder)
-  const releasedChats = visible.filter(c => !c.active).sort(byLastActive)
+  // Role-bound chats go exclusively to TeamSection; standalone chats split into
+  // active and released lists so no chatId appears twice (D20 / D47).
+  const { visible, team: teamChats, activeStandalone: activeChats, releasedStandalone: releasedChats } = partitionOwnerChats(snapshot.chats, currentSessionId)
+  const openChat = (target: PanelChat): void => { tab.actions.openResource(chatAddress(target.chatId)) }
+  const releaseChat = (target: PanelChat): void => {
+    // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
+    if (target.inFlight === undefined) run(target.chatId, close)
+    else setConfirming({ chat: target, kind: 'release' })
+  }
+  const deleteChat = (target: PanelChat): void => { setConfirming({ chat: target, kind: 'delete' }) }
   const cards = (chats: readonly PanelChat[]): ReactNode => (
     <ul style={styles.list}>
       {chats.map(chat => (
         <ChatCard key={chat.chatId} settings={settings} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
-          onOpen={(target) => { tab.actions.openResource(chatAddress(target.chatId)) }}
-          onRelease={(target) => {
-            // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
-            if (target.inFlight === undefined) run(target.chatId, close)
-            else setConfirming({ chat: target, kind: 'release' })
-          }}
-          onDelete={(target) => { setConfirming({ chat: target, kind: 'delete' }) }} />
+          onOpen={openChat} onRelease={releaseChat} onDelete={deleteChat} />
       ))}
     </ul>
   )
   const runningCount = visible.filter(c => c.inFlight !== undefined).length
+  const liveCount = visible.filter(c => c.active).length
+  const releasedCount = visible.length - liveCount
   const foldable = activeChats.length > ACTIVE_FOLD_ABOVE
   const shownActive = activeOpen || !foldable ? activeChats : activeChats.slice(0, ACTIVE_FOLD_SHOWN)
   const confirmingShort = confirming === undefined ? '' : shortChatId(confirming.chat.chatId)
@@ -844,7 +814,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
           <>
             <p style={styles.countNote} data-count="mine">{t('countMine', { count: visible.length, total: snapshot.chats.length })}</p>
             <p style={styles.countNote} data-count="states">
-              {t('statsLine', { running: runningCount, idle: activeChats.length - runningCount, released: releasedChats.length })}
+              {t('statsLine', { running: runningCount, idle: liveCount - runningCount, released: releasedCount })}
             </p>
           </>
         ) : null}
@@ -888,11 +858,12 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
           )
           : (
             <>
-              {/* ② Team dispatch (Step 5 reserved) */}
+              <TeamSection chats={teamChats} settings={settings} now={now} pending={pending}
+                onOpen={openChat} onRelease={releaseChat} onDelete={deleteChat} t={t} />
               <WorkflowsSection source={workflowsFor?.(config?.workflowEnabled ?? true) ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
               {activeChats.length === 0 ? null : (
                 <section style={styles.section} data-section="active-chats">
-                  <SectionHeading title={t('activeChatsHeading')} aside={t('chatCountShort', { count: activeChats.length })} />
+                  <SectionHeading title={t(teamChats.length > 0 ? 'otherActiveChatsHeading' : 'activeChatsHeading')} aside={t('chatCountShort', { count: activeChats.length })} />
                   {cards(shownActive)}
                   {!foldable ? null : (
                     <Button size="sm" variant="ghost" style={styles.groupToggle} aria-expanded={activeOpen}

@@ -1685,3 +1685,51 @@ describe('D46 live turn output', () => {
     expect(await turn).toMatchObject({ stopReason: 'completed', output: 'first + next' })
   })
 })
+
+describe('D47 team-view memory projection', () => {
+  it('projects owner-scoped role and cached latestTurn on listChats without altering registry bytes', async () => {
+    const workspace = tempDir('acp-team-proj-ws-')
+    mkdirSync(join(workspace, '.agents'), { recursive: true })
+    writeFileSync(join(workspace, '.agents', 'acp-team.yml'), [
+      'roles:',
+      '  - name: reviewer',
+      '    cwd: .',
+    ].join('\n'))
+    const { pool, registryPath } = makePool({ env: { MOCK_TEXT: `\n  第一行回执\n第二行被忽略` } })
+    const sent = await pool.sendByRole('reviewer', '\n  审核任务首行\n第二行', { ownerSessionId: 'owner-1', workspaceDir: workspace })
+    const standalone = await pool.start(workspace, undefined, { ownerSessionId: 'owner-1' })
+
+    const beforeBytes = readFileSync(registryPath)
+    const listed = pool.listChats()
+    const listedAgain = pool.listChats()
+    const afterBytes = readFileSync(registryPath)
+
+    // Zero registry writes or schema changes: file bytes are identical.
+    expect(Buffer.compare(beforeBytes, afterBytes)).toBe(0)
+    const persisted = JSON.parse(afterBytes.toString('utf8')) as { sessions: Record<string, unknown>[] }
+    for (const row of persisted.sessions) {
+      expect(row).not.toHaveProperty('role')
+      expect(row).not.toHaveProperty('latestTurn')
+    }
+
+    const roleRow = listed.find(c => c.chatId === sent.chatId)
+    expect(roleRow).toMatchObject({
+      chatId: sent.chatId,
+      ownerSessionId: 'owner-1',
+      role: 'reviewer',
+      latestTurn: {
+        seq: 1,
+        message: '审核任务首行',
+        output: '第一行回执',
+        stopReason: 'completed',
+        freshSession: false,
+      },
+    })
+    expect(listedAgain.find(c => c.chatId === sent.chatId)).toEqual(roleRow)
+
+    const standaloneRow = listed.find(c => c.chatId === standalone.chatId)
+    expect(standaloneRow).toBeDefined()
+    expect(standaloneRow).not.toHaveProperty('role')
+    expect(standaloneRow).not.toHaveProperty('latestTurn')
+  })
+})

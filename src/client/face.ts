@@ -9,6 +9,7 @@
 
 import type { PanelFeatures } from '../panel-features.ts'
 import type { BackendStatusSnapshot } from '../backend-status.ts'
+import type { LatestTurnSummary } from '../team-view.ts'
 
 /**
  * One chat as `acpResume/list` returns it. Mirrors the host `PooledChatInfo`
@@ -44,6 +45,10 @@ export interface PanelChat {
   readonly backendDisplay?: string
   /** Configured backend count; controls whether a badge is useful. */
   readonly backendCount?: number
+  /** Bound role name in this chat's ownerSessionId roster (D27 / D47); absent for standalone chats or older hosts. */
+  readonly role?: string
+  /** Latest settled turn summary projected from the cached turn log (D47); absent when no turn settled or with older hosts. */
+  readonly latestTurn?: LatestTurnSummary
 }
 
 /** One backend's quota as the host reports it (D28; structural twin of the host `BackendUsage`). */
@@ -118,6 +123,8 @@ export interface TurnItem {
   readonly output: string
   readonly messageMore: boolean
   readonly outputMore: boolean
+  /** Non-empty line count of the full answer text in the turn log (D47); absent with older hosts. */
+  readonly outputLines?: number
   readonly stopReason: string
   readonly freshSession: boolean
   readonly diagnostic?: string

@@ -259,6 +259,11 @@ export const zh = {
   activeChatsHeading: '活跃会话',
   otherActiveChatsHeading: '其他活跃会话',
   chatCountShort: '{count} 条',
+  teamHeading: '团队派工',
+  teamRoleCount: '{count} 角色',
+  teamIdleHint: '等待派工',
+  teamRunningHint: '正在运行 · 点击查看实时输出',
+  teamRoleReleased: '已释放',
 } satisfies Record<string, string>
 
 /** Panel copy key. */
@@ -516,6 +521,11 @@ export const en: Record<PanelCopyKey, string> = {
   activeChatsHeading: 'Active chats',
   otherActiveChatsHeading: 'Other active chats',
   chatCountShort: '{count}',
+  teamHeading: 'Team dispatch',
+  teamRoleCount: '{count} roles',
+  teamIdleHint: 'Idle · awaiting task',
+  teamRunningHint: 'Running · open for live output',
+  teamRoleReleased: 'released',
 }
 
 /** Structural twin of the locale `t` seat for this namespace. */

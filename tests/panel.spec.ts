@@ -367,17 +367,18 @@ describe('AcpResumePanelService detail reads (D18)', () => {
     expect(newest.total).toBe(3)
   })
 
-  it('cuts previews to 120 characters and flags that the full text is longer; turn returns it whole', async () => {
-    const long = '长'.repeat(300)
-    const { pool } = makePool({ MOCK_TEXT: long })
+  it('cuts previews to 320 characters, reports full outputLines, and turn returns it whole', async () => {
+    const longOutput = Array.from({ length: 10 }, (_, i) => `第${i + 1}行${'长'.repeat(40)}`).join('\n')
+    const longMessage = `问${'题'.repeat(399)}`
+    const { pool } = makePool({ MOCK_TEXT: longOutput })
     const { panel } = await mountPanel(pool)
     const chat = await pool.start(process.cwd())
-    await pool.send(chat.chatId, `问${'题'.repeat(299)}`)
+    await pool.send(chat.chatId, longMessage)
     const [entry] = panel.turns(chat.chatId, 50).entries
-    expect(entry).toMatchObject({ messageMore: true, outputMore: true })
-    expect(Array.from((entry as { message: string }).message)).toHaveLength(120)
-    expect(Array.from((entry as { output: string }).output)).toHaveLength(120)
-    expect(panel.turn(chat.chatId, 1)).toMatchObject({ seq: 1, kind: 'turn', message: `问${'题'.repeat(299)}`, output: long })
+    expect(entry).toMatchObject({ messageMore: true, outputMore: true, outputLines: 10 })
+    expect(Array.from((entry as { message: string }).message)).toHaveLength(320)
+    expect(Array.from((entry as { output: string }).output)).toHaveLength(320)
+    expect(panel.turn(chat.chatId, 1)).toMatchObject({ seq: 1, kind: 'turn', message: longMessage, output: longOutput })
   })
 
   it('carries a failed turn with its diagnostic', async () => {

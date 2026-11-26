@@ -13,6 +13,19 @@
 
 import type { ChatsSnapshot, DetailSnapshot, EventItem, PanelChat, RunningItem, TurnItem } from './face.ts'
 
+/** Two latest-turn summaries carry the same facts. */
+function latestTurnEqual(a: PanelChat['latestTurn'], b: PanelChat['latestTurn']): boolean {
+  if (a === b) return true
+  if (a === undefined || b === undefined) return false
+  return a.seq === b.seq
+    && a.startedAt === b.startedAt
+    && a.at === b.at
+    && a.message === b.message
+    && a.output === b.output
+    && a.stopReason === b.stopReason
+    && a.freshSession === b.freshSession
+}
+
 /** Two chat rows carry the same facts (the fields the panel renders). */
 export function chatEqual(a: PanelChat, b: PanelChat): boolean {
   return a.chatId === b.chatId
@@ -33,6 +46,8 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.attention === b.attention
     && a.lastCompleted === b.lastCompleted
     && a.backendCount === b.backendCount
+    && a.role === b.role
+    && latestTurnEqual(a.latestTurn, b.latestTurn)
 }
 
 /** Two chat lists hold the same rows in the same order. */
@@ -46,7 +61,7 @@ function entryEqual(a: TurnItem | EventItem | RunningItem, b: TurnItem | EventIt
   if (a.kind === 'turn' && b.kind === 'turn') {
     return a.seq === b.seq && a.startedAt === b.startedAt && a.at === b.at
       && a.message === b.message && a.output === b.output
-      && a.messageMore === b.messageMore && a.outputMore === b.outputMore
+      && a.messageMore === b.messageMore && a.outputMore === b.outputMore && a.outputLines === b.outputLines
       && a.stopReason === b.stopReason && a.freshSession === b.freshSession && a.diagnostic === b.diagnostic
   }
   if (a.kind === 'event' && b.kind === 'event') {

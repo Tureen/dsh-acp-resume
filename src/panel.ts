@@ -38,8 +38,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 /** Cordis service key and wire namespace of the panel Remote methods. */
 export const PANEL_SERVICE_KEY = 'acpResume'
 
-/** Characters of a message or answer carried in a preview. */
-export const PREVIEW_CHARS = 120
+/** Characters of a message or answer carried in a preview (D47: raised from 120 to 320). */
+export const PREVIEW_CHARS = 320
 /** Entries `turns` returns when `limit` is omitted. */
 export const DEFAULT_TURNS_LIMIT = 50
 /** Largest `limit` `turns` accepts. */
@@ -56,6 +56,8 @@ export interface TurnSummary {
   /** The full message is longer than the preview. */
   readonly messageMore: boolean
   readonly outputMore: boolean
+  /** Non-empty line count of the full answer text in the turn log (D47, optional for older hosts). */
+  readonly outputLines?: number
   readonly stopReason: string
   readonly freshSession: boolean
   readonly diagnostic?: string
@@ -96,6 +98,10 @@ function preview(text: string): { text: string; more: boolean } {
     : { text: trimmed, more: false }
 }
 
+function countNonEmptyLines(text: string): number {
+  return text.split('\n').filter(line => line.trim() !== '').length
+}
+
 function summarize(entry: LogEntry): TurnSummary | EventSummary {
   if (entry.kind === 'event') {
     return {
@@ -111,6 +117,7 @@ function summarize(entry: LogEntry): TurnSummary | EventSummary {
     message: message.text, output: output.text,
     messageMore: message.more || entry.messageTruncated === true,
     outputMore: output.more || entry.outputTruncated === true,
+    outputLines: countNonEmptyLines(entry.output),
     stopReason: entry.stopReason, freshSession: entry.freshSession,
     ...(entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic }),
   }

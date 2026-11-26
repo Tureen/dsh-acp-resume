@@ -20,7 +20,7 @@ description: 用户询问 dsh-acp-resume 怎么配置、怎么派工和续聊、
 - 在 `~/.dsh/profiles/<name>/cordis.patch.yml` 顶层写 `- id:`。覆盖主行 `subagent-acp-resume` 时，整个 `config` 会替换，须保留顶层 `command` 和仍需使用的参数。
 - 独立行 `acp-dispatcher-settings` 的 `config.dispatcherTools` 有六项。默认 `readOnlyFs: false`；`web: true`、`present: true`、`todo: true`、`askUser: true`、`compaction: true`。开启只读文件也开启 skill 加载。
 - 同一行的 `config.dispatcherPrompt.extraRules` 默认空，非空文字在自带规则后追加；`overrideRules: true` 需要非空文字，只替换调度流程，保留身份和工具指引。手改 profile 后重启 DSH，在新会话选模式。
-- 工作区角色定义放在 `.agents/acp-team.yml`。默认 `roles: true`、`workflow: false`。先确认任务目标的绝对目录，再建 chat；追问用原 chatId，后台 job 完成通知到达后用 job_output 收结果。
+- 工作区角色定义放在 `.agents/acp-team.yml`。默认 `roles: true`、`workflow: false`，已派工角色会在侧栏「团队派工」视图按状态展示。先确认任务目标的绝对目录，再建 chat；追问用原 chatId，后台 job 完成通知到达后用 job_output 收结果。
 - agy 的持久会话可设 `modelSelect: session`、`effort: high`。agy 的 `thought_level` 支持 low/medium/high/xhigh，实际档位随模型而异；Kiro 另支持 max，Codex 用自己的每轮强度。
 - 面板的「后端状态」显示后端实际报告的模型与思考强度，配置与报告不同会标出。看清来源：Codex 无会话探测给默认值，ACP 会话报告给最近活跃连接的值。
 - 查看在途输出：打开具体 ACP 会话详情并展开运行轮；结算后查看同一轮的日志结果。

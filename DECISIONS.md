@@ -1066,9 +1066,9 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
 - **组件与表面**:全部卡片统一 10px 圆角与 `border-l2` 描边(解决浅色主题 `layer-1/2/3` 同白无层级),卡片表面使用 `--dsw-alias-card-fill`;折叠统一用官方 `DisclosureRow`,操作按钮用官方 `Button`+`Icon*`,确认框统一用官方 `Modal`,单卡释放/删除统一收进 `⋯` `Menu`;所有卡片遵循「主行 + 次行(至多 2 行,经官方 `extractMarkdownPlainText` 去语法)+ 按需展开」三层密度。
 - **空状态与区块顺序**:按需区块(团队、工作流、额度、已释放)为空时隐藏,常驻区块给明确指引。主面板顺序按注意力衰减排列:顶栏(含低频设置入口与条件派工告警)→ 团队派工 → 工作流 → 其他活跃会话 → 后端状态与额度(常驻单行折叠)→ 已释放历史。
 
-### 团队派工视图(待实施,Step 5;零新存储)
+### 团队派工视图(已落地,Step 5;零新存储)
 
-- **数据源**:完全派生自已有存储(D18/D20/D32)。计划在 `pool.listChats()` 的 `PooledChatInfo` 上增加两个纯内存可选投影字段:`role?`(取自注册表 `rosters` 节,按 `ownerSessionId` 隔离)与 `latestTurn?`(复用 `withAttention` 已命中的 `TurnLog` 缓存最新一条,零新增磁盘 IO、零新 Remote)。
+- **数据源**:完全派生自已有存储(D18/D20/D32)。`pool.listChats()` 的 `PooledChatInfo` 增加两个纯内存可选投影字段:`role?`(取自注册表 `rosters` 节,按 `ownerSessionId` 隔离)与 `latestTurn?`(复用 `withAttention` 已命中的 `TurnLog` 缓存最新一条,零新增磁盘 IO、零新 Remote);拼装与五态分类/互斥分流逻辑独立在纯函数模块 `src/team-view.ts`。
 - **五态与形态**:每角色一张统一三层卡片,按 `进行中 > 出错 > 取消 > 完成 > 空闲(花名册中尚无已结算轮)` 排序;展示角色名、状态点、后端、时间/耗时、去 Markdown 语法的最新任务与回执摘要,点击整卡穿透至 `ChatDetail`,释放/删除经 `⋯` 菜单操作。
 - **互斥分流(防重复)**:本会话绑定了花名册角色的 chat(`chat.role !== undefined`)只出现在「团队派工」,未绑定的自由 chat 出现在「其他活跃会话 / 已释放」(无花名册时团队区隐藏,下方恢复「活跃会话」),同一 `chatId` 绝不重复出现。
 
@@ -1080,6 +1080,6 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
   - **Step 2(已落地)**:顶栏官方图标按钮(`[↻]`/`[⚙]`)与 `ProfileSettings` 官方 `Switch`/`Input`/`Modal(tone="warning")` 对齐。
   - **Step 3(已落地)**:后端状态与额度对齐(`DisclosureRow`、三层卡、消除 `toISOString()`、条件告警条)。
   - **Step 4(已落地)**:工作流、会话卡与单会话设置对齐,按注意力顺序重排主面板区块(同步修订 D29)。
-  - **Step 5(待实施)**:团队派工视图本体(`pool.ts` 零存储投影、`TeamSection`、互斥分流、`PREVIEW_CHARS` 320)。
+  - **Step 5(已落地)**:团队派工视图本体(`src/team-view.ts`、`pool.ts` 零存储投影、`TeamSection.tsx`、互斥分流、`PREVIEW_CHARS` 320 与 `outputLines?`)。
   - **Step 6–9(待实施,流式合入后)**:详情页接入共享时间与官方 Markdown 清洗/渲染 → 单轮结构化卡片与粘性顶栏 → 近期 3 轮/更早折叠/跨天分节 → 在途独立工作区与 `LiveSource` 无缝交接。
 
