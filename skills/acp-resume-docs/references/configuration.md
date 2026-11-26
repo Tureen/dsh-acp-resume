@@ -2,7 +2,7 @@
 
 先确认安装时的 profile 名。其 `cordis.patch.yml` 顶层的 `- id: subagent-acp-resume` 是 ACP 主插件行；行内 `name` 为 `dsh-acp-resume`。启用 bundle 后它已经存在。调整字段时覆盖该行，保留完整的 `config`。只写一个 `backends` 或 `roles` 会丢失原有的顶层启动配置。
 
-下表是主行的 22 个字段。默认列取插件 schema。bundle 另行填写了 `command: kiro-cli`、`args: [acp]` 和 `permission: allow`。整块覆盖后省略某字段，得到的是 schema 默认值。
+下表是主行的 23 个字段。默认列取插件 schema。bundle 另行填写了 `command: kiro-cli`、`args: [acp]` 和 `permission: allow`。整块覆盖后省略某字段，得到的是 schema 默认值。
 
 | 字段 | 默认 | 用途、何时修改 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | disposeEofGraceMs | 6000 | 关闭时等待 EOF 自然退出和冲洗数据的毫秒数。外部 agent 需要更长退出时间时调整。 |
 | disposeGraceMs | 3000 | 释放时等待在途轮结算、终止子进程的阶段宽限。它不限制正常回答时间。 |
 | idleTimeoutMs | 600000 | 无活动多久释放进程；本地记录保留。三个时间字段均须为正有限数且不超过 2147483647 毫秒。 |
+| probeTimeoutMs | Codex 15000，其他 ACP 5000（毫秒） | CLI 较慢时可显式设置 1–2147483647 的整数，统一覆盖每个后端的预算。仅改此项时，下一轮检测读新值，在途会话继续。 |
 | registryPath | 空字符串 | 默认使用 $DSH_HOME/storages/acp-resume/registry.json。另设时须为绝对路径；turns 和 workflows 日志随父目录存放。 |
 | backends | 未设 | 命名后端字典。名称只含 ASCII 字母、数字、下划线、连字符，长度 1–32，default 已由顶层占用。 |
 | defaultBackend | 未设 | 固定新会话优先使用的已定义后端；工具显式选择优先，已有 chat 继续原后端。 |

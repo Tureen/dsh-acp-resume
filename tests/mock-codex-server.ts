@@ -199,6 +199,11 @@ const handle = (id: unknown, method: string, params: Json): void => {
       }
       const data = [{ id: 'mock-model', model: 'mock-model', hidden: false, isDefault: true }]
       if (params['includeHidden'] === true) data.push({ id: 'mock-model-hidden', model: 'mock-model-hidden', hidden: true, isDefault: false })
+      const delay = Number(env['MOCK_CODEX_MODEL_DELAY_MS'])
+      if (delay > 0) {
+        setTimeout(() => reply(id, { data, nextCursor: null }), delay)
+        return
+      }
       return reply(id, { data, nextCursor: null })
     }
     case 'thread/start': {

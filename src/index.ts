@@ -155,6 +155,8 @@ export interface Config {
   disposeGraceMs?: number
   /** Idle window (ms) after a settled chat turn before the chat's process is released. */
   idleTimeoutMs?: number
+  /** Optional live detection budget in milliseconds, shared by all backends when set. */
+  probeTimeoutMs?: number
   /** Registry file for durable chats; defaults to $DSH_HOME/storages/acp-resume/registry.json. */
   registryPath?: string
   /** Optional named ACP backends; top-level settings remain the default backend. */
@@ -194,7 +196,9 @@ export interface Config {
   workflow?: boolean
 }
 
-export const Config: z<Config> = z.object({
+type LiveConfig = Omit<Config, 'probeTimeoutMs'> & { probeTimeoutMs?: { get(): number | undefined } }
+
+export const Config: z<Config, LiveConfig> = z.object({
   providerName: z.string().default('acp-resume'),
   command: z.string().required(),
   args: z.array(z.string()).default([]),
@@ -209,6 +213,7 @@ export const Config: z<Config> = z.object({
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
   idleTimeoutMs: z.number().default(600_000),
+  probeTimeoutMs: z.number().min(1).max(MAX_TIMER_DELAY_MS).step(1).volatile(),
   registryPath: z.string().default(''),
   backends: z.dict(z.object({
     command: z.string().required(),
@@ -240,7 +245,7 @@ function assertPositiveFinite(name: string, value: number): void {
   }
 }
 
-type ResolvedConfig = Required<Config>
+type ResolvedConfig = Required<Omit<LiveConfig, 'probeTimeoutMs'>> & Pick<LiveConfig, 'probeTimeoutMs'>
 
 /**
  * The ACP provider. Advertises NO start-time capabilities: an out-of-process
@@ -380,7 +385,7 @@ function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config:
     const spec = backend.specBase
     const cli = commandKind(spec.command)
     const configured = backend.name === DEFAULT_BACKEND ? config : config.backends?.[backend.name]
-    const base = { id: backend.name,
+    const base = { id: backend.name, protocol: backend.protocol,
       ...(configured?.model && { configuredModel: configured.model }),
       ...(configured?.effort && { configuredEffort: configured.effort }),
       ...(backend.protocol !== 'codex' && { sessionReporting: true as const }),
@@ -432,12 +437,14 @@ function sessionWorkingDirectory(ctx: Context, agent: Agent): string {
   return agent.session?.header?.cwd ?? process.cwd()
 }
 
-export function apply(ctx: Context, config: Config): void {
+export function apply(ctx: Context, config: LiveConfig): void {
   // schemastery (Config) has already filled every defaulted field.
   const resolved = config as ResolvedConfig
   assertPositiveFinite('disposeEofGraceMs', resolved.disposeEofGraceMs)
   assertPositiveFinite('disposeGraceMs', resolved.disposeGraceMs)
   assertPositiveFinite('idleTimeoutMs', resolved.idleTimeoutMs)
+  const budget = resolved.probeTimeoutMs?.get()
+  if (budget !== undefined) assertPositiveFinite('probeTimeoutMs', budget)
   if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
     throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
   }
@@ -472,75 +479,78 @@ export function apply(ctx: Context, config: Config): void {
   // A configured Kiro command remains the default unless DSH cannot resolve it.
   const allowMissingKiroFallback = resolved.discoverBackends && commandKind(resolved.command) === 'kiro-cli'
   const preferred = resolved.defaultBackend ?? (allowMissingKiroFallback ? undefined : DEFAULT_BACKEND)
-  const readiness = new BackendReadinessService({
-    candidates: readinessCandidates(backends, resolved), preferred,
-    allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: ctx.subprocess,
-    onWarn: message => { ctx.logger.warn(message) },
-    verify: (candidate, executable, signal) => {
-      const spec = backends.get(candidate.id)!
-      return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal,
-        (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
-    },
-  })
-  let checkedAtStartup = false
-  ctx.effect(() => () => readiness.dispose())
   // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled
   // and every live chat process released; the registry file survives (D14).
   ctx.effect(() => () => pool?.disposeAll())
-  ctx.inject(['tools'], (scope) => {
-    pool ??= new AcpSessionPool({
-      specBase: backends.get(DEFAULT_BACKEND)!.specBase,
-      backends,
-      registryPath,
-      idleTimeoutMs: resolved.idleTimeoutMs,
+  ctx.inject(['subprocess'], diagnostics => {
+    const readiness = new BackendReadinessService({
+      candidates: readinessCandidates(backends, resolved), preferred,
+      allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: diagnostics.subprocess,
+      get timeoutMs() { return resolved.probeTimeoutMs?.get() },
       onWarn: message => { ctx.logger.warn(message) },
-      dispatch: readiness,
+      verify: (candidate, executable, signal) => {
+        const spec = backends.get(candidate.id)!
+        return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal,
+          (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
+      },
     })
-    // Registered in the tools scope: the tools are revoked when the service goes away.
-    const chatPool = pool
-    // D33: `roles` decides role support; `workflow` only adds templates (acp_workflow) on top of it.
-    const roles: RoleSupport | undefined = resolved.roles
-      ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) }, templates: resolved.workflow }
-      : undefined
-    const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
-    const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
-      false, preferred, allowMissingKiroFallback && preferred === undefined)
-    // D32/D33: the team list exists with roles; with roles and workflow off the tool surface is unchanged.
-    for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
-      scope.effect(() => scope.tools.register(tool))
-    }
-    if (roles !== undefined) {
-      scope.inject(['systemPrompt', 'agentPresets'], promptScope => registerTeamPrompt(promptScope, teamListName(resolved.toolPrefix)))
-    }
-    usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
-    if (Object.values(resolved.backends ?? {}).some(backend => backend.protocol === 'codex')) {
-      const usageTool = chatUsageTool(usage)
-      scope.effect(() => scope.tools.register(usageTool))
-    }
-    // Only changes to the jobs service affect send/workflow registration, never readiness.
-    let unregister: (() => void) | undefined
-    let registeredJobs: ChatJobsFace | undefined
-    const registerSend = (jobs?: ChatJobsFace): void => {
-      if (unregister !== undefined && registeredJobs === jobs) return
-      unregister?.()
-      registeredJobs = jobs
-      const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles, resolved.allowChatJobWait),
-        ...(roles === undefined || !resolved.workflow ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
-      const revokers = definitions.map(tool => scope.tools.register(tool))
-      unregister = () => { for (const revoke of revokers) revoke() }
-    }
-    scope.effect(() => { registerSend(scope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
-    scope.inject(['jobs'], (jobsScope) => {
-      registerSend(jobsScope.jobs)
-      if (!resolved.allowChatJobWait) {
-        jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
+    let checkedAtStartup = false
+    diagnostics.effect(() => () => readiness.dispose())
+    diagnostics.inject(['tools'], (scope) => {
+      pool ??= new AcpSessionPool({
+        specBase: backends.get(DEFAULT_BACKEND)!.specBase,
+        backends,
+        registryPath,
+        idleTimeoutMs: resolved.idleTimeoutMs,
+        onWarn: message => { ctx.logger.warn(message) },
+        dispatch: readiness,
+      })
+      // Registered in the tools scope: the tools are revoked when the service goes away.
+      const chatPool = pool
+      // D33: `roles` decides role support; `workflow` only adds templates (acp_workflow) on top of it.
+      const roles: RoleSupport | undefined = resolved.roles
+        ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) }, templates: resolved.workflow }
+        : undefined
+      const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
+      const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
+        false, preferred, allowMissingKiroFallback && preferred === undefined)
+      // D32/D33: the team list exists with roles; with roles and workflow off the tool surface is unchanged.
+      for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
+        scope.effect(() => scope.tools.register(tool))
       }
-      jobsScope.effect(() => () => { if (scope.fiber.state === FIBER_ACTIVE) registerSend() })
+      if (roles !== undefined) {
+        scope.inject(['systemPrompt', 'agentPresets'], promptScope => registerTeamPrompt(promptScope, teamListName(resolved.toolPrefix)))
+      }
+      usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
+      if (Object.values(resolved.backends ?? {}).some(backend => backend.protocol === 'codex')) {
+        const usageTool = chatUsageTool(usage)
+        scope.effect(() => scope.tools.register(usageTool))
+      }
+      // Only changes to the jobs service affect send/workflow registration, never readiness.
+      let unregister: (() => void) | undefined
+      let registeredJobs: ChatJobsFace | undefined
+      const registerSend = (jobs?: ChatJobsFace): void => {
+        if (unregister !== undefined && registeredJobs === jobs) return
+        unregister?.()
+        registeredJobs = jobs
+        const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles, resolved.allowChatJobWait),
+          ...(roles === undefined || !resolved.workflow ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
+        const revokers = definitions.map(tool => scope.tools.register(tool))
+        unregister = () => { for (const revoke of revokers) revoke() }
+      }
+      scope.effect(() => { registerSend(scope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
+      scope.inject(['jobs'], (jobsScope) => {
+        registerSend(jobsScope.jobs)
+        if (!resolved.allowChatJobWait) {
+          jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
+        }
+        jobsScope.effect(() => () => { if (scope.fiber.state === FIBER_ACTIVE) registerSend() })
+      })
+      new AcpResumePanelService(scope, pool, usage, readiness)
+      if (!checkedAtStartup) {
+        checkedAtStartup = true
+        void readiness.check().catch(() => { ctx.logger.warn('acp-resume: backend detection did not complete') })
+      }
     })
-    new AcpResumePanelService(scope, pool, usage, readiness)
-    if (!checkedAtStartup) {
-      checkedAtStartup = true
-      void readiness.check().catch(() => { ctx.logger.warn('acp-resume: backend detection did not complete') })
-    }
   })
 }

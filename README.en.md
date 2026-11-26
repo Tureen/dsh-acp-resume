@@ -44,6 +44,10 @@ The bundle includes the **ACP Resume Docs** skill (`acp-resume-docs`). In standa
 
 With `discoverBackends` on by default, the plugin checks CLIs on DSH’s `PATH` and at configured paths against the [published version ranges](docs/backend-compatibility.md), then verifies eligible built-in backends. Checks do not create a session or send a prompt; the CLI itself may access the network. Open **Right sidebar → ACP chats** and expand **Backend status** to see versions, readiness, and failure reasons. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without expanding it or restarting DSH. This does not delete chats, sign you out, or change settings.
 
+| Backend detection setting (main plugin `config`) | Default | When it applies |
+| --- | --- | --- |
+| `probeTimeoutMs` | 15000 ms for Codex, 5000 ms for other ACP backends | An integer from 1 to 2147483647 overrides the budget for each backend. A live DSH settings update takes effect on the next check. Active chats continue. |
+
 ### Use a single backend
 
 Make sure DSH can find a supported CLI, and sign in through the CLI as needed. Without an explicit selection or pinned default, DSH uses the configured Kiro whenever it can find the executable. A version warning, failed check, or sign-in requirement does not cause a switch. **Only when DSH confirms that the configured Kiro executable is missing** does it pick the first ready backend in order: Codex, then Antigravity (`agy`). No extra YAML is required.

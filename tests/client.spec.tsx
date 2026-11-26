@@ -203,6 +203,27 @@ describe('backend readiness', () => {
     expect(screen.getByText(chinese ? '最近活跃会话报告 · 1970-01-01T00:00:00.000Z' : 'Latest active session report · 1970-01-01T00:00:00.000Z')).toBeTruthy()
   })
 
+  it.each([['zh', zh], ['en', en]] as const)('distinguishes timed out, auto-discovered and failed connections in %s', (locale, dictionary) => {
+    const base = { label: 'CLI', configured: true, compatibility: 'supported' } as const
+    const data: BackendStatusSnapshot = { checking: false, dispatchEnabled: true, defaultBackend: 'slow', backends: [
+      { ...base, id: 'slow', readiness: 'unverified', reason: 'probe-timeout' },
+      { ...base, id: 'auto', configured: false, automatic: true, readiness: 'unverified', reason: 'probe-timeout' },
+      { ...base, id: 'failed', readiness: 'unavailable', reason: 'handshake-failed' },
+    ] }
+    const view = { status: 'ready', checking: false, checkCompleted: true, data } as const
+    const source = { getSnapshot: () => view, subscribe: () => () => {}, check: vi.fn() }
+    render(<ChatsPanel {...props(ready([]), { backendStatus: source, t: translator(dictionary) })} />)
+    const chinese = locale === 'zh'
+    fireEvent.click(screen.getByRole('button', { expanded: false, name: chinese ? /检测超时/ : /check timed out/ }))
+    const rows = screen.getAllByRole('listitem')
+    expect(within(rows[0]!).getByText(chinese ? '检测超时。可点「重新检测后端」重试；该后端仍可派工。'
+      : 'Detection timed out. Select Recheck backends to try again. You can still dispatch to this backend.')).toBeTruthy()
+    expect(within(rows[1]!).getByText(chinese ? '检测超时。可点「重新检测后端」重试。'
+      : 'Detection timed out. Select Recheck backends to try again.')).toBeTruthy()
+    expect(within(rows[2]!).getByText(chinese ? '连接失败。确认 CLI 及其启动模式是否正确，然后重新检查。'
+      : 'Connection failed. Verify the CLI and its launch mode, then check again.')).toBeTruthy()
+  })
+
   it('shows automatic startup without offering a setup click, then presents the discovered ready backend', () => {
     const pending = {
       data: { ...backendFixture, checking: true, dispatchEnabled: false, backends: [] },

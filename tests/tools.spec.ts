@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -28,25 +28,6 @@ import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
-
-/**
- * Probe budget for the plugin's backend readiness checks in this file. The
- * product default (3 s per resolve / version / handshake step, D31) is a
- * runtime choice; here it would race real fixture subprocesses on a loaded
- * machine. apply() builds the service without a timeoutMs and Config has no
- * such field, so the test wraps the class: when `ms` is set, a service built
- * without an explicit timeoutMs gets this one. Unset, behavior is unchanged.
- */
-const probeTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }))
-vi.mock('../src/backend-readiness.ts', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/backend-readiness.ts')>()
-  class BackendReadinessService extends actual.BackendReadinessService {
-    constructor(options: ConstructorParameters<typeof actual.BackendReadinessService>[0]) {
-      super(probeTimeout.ms === undefined || options.timeoutMs !== undefined ? options : { ...options, timeoutMs: probeTimeout.ms })
-    }
-  }
-  return { ...actual, BackendReadinessService }
-})
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
 const codexMock = fileURLToPath(new URL('./mock-codex-server.ts', import.meta.url))
@@ -506,8 +487,6 @@ const WAIT_MS = 25_000
 const CASE_TIMEOUT_MS = 60_000
 
 describe('Codex backend wiring (D25)', { timeout: CASE_TIMEOUT_MS }, () => {
-  beforeEach(() => { probeTimeout.ms = PROBE_TIMEOUT_MS })
-  afterEach(() => { probeTimeout.ms = undefined })
 
   const codexBackends = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
     codex: { command: process.execPath, args: [codexMock], protocol: 'codex', model: 'mock-model', env: { MOCK_TEXT: 'codex via tool' }, ...extra },
@@ -516,7 +495,7 @@ describe('Codex backend wiring (D25)', { timeout: CASE_TIMEOUT_MS }, () => {
   async function mount(config: Record<string, unknown>): Promise<{ ctx: Context; registryPath: string }> {
     const ctx = await host()
     const registryPath = join(tempDir('acp-resume-codex-apply-'), 'registry.json')
-    const fiber = await ctx.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, ...config })
+    const fiber = await ctx.plugin(acp, { probeTimeoutMs: PROBE_TIMEOUT_MS, command: process.execPath, args: [mockServer], registryPath, ...config })
     cleanups.push(() => fiber.dispose())
     await until(() => stubTools(ctx).registered.has('acp_chat_start'), 'tool registration', WAIT_MS)
     return { ctx, registryPath }
@@ -576,13 +555,13 @@ describe('Codex backend wiring (D25)', { timeout: CASE_TIMEOUT_MS }, () => {
   it('does not repoint an existing chat to auto-discovered Codex when its configured backend is removed', async () => {
     const registryPath = join(tempDir('acp-resume-codex-gone-'), 'registry.json')
     const first = await host()
-    const fiberA = await first.plugin(acp, { command: process.execPath, args: [mockServer], registryPath, backends: codexBackends() })
+    const fiberA = await first.plugin(acp, { probeTimeoutMs: PROBE_TIMEOUT_MS, command: process.execPath, args: [mockServer], registryPath, backends: codexBackends() })
     cleanups.push(() => fiberA.dispose())
     await until(() => stubTools(first).registered.has('acp_chat_start'), 'tool registration', WAIT_MS)
     const { chatId } = await (stubTools(first).registered.get('acp_chat_start') as Definition).execute({ cwd: process.cwd(), backend: 'codex' }, exec()) as { chatId: string }
     await fiberA.dispose()
     const second = await host()
-    const fiberB = await second.plugin(acp, { command: process.execPath, args: [mockServer], registryPath })
+    const fiberB = await second.plugin(acp, { probeTimeoutMs: PROBE_TIMEOUT_MS, command: process.execPath, args: [mockServer], registryPath })
     cleanups.push(() => fiberB.dispose())
     await until(() => stubTools(second).registered.has('acp_chat_send'), 'tool registration', WAIT_MS)
     await expect((stubTools(second).registered.get('acp_chat_send') as Definition).execute({ chatId, message: 'p' }, exec())).rejects.toThrow(/unavailable backend codex|saved session belongs to another agent/)
@@ -625,7 +604,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
 `, { mode: 0o755 })
     writeCodex('0.155.1')
     return { writeKiro, writeCodex, kiro, touchedKiro, failedKiro, signedOut, leakedEnv, requests, registryPath,
-      config: { command: 'kiro-cli', args: ['acp'], registryPath, workflow: true, env: { PATH: dir, OTHER_BACKEND_SECRET: 'test-only-sentinel' } },
+      config: { probeTimeoutMs: PROBE_TIMEOUT_MS, command: 'kiro-cli', args: ['acp'], registryPath, workflow: true, env: { PATH: dir, OTHER_BACKEND_SECRET: 'test-only-sentinel' } },
     }
   }
 

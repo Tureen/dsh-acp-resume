@@ -14,6 +14,7 @@ export interface BackendCandidate {
   readonly env: Readonly<Record<string, string>>
   /** Undefined is a custom executable; null is a known CLI with an unsupported launch mode. */
   readonly kind: KnownBackendKind | null | undefined
+  readonly protocol?: 'acp' | 'codex'
   readonly configured: boolean
   readonly automatic?: true
   readonly configuredModel?: string
@@ -58,6 +59,7 @@ const reasons: Readonly<Record<BackendStatusReason, string>> = {
   'model-override-unavailable': 'the explicitly configured Codex model is unavailable; update or remove the plugin model override and recheck',
   'custom-unverified': 'custom ACP executable has no published compatibility range; explicit configuration can still be used',
   'login-required': 'sign in to the CLI, then run backend detection again',
+  'probe-timeout': 'backend detection timed out; use Recheck backends to retry',
   'handshake-failed': 'the backend did not pass the connection check; check its configuration or CLI diagnostics and retry',
   'backend-unready': 'waiting for the automatic backend check',
 }
@@ -65,7 +67,8 @@ const reasons: Readonly<Record<BackendStatusReason, string>> = {
 export function describeBackendStatus(row: BackendStatus): string {
   const version = row.version === undefined ? '' : ` ${row.version}`
   const range = row.range === undefined ? '' : ` (supported range: ${row.range})`
-  const action = row.reason === 'unsupported-version' && row.configured ? 'version is outside the verified range; the configured backend can still be tried'
+  const action = row.reason === 'probe-timeout' && row.configured ? reasons['probe-timeout'] + '; this configured backend can still be used for dispatch'
+    : row.reason === 'unsupported-version' && row.configured ? 'version is outside the verified range; the configured backend can still be tried'
     : row.reason === 'unsupported-version' && row.readiness === 'ready' ? 'available by explicit selection only, not by automatic priority'
       : row.reason === undefined ? undefined : reasons[row.reason]
   return `${row.id} — ${row.label}${version}: ${row.compatibility}, ${row.readiness}${range}`
@@ -75,6 +78,7 @@ export function describeBackendStatus(row: BackendStatus): string {
 export function describeBackendSnapshot(status: BackendStatusSnapshot): string {
   const header = status.checking ? 'Backend detection is running.' : status.dispatchEnabled
     ? (status.defaultBackend === undefined ? 'Select a ready backend explicitly.' : `Default for new chats: ${status.defaultBackend}.`)
+    : status.backends.some(row => row.reason === 'probe-timeout') ? 'No backend verified ready yet. Use Recheck backends to retry.'
     : 'No dispatch backend is ready. Install, upgrade, or configure a supported CLI, then check its connection.'
   return [header, ...status.backends.map(describeBackendStatus)].join('\n')
 }
@@ -136,12 +140,10 @@ export class BackendReadinessService implements BackendStatusService {
   private models: ReadonlyMap<string, string> = new Map()
   private active: Promise<BackendStatusSnapshot> | undefined
   private checkedAt: number | undefined
-  private readonly timeoutMs: number
   private readonly listeners = new Set<() => void>()
 
   constructor(private readonly options: BackendReadinessOptions) {
     this.rows = options.candidates.map(initialRow)
-    this.timeoutMs = options.timeoutMs ?? 3_000
   }
 
   snapshot(): BackendStatusSnapshot {
@@ -202,7 +204,7 @@ export class BackendReadinessService implements BackendStatusService {
     const primary = this.options.candidates.find(candidate => candidate.id === 'default' && candidate.configured)
     if (primary === undefined) throw new Error('acp-resume: configured default backend is missing')
     const lifetime = signal === undefined ? this.life.signal : AbortSignal.any([this.life.signal, signal])
-    const resolution = AbortSignal.any([lifetime, AbortSignal.timeout(this.timeoutMs)])
+    const resolution = AbortSignal.any([lifetime, AbortSignal.timeout(3_000)])
     try {
       await resultWithin(this.options.host.resolveExecutable(primary.command, primary.env, resolution), resolution)
       return keep(primary.id)
@@ -291,11 +293,12 @@ export class BackendReadinessService implements BackendStatusService {
   private async run(): Promise<void> {
     if (this.life.signal.aborted) return
     // Fixed-size batches avoid an unbounded process burst from named configuration.
+    const budget = this.options.timeoutMs
     const rows: BackendStatus[] = []
     const executables = new Map<string, string>()
     const models = new Map<string, string>()
     for (let i = 0; i < this.options.candidates.length && !this.life.signal.aborted; i += 4) {
-      rows.push(...await Promise.all(this.options.candidates.slice(i, i + 4).map(item => this.probe(item, executables, models))))
+      rows.push(...await Promise.all(this.options.candidates.slice(i, i + 4).map(item => this.probe(item, executables, models, budget))))
     }
     if (!this.life.signal.aborted) {
       this.rows = rows
@@ -304,13 +307,18 @@ export class BackendReadinessService implements BackendStatusService {
     }
   }
 
-  private async probe(candidate: BackendCandidate, executables: Map<string, string>, models: Map<string, string>): Promise<BackendStatus> {
+  private async probe(candidate: BackendCandidate, executables: Map<string, string>, models: Map<string, string>, budget: number | undefined): Promise<BackendStatus> {
     const row = initialRow(candidate)
-    const signal = AbortSignal.any([this.life.signal, AbortSignal.timeout(this.timeoutMs)])
+    // Codex makes several RPCs: 15 s is about 3× the observed 4.9 s. ACP's shorter handshake gets 5 s.
+    const deadline = AbortSignal.timeout(budget ?? (candidate.protocol === 'codex' || candidate.kind === 'codex' ? 15_000 : 5_000))
+    const signal = AbortSignal.any([this.life.signal, deadline])
+    const timedOut = () => deadline.aborted && signal.reason === deadline.reason
+    const timeout = { readiness: 'unverified', reason: 'probe-timeout' } as const
     let executable: string
     try {
       executable = await resultWithin(this.options.host.resolveExecutable(candidate.command, candidate.env, signal), signal)
     } catch (error) {
+      if (timedOut()) return { ...row, ...timeout }
       const missing = isExecutableMissing(error)
       return { ...row, compatibility: missing ? 'not-found' : 'unknown', readiness: 'unavailable', reason: missing ? 'missing-executable' : 'version-unreadable' }
     }
@@ -321,6 +329,7 @@ export class BackendReadinessService implements BackendStatusService {
     if (candidate.kind === null) return { ...row, compatibility: 'unsupported', readiness: 'unavailable', reason: 'unsupported-mode' }
     let version: string | undefined
     try { version = await versionFrom(this.options.host, executable, candidate, signal) } catch { /* do not expose raw errors */ }
+    if (timedOut()) return { ...row, ...timeout }
     if (version === undefined) return { ...row, readiness: 'unavailable', reason: 'version-unreadable' }
     const { supported, range } = backendCompatibility(candidate.kind, version)
     const { reason: _progress, ...identity } = row
@@ -335,9 +344,9 @@ export class BackendReadinessService implements BackendStatusService {
     if (candidate.configurationIssue === 'unsupported-mode') return { ...known, readiness: 'needs-configuration', reason: 'unsupported-mode' }
     if (candidate.configurationIssue === 'model-required') return { ...known, readiness: 'needs-configuration', reason: 'model-required' }
     if (!candidate.configured && candidate.automatic !== true) return { ...known, readiness: 'needs-configuration', reason: 'not-configured' }
-    const verifySignal = AbortSignal.any([this.life.signal, AbortSignal.timeout(this.timeoutMs)])
     let result: Verification
-    try { result = await this.options.verify(candidate, executable, verifySignal) } catch { result = { status: 'handshake-failed' } }
+    try { result = await this.options.verify(candidate, executable, signal) } catch { result = { status: 'handshake-failed' } }
+    if (timedOut()) return { ...known, ...timeout }
     const observed = result.reported ? { ...known, report: { ...result.reported, source: 'probe' as const } } : known
     if (result.status === 'ready') {
       executables.set(row.id, executable)

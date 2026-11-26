@@ -2,7 +2,7 @@
 export type BackendCompatibility = 'supported' | 'unverified-version' | 'unsupported' | 'unknown' | 'not-found' | 'custom'
 export type BackendReadiness = 'ready' | 'needs-configuration' | 'needs-login' | 'unverified' | 'unavailable'
 export type BackendStatusReason = 'missing-executable' | 'version-unreadable' | 'unsupported-version' | 'unsupported-mode'
-  | 'not-configured' | 'model-required' | 'model-override-unavailable' | 'custom-unverified' | 'login-required' | 'handshake-failed' | 'backend-unready'
+  | 'not-configured' | 'model-required' | 'model-override-unavailable' | 'custom-unverified' | 'login-required' | 'handshake-failed' | 'probe-timeout' | 'backend-unready'
 
 /** Values actually returned by a backend. Missing fields stay unknown. */
 export interface ReportedSettings {

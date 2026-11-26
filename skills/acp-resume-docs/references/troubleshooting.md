@@ -29,7 +29,8 @@
 | configured CLI launch mode or flags are not supported | 启动模式错 | 查 v3 模型旗标、agy 引擎旗标、Codex 协议。 |
 | CLI detected but not configured as a dispatch backend / custom ACP executable has no published compatibility range | 候选未配置或包装器未知 | 核对命名配置与启动方式。 |
 | sign in to the CLI, then run backend detection again | 需认证 | 登录 CLI 后重查。 |
-| the backend did not pass the connection check / did not open a session | 连接失败 | 查阶段与 CLI 诊断。 |
+| backend detection timed out | 预算用完，本次未验证。 | 点「重新检测后端」。CLI 启动较慢时可调高 `probeTimeoutMs`；显式配置的后端仍可派工，自动发现的后端须先通过检测。 |
+| the backend did not pass the connection check / did not open a session | 连接失败。 | 核对 CLI 路径、启动模式与具体阶段的诊断，然后重试。 |
 | Codex did not advertise a usable default model / no usable default model for Codex backend | 无唯一可用默认模型 | 选账号可用的模型。 |
 | the explicitly configured Codex model is unavailable | 显式模型不可用 | 改模型后重查。 |
 | unknown backend / selected backend is not available | 未知候选 | 查 schema 和状态。 |

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { verifyBackend } from '../src/backend-verification.ts'
+import { BackendReadinessService, describeBackendSnapshot, type BackendReadinessOptions } from '../src/backend-readiness.ts'
+import { Config } from '../src/index.ts'
 import { openCodexConnection } from '../src/connection-codex.ts'
 import type { BackendSpec } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -195,5 +197,87 @@ describe('Codex backend verification', () => {
     const resumed = await openCodexConnection(base, { mode: 'load', sessionId: first.remoteSessionId })
     await resumed.dispose()
     expect(requests().find(request => request.method === 'thread/resume')?.params).not.toHaveProperty('model')
+  })
+})
+
+
+const codexCandidate = { id: 'codex', command: 'codex', label: 'Codex', env: {}, kind: 'codex', configured: true } as const
+function readiness(verify: BackendReadinessOptions['verify'], options: Partial<BackendReadinessOptions> = {}) {
+  const version = {
+    done: Promise.resolve({ exitCode: 0 }), terminate() {}, waitForExit: async () => true,
+    collected: { stdout: { readFrom: () => ({ text: 'codex-cli 0.170.0', lossy: false }) } },
+  }
+  return new BackendReadinessService({ candidates: [codexCandidate], verify,
+    host: { resolveExecutable: async command => command, spawn: () => version as unknown as SubprocessHandle }, ...options })
+}
+
+describe('D43 diagnostic budgets', () => {
+  it('validates optional positive integer millisecond overrides before activation or a volatile update', () => {
+    for (const value of [-1, 0, 1.5, NaN, Infinity, 2 ** 31]) {
+      expect(() => Config({ command: 'test', probeTimeoutMs: value })).toThrow(/probeTimeoutMs/)
+    }
+    expect(Config({ command: 'test' }).probeTimeoutMs?.get()).toBeUndefined()
+    expect(Config({ command: 'test', probeTimeoutMs: 1 }).probeTimeoutMs?.get()).toBe(1)
+  })
+
+  it('allows a slow mock Codex model list by default and reports a 3s override as unverified', async () => {
+    const { spec, requests } = setup({ MOCK_CODEX_MODEL_DELAY_MS: '3200' })
+    const verify: BackendReadinessOptions['verify'] = (_, __, signal) => verifyBackend(spec, signal)
+    const short = readiness(verify, { timeoutMs: 3000 })
+    const normal = readiness(verify)
+    try {
+      const timed = await short.check()
+      expect(timed.backends[0]).toMatchObject({ version: '0.170.0', readiness: 'unverified', reason: 'probe-timeout' })
+      expect(describeBackendSnapshot(timed)).toContain('backend detection timed out; use Recheck backends to retry; this configured backend can still be used for dispatch')
+      expect(short.select('codex')).toBe('codex')
+      expect((await normal.check()).backends[0]?.readiness).toBe('ready')
+      expect(methodNames(requests()).filter(m => m === 'model/list')).toHaveLength(2)
+    } finally { short.dispose(); normal.dispose() }
+  }, 25_000)
+
+  it('uses 15s for Codex by protocol or CLI and 5s for ACP, including executable discovery', async () => {
+    const timer = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      for (const [candidate, budget] of [
+        [codexCandidate, 15_000], [{ ...codexCandidate, kind: undefined, protocol: 'codex' }, 15_000],
+        [{ ...codexCandidate, kind: 'agy' }, 5_000], [{ ...codexCandidate, kind: undefined }, 5_000],
+      ] as const) {
+        timer.mockClear()
+        const service = readiness(async () => ({ status: 'ready' }), { candidates: [candidate] })
+        await service.check()
+        service.dispose()
+        expect(timer.mock.calls[0]).toEqual([budget])
+      }
+    } finally { timer.mockRestore() }
+  })
+
+  it('joins a recheck, cancels only the requesting waiter, and discards an aborted check on teardown', async () => {
+    const entered = Promise.withResolvers<void>()
+    const service = readiness(async (_, __, signal) => {
+      entered.resolve()
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      return { status: 'handshake-failed' }
+    }, { candidates: [{ ...codexCandidate, configured: false, automatic: true }] })
+    try {
+      const lookup = new AbortController()
+      const pending = service.check()
+      await entered.promise
+      expect(service.check()).toBe(pending)
+      const waiting = service.select('codex', lookup.signal)
+      lookup.abort()
+      await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+      expect(service.snapshot().checking).toBe(true)
+      service.dispose()
+      expect((await pending).backends[0]?.reason).toBe('backend-unready')
+    } finally { service.dispose() }
+  })
+
+  it('keeps a verification rejection distinct from the owned deadline, even for an AbortError', async () => {
+    const service = readiness(async () => { throw new DOMException('peer rejected', 'AbortError') })
+    try {
+      const failed = await service.check()
+      expect(failed.backends[0]).toMatchObject({ readiness: 'unavailable', reason: 'handshake-failed' })
+      expect(describeBackendSnapshot(failed)).toContain('the backend did not pass the connection check')
+    } finally { service.dispose() }
   })
 })

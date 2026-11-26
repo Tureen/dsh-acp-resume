@@ -303,7 +303,7 @@ const REMEDIATION_COPY = {
   'missing-executable': 'backendFixMissing', 'version-unreadable': 'backendFixVersionUnreadable',
   'unsupported-version': 'backendFixUnsupportedVersion', 'unsupported-mode': 'backendFixUnsupportedMode',
   'not-configured': 'backendFixNotConfigured', 'model-required': 'backendFixModel', 'model-override-unavailable': 'backendFixModelOverride', 'custom-unverified': 'backendFixCustom',
-  'login-required': 'backendFixLogin', 'handshake-failed': 'backendFixHandshake', 'backend-unready': 'backendFixUnready',
+  'login-required': 'backendFixLogin', 'handshake-failed': 'backendFixHandshake', 'probe-timeout': 'backendFixTimeout', 'backend-unready': 'backendFixUnready',
 } satisfies Record<NonNullable<BackendStatus['reason']>, PanelCopyKey>
 
 const NO_BACKEND_STATUS: Observable<BackendStatusView | undefined> = { getSnapshot: () => undefined, subscribe: () => () => {} }
@@ -327,6 +327,7 @@ function selectionValue(actual: string | undefined, configured: string | undefin
 
 function BackendStatusRow({ backend, visibleChats, t }: { readonly backend: BackendStatus; readonly visibleChats: readonly PanelChat[]; readonly t: PanelTranslate }): ReactNode {
   const remediation = backend.reason === undefined ? undefined
+    : backend.configured && backend.reason === 'probe-timeout' ? 'backendFixConfiguredTimeout' as const
     : backend.automatic && backend.id === 'agy' && backend.reason === 'login-required' ? 'backendFixAgyLogin' as const
       : backend.reason === 'unsupported-version' && backend.configured ? 'backendFixConfiguredVersion' as const
         : backend.reason === 'unsupported-version' && backend.readiness === 'ready' ? 'backendSelectUnverifiedVersion' as const
@@ -386,14 +387,16 @@ function BackendStatusSection({ source, view, visibleChats, t }: {
     : status === 'unavailable' ? t('backendSummaryUnavailable')
       : view.checkFailed ? t('backendSummaryCheckFailed')
         : status === 'error' ? t('backendSummaryReadFailed')
-          : selected !== undefined && selected.readiness !== 'ready' ? t('backendSummaryPinnedUnready', { name: defaultName! })
+          : selected !== undefined && selected.readiness !== 'ready' ? t(selected.reason === 'probe-timeout' ? 'backendSummaryTimeout' : 'backendSummaryPinnedUnready', { name: defaultName! })
             : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
               : readyNames.length === 0 ? t('backendSummaryNone')
                 : readyNames.length === 1 ? t('backendSummaryOne', { name: readyNames[0]! })
                   : defaultName !== undefined ? t('backendSummaryDefault', { name: defaultName })
                     : t('backendSummaryMany', { count: readyNames.length })
+  const noneVerifiedAfterTimeout = readyNames.length === 0 && data?.backends.some(row => row.reason === 'probe-timeout')
   const checkResult = !view.checkCompleted ? null
-    : readyNames.length === 0 ? t('backendCheckNoneReady')
+    : noneVerifiedAfterTimeout ? t('backendCheckTimeout')
+      : readyNames.length === 0 ? t('backendCheckNoneReady')
       : onlyAutomaticAgy ? t('backendAgyHandshakeReady')
         : readyNames.length === 1 ? t('backendCheckReady', { name: readyNames[0]! })
           : t('backendCheckMultipleReady', { names: readyNames.join(t('backendNameSeparator')) })
@@ -428,10 +431,10 @@ function BackendStatusSection({ source, view, visibleChats, t }: {
             {data === undefined || startup ? null : (
               <>
                 <p style={styles.notice}>{defaultName === undefined ? t('backendNoDefault') : t('backendDefault', { name: defaultName })}</p>
-                {selected !== undefined && selected.readiness !== 'ready' && !checking ? <p style={styles.notice}>{t('backendPinnedUnready')}</p> : null}
+                {selected !== undefined && selected.readiness !== 'ready' && selected.reason !== 'probe-timeout' && !checking ? <p style={styles.notice}>{t('backendPinnedUnready')}</p> : null}
                 {data.dispatchEnabled
                   ? defaultName === undefined ? <p style={styles.notice}>{t('backendChooseReady')}</p> : null
-                  : checking ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}
+                  : checking || noneVerifiedAfterTimeout ? null : <p style={styles.notice}>{t('backendNoDispatch')}</p>}
                 {data.backends.length === 0 ? <p style={styles.notice}>{t('backendNoEntries')}</p> : (
                   <ul style={styles.list}>
                     {data.backends.map(backend => <BackendStatusRow key={backend.id} backend={backend} visibleChats={visibleChats} t={t} />)}

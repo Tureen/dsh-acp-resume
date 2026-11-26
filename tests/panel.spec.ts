@@ -28,6 +28,7 @@ import { BackendReadinessService } from '../src/backend-readiness.ts'
 import { AcpResumeInfoService, AcpResumePanelService, PANEL_SERVICE_KEY } from '../src/panel.ts'
 import { AcpSessionPool, type BackendSpec } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
+import { dispatcherHost } from './helpers/dispatcher-host.ts'
 import { mountWorkingDirectoryFixture } from './helpers/working-directory-fixture.ts'
 
 const mockServer = fileURLToPath(new URL('./mock-acp-server.ts', import.meta.url))
@@ -471,6 +472,60 @@ describe('apply (panel wiring)', () => {
 
     await fiber.dispose()
     expect(ctx.get(PANEL_SERVICE_KEY)).toBeUndefined()
+  })
+
+  it('updates only the probe budget through Loader while the same pool finishes an in-flight turn', async () => {
+    const { ctx, dir, mainOverride } = await dispatcherHost()
+    const hold = join(dir, 'hold')
+    writeFileSync(hold, 'held')
+    const config = { ...mainOverride.config, command: process.execPath, args: [mockServer], agentEngine: 'none',
+      env: { MOCK_PROMPT_HOLD: hold, MOCK_TEXT: 'completed across budget change' } }
+    const id = mainOverride.id
+    await ctx.loader.root.update([{ id, name: 'dsh-acp-resume', config }])
+    await ctx.loader.await()
+    const owner = ctx.loader.resolve(id).fiber
+    const panel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
+    await panel.checkBackends()
+    const pool = panel['pool']
+    const dispose = vi.spyOn(pool, 'disposeAll')
+    const chat = await pool.start(dir)
+    const pending = pool.send(chat.chatId, 'held')
+    try {
+      await until(() => !!panel.list()[0]?.inFlight, 'active turn')
+      await ctx.loader.update(id, { config: { ...config, probeTimeoutMs: 25 } })
+      await ctx.loader.await()
+      // Cordis may return a fresh service proxy at each lookup. Compare the owning
+      // fiber and the pool behind the current Remote without passing proxies to Vitest.
+      expect(ctx.loader.resolve(id).fiber === owner).toBe(true)
+      const current = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
+      expect(current['pool'] === pool).toBe(true)
+      expect(dispose).not.toHaveBeenCalled()
+      const resolver = vi.spyOn(ctx.subprocess, 'resolveExecutable').mockImplementationOnce((_, __, signal) =>
+        new Promise((_, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })))
+      try {
+        const checked = await panel.checkBackends()
+        expect(checked.backends[0]).toMatchObject({ configured: true, readiness: 'unverified', reason: 'probe-timeout' })
+        expect(panel.backends()).toEqual(checked)
+      } finally { resolver.mockRestore() }
+      expect(panel.list()[0]?.inFlight?.chatId).toBe(chat.chatId)
+    } finally {
+      rmSync(hold)
+      dispose.mockRestore()
+      await pending
+    }
+    expect(await pending).toMatchObject({ remoteSessionId: chat.remoteSessionId, output: 'completed across budget change', freshSession: false })
+  })
+
+  it('retains timeout and handshake failure as distinct Remote reasons on read and recheck', async () => {
+    const { pool } = makePool()
+    const base = { label: 'CLI', configured: true, compatibility: 'supported' } as const
+    const data: BackendStatusSnapshot = { checking: false, dispatchEnabled: true, backends: [
+      { ...base, id: 'slow', readiness: 'unverified', reason: 'probe-timeout' },
+      { ...base, id: 'failed', readiness: 'unavailable', reason: 'handshake-failed' },
+    ] }
+    const { panel } = await mountPanel(pool, { snapshot: () => data, check: async () => data })
+    expect(panel.backends()).toEqual(data)
+    expect(await panel.checkBackends()).toEqual(data)
   })
 
   it('keeps the workflow history DTO readable with workflow execution disabled', async () => {
