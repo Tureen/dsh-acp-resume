@@ -118,7 +118,9 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 
 Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode menu in a new session**. By default the main agent has ACP tools for delegation, web tools for quick lookups, and jobs tools for tracking work. It has no shell or file tools, so it delegates commands and file operations to workers through `acp_chat_send`. When a job finishes, the main agent receives a notification and retrieves the result with `job_output`. Use this mode to run independent tasks in parallel, cross-check a review with two engines, or follow a long-running task from one conversation. ACP tools are also available in standard mode (D26).
 
-**Choose the main agent’s tools.** Override the declaration row in your profile’s `cordis.patch.yml`. For example, let the main agent verify worker results with `read`, `grep`, and `glob`:
+**Choose the main agent’s tools.** Edit `~/.dsh/profiles/<name>/cordis.patch.yml`, using the same `<name>` you passed to `--profile <name>` at installation. The two examples below are alternatives for the same override. Place it at the **top level**, alongside `- id: subagent-acp-resume`. Start `- id:` in the first column, indent `name:` and `config:` by two spaces, `dispatcherTools:` by four, and each switch by six.
+
+To add file verification to the default tool set, enable `read`, `grep`, and `glob` so the main agent can check worker results:
 
 ```yaml
 - id: acp-dispatcher-settings
@@ -126,6 +128,18 @@ Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode me
   config:
     dispatcherTools:
       readOnlyFs: true
+```
+
+To also load skills and turn off the task list, put all three switches under the same `dispatcherTools` key. Omitted fields use their defaults, so you can leave out the other switches:
+
+```yaml
+- id: acp-dispatcher-settings
+  name: dsh-acp-resume/dispatcher-preset
+  config:
+    dispatcherTools:
+      readOnlyFs: true
+      skill: true
+      todo: false
 ```
 
 | `dispatcherTools` field | Default | Capability |
@@ -138,9 +152,11 @@ Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode me
 | `skill` | `false` | Show the main agent descriptions of available skills and let it load the full instructions when a task matches. Off by default because the descriptions use context space. |
 | `compaction` | `true` | Enable context compaction, the compact command, and tool-result pruning together. |
 
-Omitted fields use their defaults. The preset description and persona follow the same selections. Newly bound agents use the updated composition. Agents already bound in the running host keep their revision. Changing the declaration does not reload the ACP pool.
+After editing `dispatcherTools` in the profile, restart DSH so it reads the new configuration. Select ACP Dispatcher in a new session to bind an agent to the updated tool set and its matching description and persona. If only the declaration is reloaded within a running host, agents already bound in that process keep their previous tool set and the ACP pool keeps running.
 
-**Migrating an old `preset-acp-dispatcher` override.** Users who never overrode that row can keep their configuration. Remove any override targeting the old row. If it only enabled read-only file tools, replace it with the example above. For an unmatched row rc.5 logs `patch: entry "preset-acp-dispatcher" not found`, skips the override, and continues loading the profile. Ignoring the warning drops the customization. If you previously disabled the old row, set `disabled: true` on `acp-dispatcher-settings`.
+These seven switches preserve the Dispatcher’s role: the main agent delegates execution to workers through ACP. They exclude bash, file writes and edits, and DSH’s built-in subagent delegation tools. Enabling those execution paths would leave only the prompt to distinguish Dispatcher from standard mode. A profile that needs them can use the complete custom declaration described below.
+
+**Migrating an old `preset-acp-dispatcher` override.** Users who never overrode that row can keep their configuration. Remove any override targeting the old row. If it only enabled read-only file tools, replace it with the first example. For an unmatched row rc.5 logs `patch: entry "preset-acp-dispatcher" not found`, skips the override, and continues loading the profile. Ignoring the warning drops the customization. If you previously disabled the old row, set `disabled: true` on `acp-dispatcher-settings`.
 
 To keep a custom persona or additional plugins, disable the new declaration row and use a top-level `- insert:` to add your own complete `@deepseek-ai/dsh-agent-preset` declaration in the same profile edit. You can move your old row and its entire `config` into that list. Keep `config.id: acp-dispatcher` so existing sessions retain their preset identity and only one declaration registers it. Restart DSH after migrating and select ACP Dispatcher in a new session.
 
