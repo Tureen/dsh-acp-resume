@@ -39,10 +39,20 @@
           "kiro"
         ],
         "sortKeys": {
-          "npm_weekly_downloads": 4225
+          "npm_weekly_downloads": 3254
         }
       },
       "versions": [
+        {
+          "version": "0.7.3",
+          "publishTimestamp": 1795695309,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.3"
+          }
+        },
         {
           "version": "0.7.2",
           "publishTimestamp": 1795687167,
