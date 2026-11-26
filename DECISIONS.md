@@ -951,3 +951,9 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - **Codex。** app-server 0.170.0 的 initialize 同样不带选择，config/read 实际返回 model 和 model_reasoning_effort。model/list 可验证模型并提供展示名，目录的默认档位不能证明当前生效强度。卡片标记“无会话检测：后端报告的默认值”；该报告描述 CLI 默认设置，不能据此断定某一轮使用了什么。既有选路所用的模型（可能是插件显式覆盖项）与报告值分开保存。显式模型的目录校验完成后也可读默认设置；此项显示读取失败不否决已验证的显式模型。
 - **活跃 ACP 会话。** 连接接收 new/load、model/effort 设置回复与 config_option_update 时更新内存快照。模型取当前选择及相符的展示名，强度取 thought_level 或 effortLevel 的 currentValue。完整列表移除的字段同时清除。池只读遍历仍存活且未在关闭的连接，每后端取最近报告，手动重查与普通面板轮询使用同一投影。来源附报告时间；仅当 chat 在当前 owner 的可见列表中时显示其编号（D20）。释放后回到其他存活连接的报告或未报告。
 - **缺项与差异。** 配置值只用于和同一字段的报告值比较；有差异标明两者，缺报告显示“未报告”。旧 DTO 仍可读。模型工具 acp_backend_status 的文字回执、D6 生命周期、注册表、会话与轮次日志均不因显示而变更。
+
+## D42 为侧栏热更新对齐 schemastery 3.19.0（2026-11-26，0.7.0 前置门槛）
+
+- 将现有生产依赖 `@deepseek-ai/schemastery` 从 `~3.18.5` 调至 `~3.19.0`，与 rc.5 设置服务的 peer 对齐。锁文件中本包及所有引用均解析到 3.19.0。升级前，3.18.5 的 ESM 入口在本机也能构造 volatile 字段。
+- 同一 Vitest 探针在两个版本上的 27 项返回值和异常名称、消息逐字节相同。两版都没有 `.optional()`，普通字段缺省时省略，必填和默认值规则相同。主 Config、命名后端及 Dispatcher 根和子对象都保留未知键。工作区团队文件使用独立解析器，继续拒绝未知键。角色与工作流冲突、会话强度非法、注册表相对路径和空调度规则覆盖仍由插件校验。
+- 在 3.19.0 上，布尔字段的 `.default(false).volatile()` 和 `.volatile().default(false)` 都保留默认值与 volatile 标记，解析值的 `.get()` 对缺省和显式 true 分别返回 false 和 true。后续字段沿用官方示例的前一种写法。按 rc.5 设置服务编译代码，`volatileForm` 和 `isVolatilePath` 均检查 `schema.meta.volatile`。侧栏配置的写入与热更新留到功能实施时端到端验证。

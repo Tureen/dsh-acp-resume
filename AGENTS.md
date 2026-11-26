@@ -90,7 +90,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 - ESM(`"type": "module"`)。相对导入写 `.js` 后缀(NodeNext);跨包引用一律用包名。TypeScript `strict` + `noImplicitAny` + `verbatimModuleSyntax` + `isolatedModules`。
 - **仅命名导出**:默认导出会丢 loader 元数据(index.ts 头注引官方 postmortem 0001)。
-- schemastery `~3.18.5` 无 `.optional()`(实测 `z.string().optional is not a function`)。不加 `.required()` 也不加 `.default()` 的字段本身就是可选(实测缺省时校验通过、结果里不出现该键);需要缺省值时用 `.default(...)`,必填用 `.required()`。
+- schemastery `~3.19.0`（D42，2026-11-26 实测）：3.18.5 与 3.19.0 均无 `.optional()`。可选字段直接用 `z.string()`，缺省时结果中没有该键。必填用 `.required()`，缺省值用 `.default(...)`。主插件与 Dispatcher 的对象 schema 都保留未知键。需要热更新的字段可用 `.default(...).volatile()`，解析后的值通过 `.get()` 读取。
 - 模块头 JSDoc:一段话讲清契约与边界,`@module` 标识;公共导出与 Config 字段补简明 JSDoc。
 - 注释直接、具体:不重述代码、不写推理过程;命令、路径、报错保留原文。
 - 凭据走 Config `env` 显式叠加,父进程环境先经官方清洗逻辑;不在测试、夹具、文档写入真实 key。
