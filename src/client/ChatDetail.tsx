@@ -28,11 +28,14 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
+import { MarkdownCompactStyle, cleanPreview } from './panel-chrome.tsx'
+import { formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { FollowTurn, LiveView } from './live-source.ts'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import { parseChatAddress } from './chat-address.ts'
-import { ChatStateDot, chatDotState, LiveElapsed, relativeTime, shortChatId } from './ChatsPanel.tsx'
+import { ChatStateDot, chatDotState, LiveElapsed, shortChatId } from './ChatsPanel.tsx'
 import type { ChatDetailInjected, DetailSource, EventItem, FullEntry, PanelChat, RunningItem, TabInfoHook, TurnItem } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
 
@@ -91,23 +94,6 @@ function failure(error: unknown): string {
 /** Non-empty line count of a body (0 when blank). */
 function countLines(text: string): number {
   return text.split('\n').filter(line => line.trim() !== '').length
-}
-
-/**
- * The first `lines` non-empty lines, each trimmed and cut to `max` characters
- * with an ellipsis; `clipped` when anything is not shown. The CSS line clamp
- * also caps wrapped lines visually.
- */
-function preview(text: string, lines: number, max = 200): { text: string; clipped: boolean } {
-  const all = text.split('\n').map(l => l.trim()).filter(l => l !== '')
-  let clipped = all.length > lines
-  const shown = all.slice(0, lines).map((line) => {
-    const chars = Array.from(line)
-    if (chars.length <= max) return line
-    clipped = true
-    return `${chars.slice(0, max).join('')}…`
-  })
-  return { text: shown.join('\n'), clipped }
 }
 
 /** Lines shown in a collapsed preview. */
@@ -178,34 +164,34 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   const message = fullEntry?.message ?? item.message
   const output = fullEntry?.output ?? item.output
   const tag = item.stopReason === 'completed' ? undefined : stopTag(item.stopReason)
-  const question = preview(item.message, QUESTION_LINES)
-  const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : preview(item.output, ANSWER_LINES)
+  const question = detailPreview(item.message, QUESTION_LINES)
+  const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : detailPreview(item.output, ANSWER_LINES)
   const rail = turnRail(item)
   // "Full text · N lines" only when the two lines do not already show everything.
   const truncated = question.clipped || answer.clipped || item.messageMore || item.outputMore
-  const lines = Math.max(countLines(message), countLines(output))
+  const lines = (item as TurnItem & { outputLines?: number }).outputLines ?? (fullEntry || (!item.outputMore && !item.messageMore) ? countLines(output) : undefined)
   const toggle = (): void => { onToggle(item) }
   return (
     <li style={rail === 'error' ? styles.rowError : rail === 'warn' ? styles.rowWarn : styles.row} data-seq={item.seq} data-open={open ? '' : undefined} data-rail={rail}>
       <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t('turnToggle', { seq: item.seq })}
         title={`#${item.seq}`} data-turn-head="">
         <div style={styles.line}>
-          <p style={styles.question} data-question>{question.text}</p>
+          <p style={{ ...styles.question, background: 'var(--dsw-specific-bubble)', borderRadius: 8, padding: 6 }} data-question>{question.text}</p>
           {tag === undefined
             ? (item.stopReason === 'completed' ? null : <Tag tone="neutral">{item.stopReason}</Tag>)
             : <Tag tone={tag.tone}>{t(tag.key)}</Tag>}
           {item.freshSession ? <Tag tone="info">{t('freshBadge')}</Tag> : null}
-          <span style={styles.aside}>{relativeTime(t, item.at, now)}</span>
+          <span style={styles.aside} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
         </div>
         <div style={styles.line}>
           <p style={styles.answer} data-answer>{answer.text}</p>
-          {truncated && !open ? <span style={styles.aside} data-full-hint>{t('fullLines', { lines: Math.max(lines, 1) })}</span> : null}
+          {truncated && !open ? <span style={styles.aside} data-full-hint>{lines ? t('fullLines', { lines }) : t('detailExpandFull')}</span> : null}
         </div>
       </div>
       {open ? (
         <>
-          <pre style={styles.full} data-full="message">{message}</pre>
-          <pre style={styles.full} data-full="output">{output === '' ? t('noAnswer') : output}</pre>
+          <div style={{ background: 'var(--dsw-specific-bubble)', borderRadius: 8, padding: 8 }} data-full="message"><DetailMarkdown text={message} t={t} /></div>
+          <div data-full="output"><DetailMarkdown text={output || t('noAnswer')} t={t} /></div>
           {full?.status === 'loading' ? <p style={styles.notice}>{t('loadingFull')}</p> : null}
           {full?.status === 'error' ? <p role="alert" style={styles.error}>{t('fullFailed', { message: full.message })}</p> : null}
           {item.diagnostic === undefined ? null : (
@@ -250,7 +236,7 @@ function LiveOutput({ chatId, startedAt, follow, signal, t }: { signal?: AbortSi
 
 function RunningRow({ item, now, t, chatId, follow, signal }: { signal?: AbortSignal; item: RunningItem; now: number; t: PanelTranslate; chatId: string; follow?: FollowTurn }): ReactNode {
   const [open, setOpen] = useState(false)
-  const sent = preview(item.message, QUESTION_LINES)
+  const sent = detailPreview(item.message, QUESTION_LINES)
   const toggle = (): void => setOpen(value => !value)
   return (
     <li style={styles.row} data-running>
@@ -258,11 +244,11 @@ function RunningRow({ item, now, t, chatId, follow, signal }: { signal?: AbortSi
         <div style={styles.line}>
           <ChatStateDot state="ongoing" />
           <p style={styles.question} data-running-preview>{sent.text}</p>
-          <LiveElapsed startedAt={item.startedAt} now={now} t={t} />
+          <span title={formatTurnTimeTitle(t, item, now)}><LiveElapsed startedAt={item.startedAt} now={now} t={t} /></span>
           {follow ? <span style={styles.aside} aria-hidden="true">{t('liveOutput')} {open ? '▴' : '▾'}</span> : null}
         </div>
       </div>
-      {open && sent.clipped ? <pre style={styles.full} data-running-full>{item.message}</pre> : null}
+      {open && sent.clipped ? <div data-running-full><DetailMarkdown text={item.message} t={t} /></div> : null}
       {open && follow ? <LiveOutput signal={signal} chatId={chatId} startedAt={item.startedAt} follow={follow} t={t} /> : null}
     </li>
   )
@@ -273,11 +259,11 @@ function EventRow({ item, now, t }: { readonly item: EventItem; readonly now: nu
     ? t('eventSessionLost')
     : item.event === 'session-reset-after-errors'
       ? t('eventSessionResetAfterErrors')
-      : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: item.message })}`}`
+      : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: cleanPreview(item.message, { maxLines: 2 }) })}`}`
   return (
     <li style={styles.event} data-seq={item.seq} data-event={item.event}>
       <p style={styles.eventText}>{text}</p>
-      <span style={styles.aside}>{relativeTime(t, item.at, now)}</span>
+      <span style={styles.aside} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
     </li>
   )
 }
@@ -372,6 +358,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   const turns = chat?.turnCount === undefined ? t('noValue') : String(chat.turnCount)
   return (
     <section style={styles.root} aria-label={t('viewDetail', { chatId: short })} data-chat-id={chatId}>
+      <MarkdownCompactStyle />
       <div style={styles.header}>
         <div style={styles.identity}>
           {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
@@ -388,9 +375,9 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
       {chat === undefined
         ? (snapshot.status === 'loading' ? <p style={styles.notice}>{t('loading')}</p> : null)
         : (
-          <p style={styles.meta} data-meta>
+          <p style={styles.meta} title={formatTurnTimeTitle(t, inFlightSince === undefined ? { at: chat.lastActive } : { startedAt: inFlightSince }, now)} data-meta>
             {inFlightSince === undefined
-              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), relativeTime(t, chat.lastActive, now), cwdName(chat.cwd)].join(' · ')
+              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), formatTurnTime(t, { at: chat.lastActive }, now), cwdName(chat.cwd)].join(' · ')
               : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" />{` · ${cwdName(chat.cwd)}`}</>}
           </p>
         )}

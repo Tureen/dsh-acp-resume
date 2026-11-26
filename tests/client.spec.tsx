@@ -37,6 +37,7 @@ import type {
   BackendStatusView, ChatDetailInjected, ChatsPanelInjected, ChatsSnapshot, DetailSnapshot, DetailSource, EventItem, FullEntry, Observable,
   PanelChat, RunningItem, TabInfoHook, TurnItem, WorkflowsSnapshot,
 } from '../src/client/face.ts'
+import { formatTurnTime, formatTurnTimeTitle } from '../src/client/panel-time.ts'
 import { en, zh, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
@@ -97,6 +98,14 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
     .replace(/^\s*#{1,6}\s+/gm, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1'),
+
+  DisclosureRow: () => null,
+  MarkdownText: ({ text, omitHtml, streaming, variant }: { text: string; omitHtml: boolean; streaming: boolean; variant: string }) =>
+    <div data-md={variant} data-omit-html={String(omitHtml)} data-streaming={String(streaming)}>{omitHtml ? text.replace(/<[^>]+>/g, '') : text}</div>,
+  Pill: () => null,
+  TextShimmer: () => null,
+  extractMarkdownPlainText: (text: string) => text.replace(/\*\*|`/g, '').replace(/^#+ /gm, ''),
+
   useClipboardCopy: () => ({ copied: false, copy: () => {} }),
   Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
     open ? <div role="dialog" aria-label={title} data-tone={tone}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
@@ -1618,7 +1627,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const heading = screen.getByRole('heading', { level: 2 })
     expect(heading.textContent).toBe('审阅')
     expect(heading.getAttribute('title')).toBe(`chat-${UUID_A}\ncwd /tmp\n远端 4fb07582-1111-4111-8111-111111111111\n活跃`)
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 轮 · 3 分钟前 · tmp')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe(`2 轮 · ${formatTurnTime(t, { at: chat().lastActive }, NOW)} · tmp`)
     // Gone from the body: cwd, remote id, first-turn line, the section's turn count, the refresh button.
     expect(container.textContent).not.toMatch(/cwd|远端|首轮/)
     expect(screen.queryByRole('button', { name: '刷新会话' })).toBeNull()
@@ -1635,7 +1644,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(name(chat({ title: '首轮问题' }))).toBe('首轮问题')
     expect(name(chat())).toBe('chat-a1b2c3d4')
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ turnCount: 4, backend: 'review', backendDisplay: 'review', backendCount: 2 }) }))).injected} />)
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('review · 4 轮 · 3 分钟前 · tmp')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe(`review · 4 轮 · ${formatTurnTime(t, { at: chat().lastActive }, NOW)} · tmp`)
   })
 
   it('lists turns newest first as two borderless lines: question with time and non-completed tags, answer; events as one line on a rail', () => {
@@ -1646,7 +1655,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const row3 = container.querySelector('[data-seq="3"]') as HTMLElement
     expect(within(row3).getByText('已取消').closest('[data-tag]')?.getAttribute('data-tone')).toBe('neutral')
     expect(within(row3).getByText('新会话').closest('[data-tag]')?.getAttribute('data-tone')).toBe('info')
-    expect(within(row3).getByText('9 分钟前')).toBeTruthy()
+    expect(within(row3).getByText(formatTurnTime(t, turn(3), NOW))).toBeTruthy()
     expect(row3.querySelector('[data-answer]')?.textContent).toBe('(无回答文本)')
     // The seq moved into the hover text; no Q/A labels, no border around the row.
     expect(row3.textContent).not.toContain('#3')
@@ -1660,7 +1669,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(within(row1).queryByText(/^[问答]$/)).toBeNull()
     const event = container.querySelector('[data-event="session-lost"]') as HTMLElement
     expect(event.querySelector('[data-tag]')).toBeNull()
-    expect(event.textContent).toBe('远端会话已丢失,已新开会话5 分钟前')
+    expect(event.textContent).toBe('远端会话已丢失,已新开会话' + formatTurnTime(t, lostEvent(2), NOW))
     expect(event.style.borderLeft).toMatch(/3px solid/)
   })
 
@@ -1671,7 +1680,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const top = container.querySelector('li') as HTMLElement
     expect(top.hasAttribute('data-running')).toBe(true)
     expect(top.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('ongoing')
-    expect(top.querySelector('[data-running-preview]')?.textContent).toBe('第一行\n第二行')
+    expect(top.querySelector('[data-running-preview]')?.textContent).toBe('第一行\n第二行…')
     expect(within(top).getByText('已运行 1分20秒')).toBeTruthy()
     expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分20秒 · tmp')
     await act(async () => { fireEvent.click(within(top).getByRole('button', { name: '展开进行中的消息' })) })
@@ -1693,7 +1702,7 @@ describe('ChatDetail (D18, D30 density)', () => {
   it('shows a reconnect failure with the unsent message', () => {
     const failed: EventItem = { seq: 1, kind: 'event', event: 'reconnect-failed', at: NOW - 60_000 * 2, message: '继续', error: 'process exited' }
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [failed] }))).injected} />)
-    expect((container.querySelector('[data-event="reconnect-failed"]') as HTMLElement).textContent).toBe('重连失败:process exited · 未能发送:继续2 分钟前')
+    expect((container.querySelector('[data-event="reconnect-failed"]') as HTMLElement).textContent).toBe('重连失败:process exited · 未能发送:继续' + formatTurnTime(t, failed, NOW))
   })
 
   it('shows one grey line for an empty log, and none while loading', () => {
@@ -1711,12 +1720,33 @@ describe('ChatDetail (D18, D30 density)', () => {
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [long, fits] }))).injected} />)
     const q = container.querySelector('[data-seq="1"] [data-question]') as HTMLElement
     const a = container.querySelector('[data-seq="1"] [data-answer]') as HTMLElement
-    expect(q.textContent).toBe('问一\n问二')
-    expect(a.textContent).toBe('答一\n答二\n答三')
+    expect(q.textContent).toBe('问一\n问二…')
+    expect(a.textContent).toBe('答一\n答二\n答三…')
     expect(q.style.webkitLineClamp).toBe('2')
     expect(a.style.webkitLineClamp).toBe('3')
     expect(container.querySelector('[data-seq="1"] [data-full-hint]')?.textContent).toBe('全文 · 4 行')
     expect(container.querySelector('[data-seq="2"] [data-full-hint]')).toBeNull()
+  })
+
+  it('uses the shared times and hover titles for today, yesterday, earlier dates and a subsecond turn', () => {
+    const now = new Date(2026, 10, 26, 17).getTime()
+    for (const at of [now, now - 86400000, new Date(2026, 9, 1).getTime(), new Date(2025, 1, 1).getTime()]) {
+      const row = turn(1, { at, startedAt: at - 300 })
+      const view = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ fetchedAt: now, entries: [row] }))).injected} />)
+      expect(screen.getByText(formatTurnTime(t, row, now)).getAttribute('title')).toBe(formatTurnTimeTitle(t, row, now))
+      view.unmount()
+    }
+  })
+
+  it('cleans previews and renders both expanded bodies with the official HTML omission flag', () => {
+    const row = turn(1, { message: '**任务**', output: '检查 <i>结果</i>' })
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [row] }))).injected} />)
+    expect(container.querySelector('[data-question]')?.textContent).toBe('任务')
+    fireEvent.click(head(container, 1))
+    const body = container.querySelector('[data-full="output"] [data-md="body"]')!
+    expect(body.getAttribute('data-omit-html')).toBe('true')
+    expect(body.textContent).toBe('检查 结果')
+    expect(body.querySelector('i')).toBeNull()
   })
 
   it('rails a turn red for an error, orange for a stop short or a fresh-session answer, and none when it completed plainly', () => {
@@ -1746,14 +1776,14 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(cwdName('C:\\work\\repo\\')).toBe('repo')
     expect(cwdName('/')).toBe('/')
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ chat: chat({ cwd: '/Users/me/Developer/dsh-acp-resume', turnCount: 12 }) }))).injected} />)
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('12 轮 · 3 分钟前 · dsh-acp-resume')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe(`12 轮 · ${formatTurnTime(t, { at: chat().lastActive }, NOW)} · dsh-acp-resume`)
     expect(screen.getByRole('heading', { level: 2 }).getAttribute('title')).toContain('cwd /Users/me/Developer/dsh-acp-resume')
   })
 
   it('marks a cut turn with "full text · N lines" at the end of the answer line, and a fully shown one with nothing', () => {
     const entries = [turn(1, { message: '一\n二\n三', messageMore: true }), turn(2, { message: '就一行', output: '也一行' })]
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
-    expect(container.querySelector('[data-seq="1"] [data-full-hint]')?.textContent).toBe('全文 · 3 行')
+    expect(container.querySelector('[data-seq="1"] [data-full-hint]')?.textContent).toBe('展开全文')
     expect(container.querySelector('[data-seq="2"] [data-full-hint]')).toBeNull()
   })
 
@@ -1912,9 +1942,9 @@ describe('ChatDetail (D18, D30 density)', () => {
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [turn(1, { message: 'a\nb', messageMore: true })] })), { t: translator(en) })
     const { container } = render(<ChatDetail {...injected} />)
     expect(screen.getByText('Turn history')).toBeTruthy()
-    expect(container.querySelector('[data-meta]')?.textContent).toBe('2 turns · 3 min ago · tmp')
-    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByText('9 min ago')).toBeTruthy()
-    expect(container.querySelector('[data-full-hint]')?.textContent).toBe('full text · 2 lines')
+    expect(container.querySelector('[data-meta]')?.textContent).toBe(`2 turns · ${formatTurnTime(translator(en), { at: chat().lastActive }, NOW)} · tmp`)
+    expect(within(container.querySelector('[data-seq="1"]') as HTMLElement).getByText(formatTurnTime(translator(en), turn(1), NOW))).toBeTruthy()
+    expect(container.querySelector('[data-full-hint]')?.textContent).toBe('Show full text')
     expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
   })
 

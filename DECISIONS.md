@@ -1083,3 +1083,10 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
   - **Step 5(已落地)**:团队派工视图本体(`src/team-view.ts`、`pool.ts` 零存储投影、`TeamSection.tsx`、互斥分流、`PREVIEW_CHARS` 320 与 `outputLines?`)。
   - **Step 6–9(待实施,流式合入后)**:详情页接入共享时间与官方 Markdown 清洗/渲染 → 单轮结构化卡片与粘性顶栏 → 近期 3 轮/更早折叠/跨天分节 → 在途独立工作区与 `LiveSource` 无缝交接。
 
+  - **Step 3(待实施)**:后端状态与额度对齐(`DisclosureRow`、三层卡、消除 `toISOString()`、条件告警条)。
+  - **Step 4(待实施)**:工作流、会话卡与单会话设置对齐,按注意力顺序重排主面板区块(同步修订 D29)。
+  - **Step 5(待实施)**:团队派工视图本体(`pool.ts` 零存储投影、`TeamSection`、互斥分流、`PREVIEW_CHARS` 320)。
+  - **Step 6 已落地**（2026-11-26）：详情时间与 title 使用共享格式，折叠清洗 Markdown，展开按 body 渲染并省略 HTML。
+  - **Step 7–9(待实施)**:详情页接入共享时间与官方 Markdown 清洗/渲染 → 单轮结构化卡片与粘性顶栏 → 近期 3 轮/更早折叠/跨天分节 → 在途独立工作区与 `LiveSource` 无缝交接。
+
+
