@@ -51,6 +51,9 @@ locale/         en.json / zh.json:插件显示元数据(meta.title/description),
 cordis.patch.yml bundle 层:插入 ACP 主插件和独立的 Dispatcher 声明行 `acp-dispatcher-settings`及全局文档发现行 acp-resume-skill-filesystem（D26/D37/D39）
 skills/acp-resume-docs/ D39:随包的中文使用文档，入口 + 七份任务参考 + 完整 profile 模板
 icon.svg        插件图标,由 package.json 顶层 icon 字段声明;locale 与图标都须在 files 里
+scripts/
+  backend-compatibility.mjs 生成/校验兼容表
+  release.mjs    发布流水线:八个子命令各是一道门槛;tag 只在 CI 于完整 sha 上 success 时才打
 tests/
   subagent-acp.spec.ts   官方协议面回归(含 42 例协议面门槛)
   connection.spec.ts     连接原语
@@ -83,6 +86,8 @@ pnpm install     # node >= 24;pnpm-workspace.yaml 的 allowBuilds 若仍是占�
 pnpm build       # tsc -p tsconfig.json → lib/ 与 lib/types/
 pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.bin/vitest run
 ```
+
+发布走 `scripts/release.mjs`(每个子命令一个门槛,红了就停,绝不重跑、不挪 tag):`token` → `preflight` → `ci` → `skipped` → `tag <ver>` → `npm <ver>` → `verify <ver>` → `index <ver>`;也可用 `pnpm release:<step>`。`verify` 用 `RELEASE_MARKERS` / `RELEASE_ABSENT`(JSON:`{"lib/x.js":"text"}`)声明本版必须包含 / 必须移除的标志。**判断性的部分与硬规矩见用户级 skill `release-dsh-plugin`**,不要凭记忆发版。
 
 ### 期望测试基线
 
