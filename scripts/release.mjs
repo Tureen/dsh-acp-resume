@@ -22,7 +22,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, loadavg, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const REGISTRY = 'https://registry.npmjs.org'
@@ -92,7 +92,7 @@ async function waitFor(label, read, { minutes = 25, everyMs = 60_000 } = {}) {
   }
 }
 
-const load1 = () => Number(readFileSync('/proc/loadavg', 'utf8').split(' ')[0]) || Number(execFileSync('uptime', [], { encoding: 'utf8' }).match(/load averages?: ([\d.]+)/)?.[1] ?? 0)
+const load1 = () => loadavg()[0]
 
 function assertLoad() {
   if (process.platform === 'win32') return
