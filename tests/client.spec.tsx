@@ -100,6 +100,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
     .replace(/`([^`]+)`/g, '$1'),
 
   DisclosureRow: () => null,
+
+  DisclosureRow: ({ title, open, onToggle, headerAccessory, collapsedContent, children }: { title: string; open: boolean; onToggle(): void; headerAccessory?: ReactNode; collapsedContent?: ReactNode; children?: ReactNode }) =>
+    <div><button aria-expanded={open} onClick={onToggle}>{title}</button>{headerAccessory}{!open && collapsedContent}{open && children}</div>,
+
   MarkdownText: ({ text, omitHtml, streaming, variant }: { text: string; omitHtml: boolean; streaming: boolean; variant: string }) =>
     <div data-md={variant} data-omit-html={String(omitHtml)} data-streaming={String(streaming)}>{omitHtml ? text.replace(/<[^>]+>/g, '') : text}</div>,
   Pill: () => null,
@@ -107,6 +111,9 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   extractMarkdownPlainText: (text: string) => text.replace(/\*\*|`/g, '').replace(/^#+ /gm, ''),
 
   useClipboardCopy: () => ({ copied: false, copy: () => {} }),
+
+  useClipboardCopy: () => ({ copied: false, onCopy: () => {} }),
+
   Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
     open ? <div role="dialog" aria-label={title} data-tone={tone}><h3>{title}</h3><p>{description}</p>{footer}</div> : null,
   // Read-only badge and status dot: stand-ins that expose tone/state for assertions.
@@ -1647,7 +1654,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(container.querySelector('[data-meta]')?.textContent).toBe(`review · 4 轮 · ${formatTurnTime(t, { at: chat().lastActive }, NOW)} · tmp`)
   })
 
-  it('lists turns newest first as two borderless lines: question with time and non-completed tags, answer; events as one line on a rail', () => {
+  it('lists turns newest first as cards with visible sequence numbers: question with time and non-completed tags, answer; events as one line on a rail', () => {
     const entries = [turn(1), lostEvent(2), turn(3, { stopReason: 'aborted', freshSession: true, message: '再问一次', output: '' })]
     const { injected } = detailProps(fakeSource(detailSnapshot({ entries })))
     const { container } = render(<ChatDetail {...injected} />)
@@ -1670,7 +1677,7 @@ describe('ChatDetail (D18, D30 density)', () => {
     const event = container.querySelector('[data-event="session-lost"]') as HTMLElement
     expect(event.querySelector('[data-tag]')).toBeNull()
     expect(event.textContent).toBe('远端会话已丢失,已新开会话' + formatTurnTime(t, lostEvent(2), NOW))
-    expect(event.style.borderLeft).toMatch(/3px solid/)
+    expect((event.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft).toMatch(/3px solid/)
   })
 
   it('puts a running entry on top with a spinner, its first two lines, and a live timer; the meta line switches to running', async () => {
@@ -1760,9 +1767,9 @@ describe('ChatDetail (D18, D30 density)', () => {
     const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries }))).injected} />)
     const rail = (seq: number): [string | null, string] => {
       const row = container.querySelector(`[data-seq="${seq}"]`) as HTMLElement
-      return [row.getAttribute('data-rail'), row.style.borderLeft]
+      return [row.getAttribute('data-rail'), (row.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft]
     }
-    expect(rail(1)).toEqual([null, ''])
+    expect(rail(1)[0]).toBeNull()
     expect(rail(2)[0]).toBe('error')
     expect(rail(2)[1]).toMatch(/3px solid var\(--dsw-alias-state-error-primary\)/)
     for (const seq of [3, 4, 5]) {
@@ -1795,6 +1802,11 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(row.getAttribute('aria-expanded')).toBe('false')
     await act(async () => { fireEvent.click(row) })
     expect(row.getAttribute('aria-expanded')).toBe('true')
+    const reply = container.querySelector('[data-full="output"]') as HTMLElement
+    fireEvent.mouseDown(reply)
+    fireEvent.click(reply)
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect((container.querySelector('[data-full="message"]') as HTMLElement).style.maxHeight).toBe('160px')
     expect(container.querySelector('[data-seq="1"] [data-full-hint]')).toBeNull()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '收起第 1 条' })) })
     expect(row.getAttribute('aria-expanded')).toBe('false')

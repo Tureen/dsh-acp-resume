@@ -29,7 +29,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
-import { MarkdownCompactStyle, cleanPreview } from './panel-chrome.tsx'
+import { DisclosureRow, PanelCard, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
 import { formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { FollowTurn, LiveView } from './live-source.ts'
 import { panelActionError } from './chats-source.ts'
@@ -62,12 +62,10 @@ const styles = {
   subheading: { margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   sectionCount: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
 
-  // History: a borderless list, rows split by a divider.
-  list: { display: 'flex', flexDirection: 'column', margin: 0, padding: 0, listStyle: 'none' },
-  row: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0', borderBottom: ROW_DIVIDER },
-  // A turn that did not go plainly gets a rail, as reconnect events do: red for an error, orange otherwise.
-  rowError: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0 8px 8px', borderBottom: ROW_DIVIDER, borderLeft: '3px solid var(--dsw-alias-state-error-primary)' },
-  rowWarn: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 0 8px 8px', borderBottom: ROW_DIVIDER, borderLeft: '3px solid var(--dsw-alias-state-warn-primary)' },
+  sticky: { position: 'sticky', top: 0, zIndex: 1, background: 'var(--dsw-alias-bg-layer-1)', paddingBlock: 6 },
+  list: { display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' },
+  row: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px' },
+  bubble: { background: 'var(--dsw-specific-bubble)', padding: 8, borderRadius: 8, minWidth: 0 },
   rowHead: { display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '-2px -4px' },
   // Previews keep their line breaks and clamp to 2 (question) / 3 (answer) lines.
   question: { flex: 1, minWidth: 0, margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-line', overflowWrap: 'anywhere', overflow: 'hidden', display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 },
@@ -167,43 +165,45 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   const question = detailPreview(item.message, QUESTION_LINES)
   const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : detailPreview(item.output, ANSWER_LINES)
   const rail = turnRail(item)
+  const promptCopy = useClipboardCopy(message)
+  const replyCopy = useClipboardCopy(output)
   // "Full text · N lines" only when the two lines do not already show everything.
   const truncated = question.clipped || answer.clipped || item.messageMore || item.outputMore
   const lines = (item as TurnItem & { outputLines?: number }).outputLines ?? (fullEntry || (!item.outputMore && !item.messageMore) ? countLines(output) : undefined)
   const toggle = (): void => { onToggle(item) }
   return (
-    <li style={rail === 'error' ? styles.rowError : rail === 'warn' ? styles.rowWarn : styles.row} data-seq={item.seq} data-open={open ? '' : undefined} data-rail={rail}>
-      <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t('turnToggle', { seq: item.seq })}
-        title={`#${item.seq}`} data-turn-head="">
-        <div style={styles.line}>
-          <p style={{ ...styles.question, background: 'var(--dsw-specific-bubble)', borderRadius: 8, padding: 6 }} data-question>{question.text}</p>
-          {tag === undefined
-            ? (item.stopReason === 'completed' ? null : <Tag tone="neutral">{item.stopReason}</Tag>)
-            : <Tag tone={tag.tone}>{t(tag.key)}</Tag>}
-          {item.freshSession ? <Tag tone="info">{t('freshBadge')}</Tag> : null}
-          <span style={styles.aside} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
+    <li data-seq={item.seq} data-open={open ? '' : undefined} data-rail={rail}>
+      <PanelCard rail={rail} style={styles.row}>
+        <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t('turnToggle', { seq: item.seq })} data-turn-head="">
+          <div style={{ ...styles.line, alignItems: 'center' }}>
+            <strong>#{item.seq}</strong>
+            {tag ? <Tag tone={tag.tone}>{t(tag.key)}</Tag> : item.stopReason !== 'completed' && <Tag tone="neutral">{item.stopReason}</Tag>}
+            {item.freshSession && <Tag tone="info">{t('freshBadge')}</Tag>}
+            <span style={{ ...styles.aside, marginLeft: 'auto' }} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
+            <span aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+          </div>
+          {!open && <>
+            <div style={styles.bubble}><p style={styles.question} data-question>{question.text}</p></div>
+            <p style={styles.answer} data-answer>{answer.text}</p>
+            {truncated && <span style={styles.aside} data-full-hint>{lines ? t('fullLines', { lines }) : t('detailExpandFull')}</span>}
+          </>}
         </div>
-        <div style={styles.line}>
-          <p style={styles.answer} data-answer>{answer.text}</p>
-          {truncated && !open ? <span style={styles.aside} data-full-hint>{lines ? t('fullLines', { lines }) : t('detailExpandFull')}</span> : null}
-        </div>
-      </div>
-      {open ? (
-        <>
-          <div style={{ background: 'var(--dsw-specific-bubble)', borderRadius: 8, padding: 8 }} data-full="message"><DetailMarkdown text={message} t={t} /></div>
+        {open && <>
+          <div style={styles.bubble}>
+            <div style={styles.line}>{t('detailPrompt')} <Button variant="ghost" size="sm" disabled={item.messageMore && !fullEntry} onClick={promptCopy.onCopy}>{t(promptCopy.copied ? 'copiedText' : 'copyText')}</Button></div>
+            <div style={{ maxHeight: 160, overflowY: 'auto' }} data-full="message"><DetailMarkdown text={message} t={t} /></div>
+          </div>
+          <div style={styles.line}>{t('detailReply')} <Button variant="ghost" size="sm" disabled={item.outputMore && !fullEntry} onClick={replyCopy.onCopy}>{t(replyCopy.copied ? 'copiedText' : 'copyText')}</Button></div>
           <div data-full="output"><DetailMarkdown text={output || t('noAnswer')} t={t} /></div>
-          {full?.status === 'loading' ? <p style={styles.notice}>{t('loadingFull')}</p> : null}
-          {full?.status === 'error' ? <p role="alert" style={styles.error}>{t('fullFailed', { message: full.message })}</p> : null}
-          {item.diagnostic === undefined ? null : (
-            <>
-              <button type="button" style={styles.linkButton} aria-expanded={diagOpen}
-                onClick={() => { setDiagOpen(v => !v) }}>{t(diagOpen ? 'hideDiagnostic' : 'showDiagnostic')}</button>
-              {diagOpen ? <p style={styles.diag} data-diagnostic>{item.diagnostic}</p> : null}
-            </>
-          )}
-          <button type="button" style={styles.linkButton} aria-label={t('turnCollapse', { seq: item.seq })} onClick={toggle}>{t('collapseFull')}</button>
-        </>
-      ) : null}
+          {full?.status === 'loading' && <p style={styles.notice}>{t('loadingFull')}</p>}
+          {full?.status === 'error' && <p role="alert" style={styles.error}>{t('fullFailed', { message: full.message })}</p>}
+          {item.diagnostic !== undefined && <DisclosureRow icon={null} expandable open={diagOpen}
+            title={t(diagOpen ? 'hideDiagnostic' : 'showDiagnostic')} onToggle={() => setDiagOpen(v => !v)}>
+            <p style={styles.diag} data-diagnostic>{item.diagnostic}</p>
+          </DisclosureRow>}
+          <Button variant="ghost" size="sm" aria-label={t('turnCollapse', { seq: item.seq })} onClick={toggle}>{t('collapseFull')}</Button>
+        </>}
+      </PanelCard>
     </li>
   )
 }
@@ -261,10 +261,10 @@ function EventRow({ item, now, t }: { readonly item: EventItem; readonly now: nu
       ? t('eventSessionResetAfterErrors')
       : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: cleanPreview(item.message, { maxLines: 2 }) })}`}`
   return (
-    <li style={styles.event} data-seq={item.seq} data-event={item.event}>
+    <li data-seq={item.seq} data-event={item.event}><PanelCard rail={item.event === 'reconnect-failed' ? 'error' : 'warn'} style={styles.line}>
       <p style={styles.eventText}>{text}</p>
       <span style={styles.aside} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
-    </li>
+    </PanelCard></li>
   )
 }
 
@@ -359,28 +359,30 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   return (
     <section style={styles.root} aria-label={t('viewDetail', { chatId: short })} data-chat-id={chatId}>
       <MarkdownCompactStyle />
-      <div style={styles.header}>
-        <div style={styles.identity}>
-          {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
-          <h2 style={styles.heading} title={identityHint(t, chat, chatId)}>{chatName(chat, chatId)}</h2>
+      <header style={styles.sticky}>
+        <div style={styles.header}>
+          <div style={styles.identity}>
+            {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
+            <h2 style={styles.heading} title={identityHint(t, chat, chatId)}>{chatName(chat, chatId)}</h2>
+          </div>
+          <ActionsMenu t={t} disabled={pending || chat === undefined} canRelease={chat?.active === true}
+            onRelease={() => {
+              // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
+              if (inFlightSince === undefined) run(close)
+              else setConfirming('release')
+            }}
+            onDelete={() => { setConfirming('delete') }} />
         </div>
-        <ActionsMenu t={t} disabled={pending || chat === undefined} canRelease={chat?.active === true}
-          onRelease={() => {
-            // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.
-            if (inFlightSince === undefined) run(close)
-            else setConfirming('release')
-          }}
-          onDelete={() => { setConfirming('delete') }} />
-      </div>
-      {chat === undefined
-        ? (snapshot.status === 'loading' ? <p style={styles.notice}>{t('loading')}</p> : null)
-        : (
-          <p style={styles.meta} title={formatTurnTimeTitle(t, inFlightSince === undefined ? { at: chat.lastActive } : { startedAt: inFlightSince }, now)} data-meta>
-            {inFlightSince === undefined
-              ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), formatTurnTime(t, { at: chat.lastActive }, now), cwdName(chat.cwd)].join(' · ')
-              : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" />{` · ${cwdName(chat.cwd)}`}</>}
-          </p>
-        )}
+        {chat === undefined
+          ? (snapshot.status === 'loading' ? <p style={styles.notice}>{t('loading')}</p> : null)
+          : (
+            <p style={styles.meta} title={formatTurnTimeTitle(t, inFlightSince === undefined ? { at: chat.lastActive } : { startedAt: inFlightSince }, now)} data-meta>
+              {inFlightSince === undefined
+                ? [...(backend === undefined ? [] : [backend]), t('turns', { count: turns }), formatTurnTime(t, { at: chat.lastActive }, now), cwdName(chat.cwd)].join(' · ')
+                : <>{backend === undefined ? null : `${backend} · `}<LiveElapsed startedAt={inFlightSince} now={now} t={t} label="inFlightFor" />{` · ${cwdName(chat.cwd)}`}</>}
+            </p>
+          )}
+      </header>
       {snapshot.status === 'error' && snapshot.error !== undefined
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}
