@@ -895,3 +895,23 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 修订（2026-11-26，0.5.1）：最初从标准模式删减工具时，一并移除了 skill 发现与加载两个子项，未单独评估这项能力。为让 Dispatcher 主 Agent 在任务匹配时加载相应指引，新增第七项 `dispatcherTools.skill`。开启时在 present 后、compaction 前加入 `skill-filesystem` 和 `tool-skill`，沿用标准模式的 Loader 表达式，在当前安装中解析 `@deepseek-ai/dsh-agent-preset` 自带的 skills 目录。可用 skill 的说明会进入主 Agent 上下文，因此默认关闭，升级后沿用 0.5.0 的工具面和 persona。
 
 修订（2026-11-26，0.5.1）：有意更正默认 persona 的目标目录规则及对应回归夹具。此前只说目录不清楚时提问，主 Agent 即使明知用户指的是另一个仓库，也可能把自己的工作目录传给 Worker。创建 chat 前应识别目标项目、仓库或 worktree，显式传入其绝对路径；只有请求或前文明确指向调度者目录时才使用它。目标唯一就直接派工，有多个候选就列出请用户选择，无法识别则先问清目标。关闭提问工具时在对话中询问。
+
+## D38 Dispatcher 提示词可配（2026-11-26，0.5.1）
+
+在 D37 声明插件的同一 `config` 下，`dispatcherPrompt` 与 `dispatcherTools` 并列。用户只调整调度规则时可继续使用工具开关、原有 preset id 和全局 ACP 池。菜单 description 始终只取决于工具配置。
+
+可替换的调度规则由以下段落组成，顺序与自带 persona 一致：
+
+| 段落首句或起始语 | 规则范围 |
+|---|---|
+| `Check the registered ACP backend status tool (acp_backend_status with the default prefix) before reporting available workers or dispatching.` | 派工前检查后端、使用已注册的启动和发送工具。 |
+| `If detection is running, say so.` | 检测中的回报、重新检查和测试会话约束。 |
+| `If the user names a backend and the start tool exposes a backend parameter, pass that backend's ID; never substitute another for an explicit choice.` | 显式后端、默认选择、缺少 Kiro 时的改派和失败说明。 |
+| `For an existing chat, send to its chatId without switching backends based on detection.` | 已有会话的续聊、派工、通知与收集结果。 |
+| `Before starting an ACP chat, identify the project, repository, or worktree the task targets.` / `When the target is unambiguous, proceed without asking.` | 识别项目、仓库或 worktree，显式传绝对路径，以及何时提问、在哪里提问（D37 修订）。 |
+| `Workers sharing the same cwd must have non-overlapping file write boundaries.` | 共享目录的多个 Worker 需要约定各自的写入范围。 |
+| `When synthesizing results:` | 汇总时处理依赖、部分结果和阻塞项。 |
+
+- **追加。** `extraRules` 默认空；先去掉首尾空白，保留内部格式。普通模式依次拼身份句、自带派工和目录规则、共享写入边界、工具指引、汇总框架。非空用户文字在框架后另起一段。省略 prompt 或使用空规则时不增加空行，逐字保留 D37 本日修正后的默认 persona。
+- **替换。** `overrideRules` 默认 false。打开后只拼身份句、当前工具指引、空行和用户规则。身份仅指 `You are a task dispatcher.`；原来与其同段的后端检查和随后收集结果的流程都属于调度规则。web、文件核对与执行边界、skill、present、todo 和压缩等按工具配置生成的指引仍有效。默认目录规则里的提问分支随该规则一起替换；关闭 askUser 时保留可在对话中澄清的通用指引。替换模式下用户文字为空则声明加载报配置错误。
+- **作用范围。** 只设置 dsh-persona 的 prefix。设置 `complete: true` 会使该段独占最终系统提示，因此沿用普通 section 组合；宿主其他 section 和 D36 的条件团队片段各按自身条件参与组装。

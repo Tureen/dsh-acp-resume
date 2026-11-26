@@ -1,4 +1,4 @@
-/** Global Cordis declaration for the configurable ACP Dispatcher preset (D37).
+/** Global Cordis declaration for the configurable ACP Dispatcher preset (D37/D38).
  * Its fiber owns the preset definition independently of the ACP provider and pool.
  * @module dsh-acp-resume/dispatcher-preset
  */
@@ -11,8 +11,12 @@ export const inject = ['agentPresets']
 
 const defaults = { readOnlyFs: false, web: true, present: true, todo: true, askUser: true, skill: false, compaction: true }
 type DispatcherTools = typeof defaults
+const promptDefaults = { extraRules: '', overrideRules: false }
+type DispatcherPrompt = typeof promptDefaults
 
-/** Toggles for the Dispatcher scope. Skill descriptions enter the main agent's context only on opt-in. */
+/** Tool choices govern the menu description. Skill descriptions enter context only on opt-in.
+ * Prompt customization affects only the persona prefix.
+ */
 export const Config = z.object({
   dispatcherTools: z.object({
     readOnlyFs: z.boolean().default(defaults.readOnlyFs).description('Read and search files to verify worker results.'),
@@ -23,9 +27,14 @@ export const Config = z.object({
     skill: z.boolean().default(defaults.skill).description('Include skill descriptions in the main agent’s context and let it load matching skills. Off by default to keep the prompt smaller.'),
     compaction: z.boolean().default(defaults.compaction).description('Enable the isolated context compaction group.'),
   }).default(defaults),
+  dispatcherPrompt: z.object({
+    extraRules: z.string().default('').description('User dispatch rules, appended after the built-in persona by default.'),
+    overrideRules: z.boolean().default(false).description('Replace the built-in dispatch rules with nonempty extraRules. Keep the identity and tool guidance.'),
+  }).default(promptDefaults),
 })
 
-const identity = `You are a task dispatcher. Check the registered ACP backend status tool (acp_backend_status with the default prefix) before reporting available workers or dispatching. This status tool never creates a session. Use the registered start and send tools, whose names may also have a custom prefix.
+const identity = 'You are a task dispatcher.'
+const dispatchProcedure = `Check the registered ACP backend status tool (acp_backend_status with the default prefix) before reporting available workers or dispatching. This status tool never creates a session. Use the registered start and send tools, whose names may also have a custom prefix.
 If detection is running, say so. After a CLI upgrade, sign-in, or default model change, users can choose Right sidebar → ACP chats → Recheck backends (右侧栏 → ACP 会话 → 后端状态旁的「重新检测后端」). This does not delete chats, log users out, or change settings. Do not create a test chat.
 If the user names a backend and the start tool exposes a backend parameter, pass that backend's ID; never substitute another for an explicit choice. Otherwise use the configured default. A non-pinned Kiro default can fall back to ready Codex, then Antigravity, only if DSH cannot find the configured Kiro executable. Mention this fallback when it happens. Never treat an installed Kiro's version, handshake or sign-in issue as a reason to switch. Auto-discovered Codex is read-only: do not delegate tasks requiring writes to it. If new dispatch fails, explain the cause and available choices.
 For an existing chat, send to its chatId without switching backends based on detection. Dispatch tasks with acp_chat_send (records jobId); wait for completion notifications; collect results with job_output.`
@@ -43,14 +52,11 @@ function targetDirectoryRule(askUser: boolean): string {
 When the target is unambiguous, proceed without asking. If several directories are plausible, list them and ${choose}. If no target can be identified, ${clarify} which project or directory the task is for before starting the chat.`
 }
 
-function dispatcherCopy(tools: DispatcherTools) {
+function toolCopy(tools: DispatcherTools) {
   const description = ['纯派工模式:主 Agent 只做调度,ACP 会话做实际 Worker。']
   description.push(tools.readOnlyFs ? '可用 read/grep/glob 核对结果，无 bash，不改文件。' : '无 bash/fs,')
   description.push(tools.web ? '轻量联网查询保留。' : '联网查询交给 Worker。')
-  const lines = [identity,
-    targetDirectoryRule(tools.askUser),
-    'Workers sharing the same cwd must have non-overlapping file write boundaries.',
-  ]
+  const lines: string[] = []
   if (tools.web) lines.push('For lightweight fact-checking use web tools directly; delegate full research tasks to workers.')
   lines.push(tools.readOnlyFs
     ? 'Use read, grep, and glob to verify worker results. Delegate shell commands, file changes, and code analysis to workers.'
@@ -72,12 +78,31 @@ function dispatcherCopy(tools: DispatcherTools) {
     description.push('上下文压缩组已关闭。')
     lines.push('Keep worker summaries concise because the Dispatcher compaction group is disabled.')
   }
-  return { description: description.join(''), prefix: [...lines, '', synthesis].join('\n') }
+  return { description: description.join(''), lines }
 }
 
-/** Construct one detached preset definition from the declaration's resolved configuration. */
-export function buildDispatcherPreset(tools: DispatcherTools = defaults): PresetDefinition {
-  const { description, prefix } = dispatcherCopy(tools)
+function personaPrefix(askUser: boolean, toolLines: string[], prompt: Partial<DispatcherPrompt>): string {
+  const extra = prompt.extraRules?.trim() ?? ''
+  if (prompt.overrideRules && !extra) {
+    throw new Error('dispatcherPrompt.overrideRules requires nonempty extraRules to replace the built-in dispatch rules')
+  }
+  const lines = prompt.overrideRules ? [identity] : [
+    `${identity} ${dispatchProcedure}`,
+    targetDirectoryRule(askUser),
+    'Workers sharing the same cwd must have non-overlapping file write boundaries.',
+  ]
+  // The default directory rule already explains how to ask when the tool is disabled.
+  if (prompt.overrideRules && !askUser) lines.push('When clarification is needed, ask in the conversation.')
+  lines.push(...toolLines)
+  if (!prompt.overrideRules) lines.push('', synthesis)
+  if (extra) lines.push('', extra)
+  return lines.join('\n')
+}
+
+/** Build a detached preset. dispatcherPrompt changes the prefix; the description follows only the tools. */
+export function buildDispatcherPreset(tools: DispatcherTools = defaults, prompt: Partial<DispatcherPrompt> = {}): PresetDefinition {
+  const { description, lines } = toolCopy(tools)
+  const prefix = personaPrefix(tools.askUser, lines, prompt)
   const plugins: PresetDefinition['plugins'][number][] = [
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix } },
     { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
@@ -111,6 +136,6 @@ export function buildDispatcherPreset(tools: DispatcherTools = defaults): Preset
 }
 
 /** Register the definition and let Cordis retire it on update or unload. */
-export async function* apply(ctx: Context, config: { dispatcherTools: DispatcherTools }) {
-  yield await ctx.agentPresets.register(buildDispatcherPreset(config.dispatcherTools))
+export async function* apply(ctx: Context, config: { dispatcherTools: DispatcherTools; dispatcherPrompt: DispatcherPrompt }) {
+  yield await ctx.agentPresets.register(buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt))
 }

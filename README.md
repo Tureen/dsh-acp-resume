@@ -118,7 +118,7 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 
 启用 bundle 并重启 DSH，在**新会话的模式菜单**选择 **ACP Dispatcher**。默认配置下，主 Agent 可用 ACP 工具派工、用 web 轻量查证、用 jobs 跟踪任务；它没有 bash 或文件工具，命令执行和文件操作都通过 `acp_chat_send` 派给子代理。任务完成后，主 Agent 收到通知，用 `job_output` 取回结果。适合在一个窗口并行分工、让两个引擎交叉审核，或跟进耗时任务；标准模式同样能用 ACP 工具（D26）。
 
-**选择主 Agent 可用的工具。** 编辑 `~/.dsh/profiles/<name>/cordis.patch.yml`，其中 `<name>` 与安装时的 `--profile <name>` 相同。下面是同一条覆盖的两种写法，选用其中一种即可。它位于文件**顶层**，与 `- id: subagent-acp-resume` 并列：`- id:` 顶格，`name:` 和 `config:` 缩进两格，`dispatcherTools:` 缩进四格，各开关缩进六格。
+**选择主 Agent 可用的工具。** 编辑 `~/.dsh/profiles/<name>/cordis.patch.yml`，其中 `<name>` 与安装时的 `--profile <name>` 相同。下面两个工具配置示例是同一条覆盖的两种写法，选用其中一种即可。它位于文件**顶层**，与 `- id: subagent-acp-resume` 并列：`- id:` 顶格，`name:` 和 `config:` 缩进两格，`dispatcherTools:` 缩进四格，各开关缩进六格。
 
 在默认工具组合上增加文件核对，允许主 Agent 用 `read`、`grep` 和 `glob` 检查 Worker 的结果：
 
@@ -152,13 +152,28 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 | `skill` | `false` | 让主 Agent 查看可用 skill 的说明，遇到匹配的任务时加载完整指引。说明会占用上下文，因此默认关闭。 |
 | `compaction` | `true` | 整组启用上下文压缩、手动压缩命令与工具结果裁剪。 |
 
-在 profile 里改完 `dispatcherTools` 后，需要重启 DSH 以重新读取配置。在新会话中选择 ACP Dispatcher，新绑定的 Agent 会使用新工具组合及对应的模式说明和 persona。如果仅在运行中的宿主内重载声明，当前进程中已绑定的 Agent 保留原组合，ACP 会话池也继续运行。
+在 profile 里改完 Dispatcher 配置后，需要重启 DSH 以重新读取配置。在新会话中选择 ACP Dispatcher，新绑定的 Agent 会使用新工具组合及对应的模式说明和 persona。如果仅在运行中的宿主内重载声明，当前进程中已绑定的 Agent 保留原组合，ACP 会话池也继续运行。
 
 这七项开关保留了纯派工的边界：主 Agent 通过 ACP 把执行工作交给 Worker。bash、文件写入与编辑、DSH 内置子代理委派工具都不在开关范围内；开放这些执行入口后，与标准模式的区别就只剩提示词约定。需要这些工具的配置可采用下文的完整自定义声明。
 
+**自定义调度规则。** 下面仍是 profile 的 `cordis.patch.yml` 顶层条目。如果已配置工具开关，将 `dispatcherPrompt` 写在同一条目的 `config` 下，与 `dispatcherTools` 并列。
+
+```yaml
+- id: acp-dispatcher-settings
+  name: dsh-acp-resume/dispatcher-preset
+  config:
+    dispatcherPrompt:
+      extraRules: |
+        Assign one owner per deliverable.
+        Ask for the evidence before closing the task.
+      overrideRules: false
+```
+
+默认保留自带 persona；填写 `extraRules` 会将整段文字追加在结果汇总规则之后。设为 `overrideRules: true` 时必须提供非空文字，它替换后端派工流程、目标目录确认、共享目录写入边界和结果汇总规则，保留调度者身份和按工具开关生成的指引；模式菜单说明仍只随工具开关变化。
+
 **从旧的 `preset-acp-dispatcher` 行迁移。** 原先没有覆盖这行的用户无需改配置。用过旧行覆盖的用户，请删除旧覆盖；如果只是增加了只读文件工具，换成第一个示例即可。rc.5 遇到找不到的旧行会记录 `patch: entry "preset-acp-dispatcher" not found` 并跳过这条覆盖，profile 继续加载。忽略这条警告会使旧定制失效。原先禁用旧行的用户改为对 `acp-dispatcher-settings` 设置 `disabled: true`。
 
-如需保留自定义 persona 或额外插件，在同一次 profile 修改中对新行设置 `disabled: true`，再用顶层 `- insert:` 插入自己完整的 `@deepseek-ai/dsh-agent-preset` 声明。可将原行连同完整 `config` 移入 insert 列表，保留 `config.id: acp-dispatcher`。这样只有一个有效声明者，已有会话引用的 preset id 仍可解析。完成迁移后重启 DSH，在新会话选择 ACP Dispatcher。
+如需完全自定义 persona（包括身份和工具指引）或添加额外插件，在同一次 profile 修改中对新行设置 `disabled: true`，再用顶层 `- insert:` 插入自己完整的 `@deepseek-ai/dsh-agent-preset` 声明。可将原行连同完整 `config` 移入 insert 列表，保留 `config.id: acp-dispatcher`。这样只有一个有效声明者，已有会话引用的 preset id 仍可解析。完成迁移后重启 DSH，在新会话选择 ACP Dispatcher。
 
 ### ACP Workflow · 按工作区模板派工
 
