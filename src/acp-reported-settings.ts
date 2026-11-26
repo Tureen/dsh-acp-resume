@@ -4,6 +4,8 @@
  */
 import type { ReportedSettings } from './backend-status.js'
 
+import type { Selection, SessionChoices } from './chat-options.js'
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
 }
@@ -40,4 +42,32 @@ export function readAcpSettings(reply: unknown): ReportedSettings | undefined {
     ? legacy.availableModels.find(m => object(m)?.modelId === modelId) : undefined
   const modelName = modelId && (optionName(model?.options, modelId) ?? string(object(legacyMatch)?.name))
   return { ...(modelId && { model: modelId }), ...(modelName && { modelName }), ...(effort && { effort }) }
+}
+
+/** Read offered values only from the backend. ACP select options can have groups. */
+function selection(row: Record<string, unknown> | undefined): Selection | undefined {
+  if (!row) return
+  const choices = new Map<string, string>()
+  function add(item: unknown) {
+    const entry = object(item)
+    const value = string(entry?.value)
+    if (value) choices.set(value, string(entry?.name) ?? value)
+  }
+  if (Array.isArray(row.options)) for (const item of row.options) {
+    const group = object(item)?.options
+    if (Array.isArray(group)) group.forEach(add)
+    else add(item)
+  }
+  const current = string(row.currentValue)
+  return { ...(current && { current }), options: Array.from(choices, ([value, name]) => ({ value, name })) }
+}
+
+export function readSessionChoices(reply: unknown): SessionChoices | undefined {
+  const rows = object(reply)?.configOptions
+  if (!Array.isArray(rows)) return
+  const options = rows.map(object)
+  const effort = options.find(row => row?.id === 'effortLevel' || row?.id === 'thought_level')
+  const model = selection(options.find(row => row?.id === 'model'))
+  const effortId = string(effort?.id)
+  return { ...(model && { model }), ...(effortId && { effortId }), effort: selection(effort) ?? 'not-offered' }
 }

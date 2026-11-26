@@ -28,6 +28,7 @@
 
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import { parseChatAddress } from './chat-address.ts'
 import { ChatStateDot, chatDotState, LiveElapsed, relativeTime, shortChatId } from './ChatsPanel.tsx'
@@ -327,7 +328,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, t }: ViewProps
     setActionError(undefined)
     action(chatId).then(
       () => { void source.refresh(); afterwards?.() },
-      (error: unknown) => { setActionError(t('actionFailed', { message: failure(error) })) },
+      (error: unknown) => { setActionError(panelActionError(error, t)) },
     ).finally(() => { setPending(false) })
   }
 

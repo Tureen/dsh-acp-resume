@@ -9,6 +9,16 @@ export const PANEL_LOCALE = 'acpResumePanel'
 
 /** Simplified Chinese panel copy. */
 export const zh = {
+  restartForChatActions: 'ACP 会话面板已更新,重启 DSH 后即可释放、删除和切换模型。',
+  sessionSettings: '仅此会话设置',
+  sessionModel: '模型',
+  sessionEffort: '思考强度',
+  optionsUnreported: '后端未报告选项',
+  effortNotOffered: '此模型不提供',
+  switchRunning: '运行中，结束后可改。',
+  switchLifetime: '仅此会话。释放并重连后将恢复为配置值。',
+  switchReleased: '重连后可选。先发一条消息让会话重连。',
+  switchUnsupported: '此后端暂不支持会话级切换。',
   title: 'ACP 会话',
   guideDescription: '检查本机派工后端，查看并释放 ACP 会话',
   refresh: '刷新会话',
@@ -191,6 +201,16 @@ export type PanelCopyKey = keyof typeof zh
 
 /** English panel copy. */
 export const en: Record<PanelCopyKey, string> = {
+  restartForChatActions: 'The ACP chats panel has been updated. Restart DSH to release or delete chats and switch models.',
+  sessionSettings: 'Settings for this chat',
+  sessionModel: 'Model',
+  sessionEffort: 'Reasoning effort',
+  optionsUnreported: 'Options not reported',
+  effortNotOffered: 'Not offered by this model',
+  switchRunning: 'A turn is running. Change settings after it finishes.',
+  switchLifetime: 'Only this chat. Reconnecting after release restores configured settings.',
+  switchReleased: 'Available after reconnect. Send a message to reconnect first.',
+  switchUnsupported: 'Session-level switching is not available for this backend yet.',
   title: 'ACP chats',
   guideDescription: 'Check dispatch backends, then view and release ACP chats',
   refresh: 'Refresh chats',

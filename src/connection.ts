@@ -31,7 +31,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess'
 import { acpStopReason, acpContentText, disposeAcpChild, type AcpRunSpec, type PermissionPolicy } from './run.js'
-import { readAcpSettings } from './acp-reported-settings.js'
+import type { SessionChoices } from './chat-options.js'
+import { readSessionChoices, readAcpSettings } from './acp-reported-settings.js'
 import type { ReportedSettings } from './backend-status.js'
 import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
 import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestResolver } from './permission-request.js'
@@ -140,6 +141,8 @@ export interface AcpConnection {
   readonly remoteSessionId: string
   /** True once the child's fate is known (exited, or `done` rejected); false while live. */
   readonly processSettled: boolean
+  readonly sessionChoices?: SessionChoices
+  setSelection?(field: 'model' | 'effort', value: string): Promise<void>
   /** Latest backend report on this live connection (D41). */
   readonly settingsReport?: ReportedSettings & { readonly at: number }
   /**
@@ -456,7 +459,11 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   let activePermissionSignal: AbortSignal | undefined
   let remoteSessionId: string | undefined
   let settingsReport: AcpConnection['settingsReport']
+  let sessionChoices: SessionChoices | undefined
+  let onChoices: (() => void) | undefined
   const observeSettings = (reply: unknown): void => {
+    const choices = readSessionChoices(reply)
+    if (choices) { sessionChoices = choices; onChoices?.() }
     const settings = readAcpSettings(reply)
     if (settings !== undefined) settingsReport = { ...settings, at: Date.now() }
   }
@@ -675,6 +682,41 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   return {
     id,
     remoteSessionId: sessionId,
+    get sessionChoices() { return sessionChoices },
+    async setSelection(field, value) {
+      const previous = sessionChoices
+      const confirmed = (): boolean => {
+        const selected = sessionChoices?.[field]
+        return previous !== sessionChoices && !!selected && selected !== 'not-offered' && selected.current === value
+      }
+      const notification = Promise.withResolvers<void>()
+      onChoices = () => { if (confirmed()) notification.resolve() }
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        let reply: unknown
+        if (field === 'model') {
+          try { reply = await agent.request('session/set_model', { sessionId, modelId: value }) }
+          catch (error) {
+            if (!(error instanceof RequestError) || (error.code !== METHOD_NOT_FOUND && error.code !== INTERNAL_ERROR)) throw error
+            reply = await agent.request('session/set_config_option', { sessionId, configId: 'model', value })
+          }
+        } else {
+          const configId = sessionChoices?.effortId
+          if (!configId) throw new Error('this model does not offer reasoning effort')
+          reply = await agent.request('session/set_config_option', { sessionId, configId, value })
+        }
+        observeSettings(reply)
+        // agy acknowledges set_model with {} and publishes the updated catalog separately.
+        if (!confirmed() && !readSessionChoices(reply)) {
+          timer = setTimeout(() => notification.resolve(), 3000)
+          await notification.promise
+        }
+        if (!confirmed()) throw new Error(`backend did not confirm ${field} "${value}"`)
+      } finally {
+        if (timer) clearTimeout(timer)
+        onChoices = undefined
+      }
+    },
     get settingsReport() { return settingsReport },
     get processSettled(): boolean {
       return processOutcome !== undefined || processFailure !== undefined

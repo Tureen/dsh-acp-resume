@@ -15,6 +15,9 @@ import type { BackendStatusSnapshot } from '../backend-status.ts'
  * (src/pool.ts); restated because the browser half must not reach the node half.
  */
 export interface PanelChat {
+  readonly connectionId?: string
+  readonly currentModel?: string
+  readonly currentEffort?: string
   readonly chatId: string
   readonly remoteSessionId: string
   readonly cwd: string
@@ -224,7 +227,13 @@ export interface BackendStatusSourceFace extends Observable<BackendStatusView> {
 }
 
 /** What the sidebar slot injects before the renderer binds `hooks`. */
+export interface ChatSettingsActions {
+  read(chatId: string): Promise<import('../chat-options.ts').ChatOptions>
+  change(chatId: string, field: 'model' | 'effort', value: string): Promise<void>
+}
+
 export interface ChatsPanelInjected {
+  readonly settings?: ChatSettingsActions
   readonly features: FeatureStore
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }
   readonly backendStatus?: BackendStatusSourceFace

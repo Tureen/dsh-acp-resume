@@ -411,6 +411,8 @@ function makeAgent() {
 }
 
 const implementation = makeAgent()
+const modelCatalogs = JSON.parse(process.env.MOCK_MODEL_CATALOGS ?? '{}')
+let currentOptions = JSON.parse(process.env.MOCK_CONFIG_OPTIONS ?? '[]')
 let effortSets = 0
 const agentApp = createAcpAgentApp({ name: 'dsh-subagent-acp-test-agent' })
 agentApp.onRequest(
@@ -420,6 +422,14 @@ agentApp.onRequest(
     const file = process.env.MOCK_SET_CONFIG_FILE
     if (file !== undefined) appendFileSync(file, `set_config_option ${params.sessionId} ${params.configId} ${params.value}\n`)
     if (process.env.MOCK_SET_CONFIG_FAIL === '1') return Promise.reject(new Error('mock: set_config_option rejected'))
+    if (process.env.MOCK_MODEL_CATALOGS) {
+      if (params.configId === 'model') currentOptions = modelCatalogs[params.value]
+      else if (!process.env.MOCK_KEEP_EFFORT) {
+        const field = currentOptions.find((row: { id: string }) => row.id === params.configId)
+        if (field) field.currentValue = params.value
+      }
+      return Promise.resolve({ configOptions: currentOptions })
+    }
     const effortOptionId = process.env.MOCK_EFFORT_OPTION_ID ?? 'effortLevel'
     if (params.configId === effortOptionId) {
       if (process.env.MOCK_EFFORT_ABSENT === '1') return Promise.resolve({ configOptions: [{ id: 'model', currentValue: 'auto' }] })
@@ -436,10 +446,15 @@ agentApp.onRequest(
 if (process.env.MOCK_NO_SET_MODEL !== '1') agentApp.onRequest(
   'session/set_model',
   (params: unknown) => params as { sessionId: string; modelId: string },
-  ({ params }) => {
+  ({ params, client }) => {
     const file = process.env.MOCK_SET_MODEL_FILE
     if (file !== undefined) appendFileSync(file, `set_model ${params.sessionId} ${params.modelId}\n`)
     if (process.env.MOCK_SET_MODEL_FAIL === '1') return Promise.reject(new Error('mock: set_model rejected'))
+    if (modelCatalogs[params.modelId]) {
+      currentOptions = modelCatalogs[params.modelId]
+      setTimeout(() => { void client.notify(methods.client.session.update, { sessionId: params.sessionId,
+        update: { sessionUpdate: 'config_option_update', configOptions: currentOptions } }) }, 25)
+    }
     return Promise.resolve({})
   },
 )

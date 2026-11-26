@@ -94,7 +94,7 @@ describe('AcpResumePanelService', () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'checkBackends', 'close', 'list', 'purge', 'turn', 'turns', 'usage', 'workflows'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'chatOptions', 'checkBackends', 'close', 'list', 'purge', 'setChatEffort', 'setChatModel', 'turn', 'turns', 'usage', 'workflows'])
   })
 
   it('reads readiness with no chats and calls the probe only for the explicit check', async () => {
@@ -242,16 +242,41 @@ describe('AcpResumePanelService', () => {
     expect(panel.turns(chat.chatId, 50).entries[0]).toMatchObject({ kind: 'turn', message: '进行中消息' })
   })
 
+  it('rejects every owner-aware operation for another viewing session before touching the chat', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const { chatId } = await pool.start(process.cwd(), undefined, { ownerSessionId: 'A' })
+    const error = `chat ${chatId} belongs to another DSH session`
+    expect(() => panel.chatOptions(chatId, 'B')).toThrow(error)
+    for (const call of [() => panel.close(chatId, 'B'), () => panel.purge(chatId, 'B'),
+      () => panel.setChatModel(chatId, 'model', 'B'), () => panel.setChatEffort(chatId, 'high', 'B')]) {
+      await expect(call()).rejects.toMatchObject({ code: 'gateway/bad-request', message: error })
+    }
+    expect(panel.chatOptions(chatId, 'A')).toMatchObject({ supported: true })
+    await expect(panel.setChatModel(chatId, 'missing', 'A')).rejects.toMatchObject({
+      code: 'gateway/bad-request', message: 'backend does not offer model "missing" for this chat',
+    })
+    expect(pool.chatInfo(chatId)?.active).toBe(true)
+  })
+
+  it('rejects close from a legacy panel without sessionId and tells it to update', async () => {
+    const { pool } = makePool()
+    const { panel } = await mountPanel(pool)
+    const { chatId } = await pool.start(process.cwd(), undefined, { ownerSessionId: 'A' })
+    await expect(panel.close(chatId)).rejects.toThrow(/sessionId is required; upgrade the ACP Resume plugin/)
+    expect(pool.chatInfo(chatId)?.active).toBe(true)
+  })
+
   it('close releases the process and keeps the record; the next send reconnects', async () => {
     const { pool, registryPath } = makePool()
     const { panel } = await mountPanel(pool)
-    const chat = await pool.start(process.cwd())
-    await expect(panel.close(chat.chatId)).resolves.toBeNull()
+    const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
+    await expect(panel.close(chat.chatId, 'owner')).resolves.toBeNull()
     expect(panel.list()).toHaveLength(1)
     expect(panel.list()[0]).toMatchObject({ chatId: chat.chatId, active: false })
     expect(registryChatIds(registryPath)).toEqual([chat.chatId])
     // Closing an already released chat is a no-op, not an error.
-    await expect(panel.close(chat.chatId)).resolves.toBeNull()
+    await expect(panel.close(chat.chatId, 'owner')).resolves.toBeNull()
     const again = await pool.send(chat.chatId, 'p')
     expect(again.stopReason).toBe('completed')
     expect(panel.list()[0]?.active).toBe(true)
@@ -260,9 +285,9 @@ describe('AcpResumePanelService', () => {
   it('purge releases the process and deletes the record; the chat is gone from list', async () => {
     const { pool, registryPath } = makePool()
     const { panel } = await mountPanel(pool)
-    const kept = await pool.start(process.cwd())
-    const dropped = await pool.start(process.cwd())
-    await expect(panel.purge(dropped.chatId)).resolves.toBeNull()
+    const kept = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
+    const dropped = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
+    await expect(panel.purge(dropped.chatId, 'owner')).resolves.toBeNull()
     expect(panel.list().map(c => c.chatId)).toEqual([kept.chatId])
     expect(registryChatIds(registryPath)).toEqual([kept.chatId])
     expect(pool.knows(dropped.chatId)).toBe(false)
@@ -272,13 +297,13 @@ describe('AcpResumePanelService', () => {
   it('rejects an unknown chatId with acp-resume/unknown-chat and leaves the pool untouched', async () => {
     const { pool, registryPath } = makePool()
     const { panel } = await mountPanel(pool)
-    const chat = await pool.start(process.cwd())
+    const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
     expect(await rejectionCode(panel.close('chat-nope'))).toBe('acp-resume/unknown-chat')
     expect(await rejectionCode(panel.purge('chat-nope'))).toBe('acp-resume/unknown-chat')
     // A purged chat is unknown from then on.
-    await panel.purge(chat.chatId)
-    expect(await rejectionCode(panel.purge(chat.chatId))).toBe('acp-resume/unknown-chat')
-    expect(await rejectionCode(panel.close(chat.chatId))).toBe('acp-resume/unknown-chat')
+    await panel.purge(chat.chatId, 'owner')
+    expect(await rejectionCode(panel.purge(chat.chatId, 'owner'))).toBe('acp-resume/unknown-chat')
+    expect(await rejectionCode(panel.close(chat.chatId, 'owner'))).toBe('acp-resume/unknown-chat')
     expect(registryChatIds(registryPath)).toEqual([])
   })
 
@@ -377,9 +402,9 @@ describe('AcpResumePanelService detail reads (D18)', () => {
     const invoke = panel as unknown as DetailInvoke
     expect(await rejectionCode(Promise.resolve().then(() => invoke.turns('chat-nope', 5)))).toBe('acp-resume/unknown-chat')
     expect(await rejectionCode(Promise.resolve().then(() => invoke.turn('chat-nope', 1)))).toBe('acp-resume/unknown-chat')
-    const chat = await pool.start(process.cwd())
+    const chat = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
     await pool.send(chat.chatId, 'x')
-    await panel.purge(chat.chatId)
+    await panel.purge(chat.chatId, 'owner')
     expect(await rejectionCode(Promise.resolve().then(() => invoke.turns(chat.chatId, 5)))).toBe('acp-resume/unknown-chat')
     expect(await rejectionCode(Promise.resolve().then(() => invoke.turn(chat.chatId, 1)))).toBe('acp-resume/unknown-chat')
   })

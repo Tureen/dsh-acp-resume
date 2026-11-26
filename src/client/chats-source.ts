@@ -9,6 +9,7 @@
  * @module dsh-acp-resume/client/chats-source
  */
 
+import type { PanelTranslate } from './locales.ts'
 import type { ChatsSnapshot, Observable, PanelChat, PanelUsage } from './face.ts'
 import { listSnapshotEqual } from './snapshot-equal.ts'
 
@@ -30,7 +31,14 @@ export interface PanelRpc {
 }
 
 /** Host method names under the `acpResume` namespace (wire `purge`, not `remove`; §3.6.0 #2). */
-export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage' | 'workflows'
+export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage' | 'workflows' | 'chatOptions' | 'setChatModel' | 'setChatEffort'
+
+/** The updated panel can only use owner-aware methods on a reloaded host. */
+class HostReloadRequired extends Error {}
+
+export function panelActionError(error: unknown, t: PanelTranslate): string {
+  return error instanceof HostReloadRequired ? t('restartForChatActions') : t('actionFailed', { message: message(error) })
+}
 
 /**
  * Call one host panel method; carrier throws and `ok: false` both reject.
@@ -40,8 +48,16 @@ export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage
  * @returns the method's value.
  */
 export async function callPanel(rpc: PanelRpc, method: PanelMethod, args: Readonly<Record<string, unknown>>): Promise<unknown> {
+  const setting = method === 'chatOptions' || method === 'setChatModel' || method === 'setChatEffort'
+  const owned = setting || method === 'close' || method === 'purge'
+  if (owned && (typeof args.sessionId !== 'string' || !args.sessionId.trim())) throw new Error('current DSH sessionId is required')
   const result = await rpc.call('/api', `acpResume/${method}`, { args })
-  if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+  if (!result.ok) {
+    const { code, message } = result.error
+    if ((owned && code === 'gateway/arguments-invalid' && message.includes('unexpected "sessionId"'))
+      || (setting && code === 'gateway/invocation-unavailable')) throw new HostReloadRequired(message)
+    throw new Error(`${code}: ${message}`)
+  }
   return result.value
 }
 
@@ -153,13 +169,13 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
   }
 
   /** Release the chat's process (record kept), then refresh. */
-  close(chatId: string): Promise<void> {
-    return this.command('close', chatId)
+  close(chatId: string, sessionId: string | undefined): Promise<void> {
+    return this.command('close', chatId, sessionId)
   }
 
   /** Release the chat and delete its record, then refresh. */
-  purge(chatId: string): Promise<void> {
-    return this.command('purge', chatId)
+  purge(chatId: string, sessionId: string | undefined): Promise<void> {
+    return this.command('purge', chatId, sessionId)
   }
 
   /** Stop polling and drop every later answer. */
@@ -169,9 +185,9 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     this.listeners.clear()
   }
 
-  private async command(method: 'close' | 'purge', chatId: string): Promise<void> {
+  private async command(method: 'close' | 'purge', chatId: string, sessionId: string | undefined): Promise<void> {
     try {
-      await callPanel(this.rpc, method, { chatId })
+      await callPanel(this.rpc, method, { chatId, sessionId })
     } finally {
       // A command is a deliberate change: poll fast again regardless of backoff.
       this.quietPolls = 0

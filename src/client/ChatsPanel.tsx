@@ -27,6 +27,8 @@
 import { useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { BackendStatus } from '../backend-status.ts'
+import { ChatSettings } from './ChatSettings.tsx'
+import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import type { PanelFeatures } from '../panel-features.ts'
 import { chatAddress } from './chat-address.ts'
@@ -233,10 +235,6 @@ export function LiveElapsed({ startedAt, now, t, label = 'runningFor' }: {
   return <span style={styles.elapsed} data-elapsed>{t(label, { duration: formatDuration(t, now + drift - startedAt) })}</span>
 }
 
-function failure(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 /** Longest in-flight message excerpt on a card, in characters (code points). */
 const CURRENT_MESSAGE_MAX = 60
 
@@ -248,6 +246,7 @@ function messageExcerpt(message: string): string {
 }
 
 interface ChatCardProps {
+  readonly settings?: ChatsPanelInjected['settings']
   readonly chat: PanelChat
   readonly now: number
   readonly pending: boolean
@@ -560,7 +559,7 @@ function rowHint(t: PanelTranslate, chat: PanelChat, now: number): string {
  * one line with an ellipsis), backend badge, and the running time while a turn
  * is in flight. Everything else sits in the hover text and the detail tab.
  */
-function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
+function ChatCard({ chat, settings, now, pending, onRelease, onDelete, onOpen, t }: ChatCardProps): ReactNode {
   const short = shortChatId(chat.chatId)
   const name = chat.label ?? chat.title ?? short
   return (
@@ -581,6 +580,8 @@ function ChatCard({ chat, now, pending, onRelease, onDelete, onOpen, t }: ChatCa
         <Button size="sm" variant="ghost" disabled={pending} aria-label={t('deleteLabel', { chatId: short })}
           onClick={(event: MouseEvent) => { event.stopPropagation(); onDelete(chat) }}>{t('delete')}</Button>
       </div>
+      {chat.currentModel || chat.currentEffort ? <div>{[chat.currentModel, chat.currentEffort].filter(Boolean).join(' · ')}</div> : null}
+      {settings && <ChatSettings key={chat.connectionId ?? 'released'} chat={chat} actions={settings} t={t} />}
     </li>
   )
 }
@@ -596,7 +597,7 @@ export function ChatsPanel(props: ChatsPanelProps): ReactNode {
   </PanelFeatureGate>
 }
 
-function ChatsPanelView({ useChats, useTabInfo, currentSessionId, backendStatus, workflowsFor, config, refresh, close, purge, t }:
+function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, backendStatus, workflowsFor, config, refresh, close, purge, t }:
   ChatsPanelProps & { config?: PanelFeatures }): ReactNode {
   const snapshot = useChats(s => s)
   const backendStore = backendStatus ?? NO_BACKEND_STATUS
@@ -615,7 +616,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, backendStatus,
   const run = (chatId: string, action: (chatId: string) => Promise<void>): void => {
     setPending(current => new Set(current).add(chatId))
     setActionError(undefined)
-    action(chatId).catch((error: unknown) => { setActionError(t('actionFailed', { message: failure(error) })) }).finally(() => {
+    action(chatId).catch((error: unknown) => { setActionError(panelActionError(error, t)) }).finally(() => {
       setPending((current) => {
         const next = new Set(current)
         next.delete(chatId)
@@ -635,7 +636,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, backendStatus,
   const cards = (chats: readonly PanelChat[]): ReactNode => (
     <ul style={styles.list}>
       {chats.map(chat => (
-        <ChatCard key={chat.chatId} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
+        <ChatCard key={chat.chatId} settings={settings} chat={chat} now={now} pending={pending.has(chat.chatId)} t={t}
           onOpen={(target) => { tab.actions.openResource(chatAddress(target.chatId)) }}
           onRelease={(target) => {
             // Releasing cancels an in-flight turn: ask first. An idle chat releases at once.

@@ -19,6 +19,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
+import type { ChatOptions } from './chat-options.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
 import type { PanelFeatures } from './panel-features.js'
 import type { LogEntry } from './turn-log.js'
@@ -199,15 +200,15 @@ export class AcpResumePanelService extends TypertRemoteService {
 
   /** Release the chat's process; its record stays and the next send reconnects. */
   @Remote
-  async close(chatId: string): Promise<null> {
-    await this.pool.close(this.knownChat(chatId))
+  async close(chatId: string, sessionId?: string): Promise<null> {
+    await this.pool.close(this.ownedChat(chatId, sessionId))
     return null
   }
 
   /** Release the chat's process and delete its record; it cannot reconnect afterwards. */
   @Remote
-  async purge(chatId: string): Promise<null> {
-    await this.pool.remove(this.knownChat(chatId))
+  async purge(chatId: string, sessionId?: string): Promise<null> {
+    await this.pool.remove(this.ownedChat(chatId, sessionId))
     return null
   }
 
@@ -251,6 +252,41 @@ export class AcpResumePanelService extends TypertRemoteService {
       throw new RemoteError('acp-resume/unknown-turn', `acp-resume: chat ${id} has no log entry ${seq}`, { chatId: id, seq })
     }
     return entry
+  }
+
+  /** Read the reported options available to this seat without calling the backend. */
+  @Remote
+  chatOptions(chatId: string, sessionId?: string): ChatOptions {
+    return this.pool.chatOptions(this.ownedChat(chatId, sessionId))
+  }
+
+  /** Change the model on the existing idle connection and wait for backend confirmation. */
+  @Remote
+  async setChatModel(chatId: string, model: string, sessionId?: string): Promise<null> {
+    const id = this.ownedChat(chatId, sessionId)
+    return this.settingResult(this.pool.setChatModel(id, model))
+  }
+
+  /** Change effort within the catalog offered for the current model. */
+  @Remote
+  async setChatEffort(chatId: string, effort: string, sessionId?: string): Promise<null> {
+    const id = this.ownedChat(chatId, sessionId)
+    return this.settingResult(this.pool.setChatEffort(id, effort))
+  }
+
+  private async settingResult(operation: Promise<void>): Promise<null> {
+    try { await operation; return null } catch (error) {
+      throw new RemoteError('gateway/bad-request', error instanceof Error ? error.message : 'could not change the session setting', {})
+    }
+  }
+
+  private ownedChat(chatId: unknown, sessionId: unknown): string {
+    const id = this.knownChat(chatId)
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      throw new RemoteError('gateway/bad-request', 'current DSH sessionId is required; upgrade the ACP Resume plugin and reopen the panel', {})
+    }
+    if (this.pool.chatOwner(id) !== sessionId) throw new RemoteError('gateway/bad-request', `chat ${id} belongs to another DSH session`, {})
+    return id
   }
 
   private knownChat(chatId: unknown): string {

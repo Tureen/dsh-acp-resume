@@ -639,11 +639,12 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     expect(start).toBe(beforeCheck.get('acp_chat_start'))
     expect(start.description).toContain('Candidate backends; check the backend status tool for which are ready')
     expect(start.description).toContain('kiro-cli')
-    const chat = await start.execute({ cwd: process.cwd() }, exec()) as { backend: string; chatId: string }
+    const caller = { ...exec(), agent: { id: 'owner', session: { header: { cwd: process.cwd() } } } } as ToolRunContext
+    const chat = await start.execute({ cwd: process.cwd() }, caller) as { backend: string; chatId: string }
     expect(chat).toMatchObject({ backend: 'codex', cwd: process.cwd() })
     expect(readFileSync(fixture.requests, 'utf8')).toMatch(/thread\/start.*"model":"mock-model"/)
     expect(readFileSync(fixture.requests, 'utf8')).toMatch(/thread\/start.*"sandbox":"read-only"/)
-    await panel.close(chat.chatId)
+    await panel.close(chat.chatId, 'owner')
     await tools.get('acp_chat_send')!.execute({ chatId: chat.chatId, message: 'resume' }, exec())
     const resumed = readFileSync(fixture.requests, 'utf8').split('\n').find(line => line.startsWith('thread/resume '))
     expect(resumed).toBeDefined()
@@ -654,7 +655,7 @@ exec ${quote(process.execPath)} ${quote(mockServer)}
     expect([...tools.keys()].sort()).toEqual([...beforeCheck.keys()].sort())
     for (const [name, definition] of beforeCheck) expect(tools.get(name)).toBe(definition)
     await expect(start.execute({ cwd: process.cwd() }, exec())).rejects.toThrow(COMMAND_NOT_FOUND_GUIDANCE)
-    await panel.close(chat.chatId)
+    await panel.close(chat.chatId, 'owner')
     await expect(tools.get('acp_chat_send')!.execute({ chatId: chat.chatId, message: 'resume after upgrade' }, exec())).resolves.toMatchObject({ text: expect.any(String) })
     expect(panel.list()).toEqual([expect.objectContaining({ chatId: chat.chatId, backend: 'codex' })])
     fixture.writeKiro('3.6.0')

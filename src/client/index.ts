@@ -19,7 +19,7 @@ import { ChatDetail, ChatDetailTitle } from './ChatDetail.tsx'
 import { CHAT_ADDRESS_PATTERN, parseChatAddress } from './chat-address.ts'
 import { FeaturesSource } from './features-source.ts'
 import { BackendStatusSource } from './backend-status-source.ts'
-import { ChatsSource, type PanelRpc } from './chats-source.ts'
+import { callPanel, ChatsSource, type PanelRpc } from './chats-source.ts'
 import { ChatDetailSource } from './detail-source.ts'
 import { WorkflowsSource } from './workflows-source.ts'
 import type { ChatDetailInjected, ChatsPanelInjected, DetailSource } from './face.ts'
@@ -102,8 +102,16 @@ export function apply(ctx: Context): void {
       backendStatus,
       ...(sessionId === undefined ? {} : { workflowsFor: (poll: boolean) => workflowsFor(sessionId, poll) }),
       // The seat is session-scoped: `inject(sessionId)` names the on-screen
-      // session, used only for the panel's "this session" filter (D20).
+      // session, used for filtering and owner-aware panel calls (D20/D44).
       currentSessionId: sessionId,
+      settings: {
+        read: async chatId => await callPanel(scope.connection.rpc, 'chatOptions', { chatId, sessionId }) as import('../chat-options.ts').ChatOptions,
+        change: async (chatId, field, value) => {
+          const method = field === 'model' ? 'setChatModel' : 'setChatEffort'
+          try { await callPanel(scope.connection.rpc, method, { chatId, sessionId, [field]: value }) }
+          finally { void source.refresh() }
+        },
+      },
       refresh: async () => {
         await features.refresh()
         const view = features.getSnapshot()
@@ -113,8 +121,8 @@ export function apply(ctx: Context): void {
           workflowsFor(sessionId, false).refreshIfSubscribed()
         }
       },
-      close: chatId => source.close(chatId),
-      purge: chatId => source.purge(chatId),
+      close: chatId => source.close(chatId, sessionId),
+      purge: chatId => source.purge(chatId, sessionId),
     })
     // One source per chat, shared by the tab body and its chip title; each
     // polls only while one of them is mounted.
@@ -123,7 +131,7 @@ export function apply(ctx: Context): void {
       for (const detail of details.values()) detail.dispose()
       details.clear()
     }, 'dsh-acp-resume.detail-sources')
-    const detailInjected: ChatDetailInjected = {
+    const detailInjected = (sessionId?: string): ChatDetailInjected => ({
       features,
       sourceFor: (chatId): DetailSource => {
         let detail = details.get(chatId)
@@ -133,9 +141,9 @@ export function apply(ctx: Context): void {
         }
         return detail
       },
-      close: chatId => source.close(chatId),
-      purge: chatId => source.purge(chatId),
-    }
+      close: chatId => source.close(chatId, sessionId),
+      purge: chatId => source.purge(chatId, sessionId),
+    })
     const t = scope.locale.bind(PANEL_LOCALE)
     scope.effect(() => scope.locale.register(PANEL_LOCALE, { zh, en }), 'dsh-acp-resume.copy')
     scope.effect(() => scope.sidebarRightTabs.register({
@@ -159,11 +167,11 @@ export function apply(ctx: Context): void {
       },
     }), 'dsh-acp-resume.detail-tab-type')
     scope.effect(() => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register(
-      { name: 'sidebar.right.pane.tab', key: DETAIL_ID, locale: PANEL_LOCALE, inject: () => detailInjected },
+      { name: 'sidebar.right.pane.tab', key: DETAIL_ID, locale: PANEL_LOCALE, inject: detailInjected },
       ChatDetail,
     )), 'dsh-acp-resume.detail-body')
     scope.effect(() => scope.slots.inject('sidebar.right.pane.tab.title', () => scope.slots.register(
-      { name: 'sidebar.right.pane.tab.title', key: DETAIL_ID, inject: () => detailInjected },
+      { name: 'sidebar.right.pane.tab.title', key: DETAIL_ID, inject: detailInjected },
       ChatDetailTitle,
     )), 'dsh-acp-resume.detail-title')
   })

@@ -1,3 +1,5 @@
+import { selectionEnv, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
+import { readSessionChoices } from '../src/acp-reported-settings.ts'
 /**
  * Connection-primitive lifecycle tests: open (new / load reconnect, capability
  * gate), structured startup failures, prompt turns with the official settlement
@@ -642,5 +644,29 @@ describe('agy session effort (D40)', () => {
     expect(warnings).toEqual([expect.stringContaining('session/set_config_option(thought_level=high)')])
     expect(warnings[0]).toContain(reason)
     expect((await conn.prompt(ask('still available'), live())).stopReason).toBe('completed')
+  })
+})
+
+
+describe('reported session choices', () => {
+  it('replaces the model and effort catalogs on a pushed update after an empty set_model acknowledgement', async () => {
+    const { spec } = makeSpec(selectionEnv())
+    const conn = await open(spec)
+    expect(conn.sessionChoices?.model?.current).toBe(neon)
+    await conn.setSelection!('model', sonnet)
+    expect(conn.sessionChoices?.effort).toMatchObject({ current: 'high', options: [
+      { value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' },
+    ] })
+    await conn.setSelection!('model', orchestrator)
+    expect(conn.settingsReport?.model).toBe(orchestrator)
+    expect(conn.sessionChoices?.effort).toBe('not-offered')
+  })
+
+  it('tolerates incomplete option shapes and reads grouped values without inventing choices', () => {
+    expect(readSessionChoices({})).toBeUndefined()
+    expect(readSessionChoices({ configOptions: [{ id: 'model', options: [{ options: [null, { value: 'm' }] }] },
+      { id: 'effortLevel', currentValue: 'low', options: 'malformed' }] })).toMatchObject({
+      model: { options: [{ value: 'm', name: 'm' }] }, effort: { current: 'low', options: [] },
+    })
   })
 })

@@ -1,3 +1,4 @@
+import { selectionEnv, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
 /**
  * Pool lifecycle tests against REAL mock-server subprocesses: same-process
  * turns, reconnect through session/load after release, the D6 fallback rule
@@ -1381,6 +1382,8 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
   it('starts a Codex chat and answers a send with the final answer', async () => {
     const { pool, registryPath } = makePool({ backends: new Map([['codex', codexBackend({ MOCK_TEXT: 'codex says hi' })]]) })
     const chat = await pool.start(process.cwd(), undefined, codexStart)
+    expect(pool.chatOptions(chat.chatId)).toEqual({ backend: 'codex', supported: false, canChange: false,
+      reason: 'codex session-level switch is not available yet' })
     expect(chat.remoteSessionId).toMatch(/^thr-/)
     const turn = await pool.send(chat.chatId, 'p')
     expect(turn).toMatchObject({ output: 'codex says hi', stopReason: 'completed', freshSession: false })
@@ -1556,5 +1559,56 @@ describe('AcpSessionPool with a Codex backend (D25)', () => {
     const { pool, spawns } = makePool({ registryPath })
     await expect(pool.send('chat-codex', 'p')).rejects.toThrow('chat chat-codex uses unavailable backend codex')
     expect(spawns.children).toHaveLength(0)
+  })
+})
+
+
+describe('D44 live chat selection', () => {
+  it('checks offered values, applies model then its offered effort, and leaves the registry untouched', async () => {
+    const log = join(tempDir('acp-choice-'), 'requests')
+    const { pool, registryPath } = makePool({ env: { ...selectionEnv(), MOCK_SET_CONFIG_FILE: log, MOCK_SET_MODEL_FILE: log } })
+    const { chatId } = await pool.start(process.cwd())
+    const registry = readFileSync(registryPath, 'utf8')
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: true, model: { current: neon } })
+    await expect(pool.setChatModel(chatId, 'unknown')).rejects.toThrow('backend does not offer model "unknown"')
+    expect(existsSync(log)).toBe(false)
+    await pool.setChatModel(chatId, sonnet)
+    await expect(pool.setChatEffort(chatId, 'xhigh')).rejects.toThrow('backend does not offer effort "xhigh"')
+    await pool.setChatEffort(chatId, 'medium')
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+      expect.stringMatching(/set_model .* claude-sonnet-5-5$/), expect.stringMatching(/set_config_option .* thought_level medium$/),
+    ])
+    expect(pool.chatOptions(chatId).effort).toMatchObject({ current: 'medium' })
+    await pool.setChatModel(chatId, orchestrator)
+    expect(pool.chatOptions(chatId).effort).toBe('not-offered')
+    expect(readFileSync(registryPath, 'utf8')).toBe(registry)
+  })
+
+  it('blocks a setting RPC during a turn and after release without spawning or sending a request', async () => {
+    const dir = tempDir('acp-choice-busy-')
+    const hold = join(dir, 'hold'), log = join(dir, 'requests')
+    writeFileSync(hold, '')
+    const { pool, spawns } = makePool({ env: { ...selectionEnv(), MOCK_PROMPT_HOLD: hold, MOCK_SET_MODEL_FILE: log } })
+    const { chatId } = await pool.start(dir)
+    const pending = pool.send(chatId, 'hold')
+    try {
+      expect(pool.chatOptions(chatId)).toMatchObject({ canChange: false, reason: 'running' })
+      await expect(pool.setChatModel(chatId, sonnet)).rejects.toThrow('is running; wait for the turn to finish')
+    } finally { rmSync(hold); await pending }
+    await pool.close(chatId)
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: false, reason: 'released' })
+    await expect(pool.setChatModel(chatId, sonnet)).rejects.toThrow('send a message to reconnect first')
+    expect(existsSync(log)).toBe(false)
+    expect(spawns.children).toHaveLength(1)
+  })
+
+  it('falls back to the model config option and warns when an effort change is not confirmed', async () => {
+    const warnings: string[] = []
+    const { pool } = makePool({ env: { ...selectionEnv(), MOCK_NO_SET_MODEL: '1', MOCK_KEEP_EFFORT: '1' }, onError: e => warnings.push(e.message) })
+    const { chatId } = await pool.start(process.cwd())
+    await pool.setChatModel(chatId, sonnet)
+    await expect(pool.setChatEffort(chatId, 'low')).rejects.toThrow('backend did not confirm effort "low"')
+    expect(warnings).toContain('backend did not confirm effort "low"')
+    expect(pool.chatOptions(chatId).effort).toMatchObject({ current: 'high' })
   })
 })

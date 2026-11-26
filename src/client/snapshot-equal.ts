@@ -21,6 +21,7 @@ export function chatEqual(a: PanelChat, b: PanelChat): boolean {
     && a.label === b.label
     && a.title === b.title
     && a.turnCount === b.turnCount
+    && a.currentModel === b.currentModel && a.currentEffort === b.currentEffort && a.connectionId === b.connectionId
     && a.active === b.active
     && a.lastActive === b.lastActive
     && a.ownerSessionId === b.ownerSessionId

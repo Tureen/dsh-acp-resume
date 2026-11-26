@@ -15,6 +15,10 @@ import { useSyncExternalStore, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configOptions, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
+import { readSessionChoices } from '../src/acp-reported-settings.ts'
+import type { ChatOptions } from '../src/chat-options.ts'
+import { callPanel, panelActionError } from '../src/client/chats-source.ts'
 import type { BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as client from '../src/client/index.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
@@ -955,7 +959,7 @@ describe('ChatsSource', () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBe(idle)
     // A command refreshes now and restores the fast cadence.
-    await source.close('chat-x')
+    await source.close('chat-x', TEST_SESSION)
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(listCalls(rpc)).toBeGreaterThan(idle + 1)
   })
@@ -966,12 +970,12 @@ describe('ChatsSource', () => {
     const source = new ChatsSource(rpc, () => NOW)
     await source.refresh()
     expect(source.getSnapshot().chats.map(c => c.chatId)).toEqual([`chat-${UUID_A}`, `chat-${UUID_B}`])
-    await source.close(`chat-${UUID_A}`)
-    await source.purge(`chat-${UUID_B}`)
+    await source.close(`chat-${UUID_A}`, TEST_SESSION)
+    await source.purge(`chat-${UUID_B}`, TEST_SESSION)
     await vi.waitFor(() => { expect(listCalls(rpc)).toBe(3) })
     expect(rpc.calls.filter(c => c[1] !== 'acpResume/list')).toEqual([
-      ['/api', 'acpResume/close', { args: { chatId: `chat-${UUID_A}` } }],
-      ['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_B}` } }],
+      ['/api', 'acpResume/close', { args: { chatId: `chat-${UUID_A}`, sessionId: TEST_SESSION } }],
+      ['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_B}`, sessionId: TEST_SESSION } }],
     ])
     expect(rpc.calls.map(c => c[1])).toEqual(['acpResume/list', 'acpResume/close', 'acpResume/list', 'acpResume/purge', 'acpResume/list'])
   })
@@ -989,7 +993,7 @@ describe('ChatsSource', () => {
     const source = new ChatsSource(rpc, () => NOW)
     await source.refresh()
     failList = true
-    await expect(source.purge('x')).rejects.toThrow('acp-resume/unknown-chat: acp-resume: unknown chat x')
+    await expect(source.purge('x', TEST_SESSION)).rejects.toThrow('acp-resume/unknown-chat: acp-resume: unknown chat x')
     await vi.waitFor(() => { expect(source.getSnapshot().status).toBe('error') })
     expect(source.getSnapshot()).toEqual({
       status: 'error', chats: [chat()], fetchedAt: NOW, error: 'transport failure for /api/acpResume/list: HTTP 502', usage: [],
@@ -1018,7 +1022,7 @@ describe('ChatsSource', () => {
 /** Stub services for `apply`, recording what registers. */
 function stubServices() {
   const tabs: Record<string, unknown>[] = []
-  const bodies: { options: { name: string; key: string; locale?: string; inject: () => unknown }; component: unknown }[] = []
+  const bodies: { options: { name: string; key: string; locale?: string; inject: (sessionId?: string) => unknown }; component: unknown }[] = []
   const dictionaries: string[] = []
   return {
     tabs, bodies, dictionaries,
@@ -1264,7 +1268,7 @@ describe('apply (client wiring)', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除 chat-a1b2c3d4' }))
     await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' })) })
     expect(await screen.findByText('暂无 ACP 会话')).toBeTruthy()
-    expect(rpc.calls).toContainEqual(['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_A}` } }])
+    expect(rpc.calls).toContainEqual(['/api', 'acpResume/purge', { args: { chatId: `chat-${UUID_A}`, sessionId: TEST_SESSION } }])
     cleanup()
 
     await fiber.dispose()
@@ -1966,5 +1970,118 @@ describe('snapshot-equal (D21)', () => {
     expect(detailSnapshotEqual(base, { ...base, entries: [turn(1), turn(2)] })).toBe(false)
     expect(detailSnapshotEqual(base, { ...base, entries: [turn(1, { output: 'changed' })] })).toBe(false)
     expect(detailSnapshotEqual(base, { status: 'ready', entries: [turn(1)], total: 1 })).toBe(false)
+  })
+})
+
+
+describe('D44 per-chat controls', () => {
+  it.each([['zh', zh], ['en', en]] as const)('renders the three reported agy catalogs and refreshes once per selection in %s', async (_, copy) => {
+    let model = neon
+    const read = vi.fn(async () => ({ backend: 'agy', supported: true, canChange: true, ...readSessionChoices({ configOptions: configOptions(model) }) }))
+    const change = vi.fn(async (_id: string, field: 'model' | 'effort', value: string) => { if (field === 'model') model = value })
+    const settings = { read, change }
+    render(<ChatsPanel {...props(ready([chat()]), { settings, t: translator(copy) })} />)
+    expect(read).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) }))
+    const modelInput = await screen.findByRole('combobox', { name: copy.sessionModel })
+    const effortLabels = () => within(screen.getByRole('combobox', { name: copy.sessionEffort })).getAllByRole('option').map(option => option.textContent)
+    expect(effortLabels()).toEqual(['Low', 'Medium', 'High', 'Extra'])
+    expect((modelInput as HTMLSelectElement).selectedOptions[0]?.text).toBe('Gemini 4 Neon')
+    await act(async () => { fireEvent.change(modelInput, { target: { value: sonnet } }) })
+    expect((modelInput as HTMLSelectElement).selectedOptions[0]?.text).toBe('Claude Sonnet 5.5')
+    expect(effortLabels()).toEqual(['Low', 'Medium', 'High'])
+    await act(async () => { fireEvent.change(modelInput, { target: { value: orchestrator } }) })
+    expect((modelInput as HTMLSelectElement).selectedOptions[0]?.text).toBe('Orchestrator (Neon)')
+    expect(screen.queryByRole('combobox', { name: copy.sessionEffort })).toBeNull()
+    expect(screen.getByText(copy.sessionEffort + ' · ' + copy.effortNotOffered)).toBeTruthy()
+    expect(read).toHaveBeenCalledTimes(3)
+    expect(change).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders disabled selectors during a turn and explanations for released and Codex chats', async () => {
+    const show = async (data: ChatOptions, active: boolean) => {
+      const inFlight = data.reason === 'running' ? { chatId: 'a', startedAt: NOW, message: 'test' } : undefined
+      render(<ChatsPanel {...props(ready([chat({ active, inFlight })]), {
+        settings: { read: async () => data, change: vi.fn() }, t: translator(en),
+      })} />)
+      if (!active) fireEvent.click(screen.getByRole('button', { name: /^Released \(1\)/ }))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Settings for this chat/ })) })
+    }
+    await show({ ...readSessionChoices({ configOptions: configOptions(neon) }), supported: true, canChange: false, backend: 'agy', reason: 'running' }, true)
+    expect(screen.getAllByRole('combobox').every(el => (el as HTMLSelectElement).disabled)).toBe(true)
+    expect(screen.getByText(en.switchRunning)).toBeTruthy()
+    cleanup()
+    await show({ supported: true, canChange: false, backend: 'agy', reason: 'released' }, false)
+    expect(screen.getByText(en.switchReleased)).toBeTruthy()
+    expect(screen.queryByRole('combobox')).toBeNull()
+    cleanup()
+    await show({ supported: false, canChange: false, backend: 'codex', reason: 'codex session-level switch is not available yet' }, true)
+    expect(screen.getByText(en.switchUnsupported)).toBeTruthy()
+    expect(screen.queryByRole('combobox')).toBeNull()
+  })
+
+  it('localizes only the old host signature or missing new endpoint and never resends a legacy command', async () => {
+    for (const method of ['close', 'purge', 'chatOptions', 'setChatModel', 'setChatEffort'] as const) {
+      const failures = [{ code: 'gateway/arguments-invalid', message: 'args fields do not match the descriptor: unexpected "sessionId"' }]
+      if (method !== 'close' && method !== 'purge') failures.push({ code: 'gateway/invocation-unavailable', message: 'no active Remote method' })
+      for (const error of failures) {
+        const call = vi.fn<PanelRpc['call']>(async () => ({ ok: false, error }))
+        const cause = await callPanel({ call }, method, { chatId: 'a', sessionId: 'owner' }).catch(e => e)
+        expect(panelActionError(cause, translator(zh))).toBe(zh.restartForChatActions)
+        expect(panelActionError(cause, translator(en))).toBe(en.restartForChatActions)
+        expect(call).toHaveBeenCalledTimes(1)
+      }
+    }
+    const call = vi.fn<PanelRpc['call']>(async () => ({ ok: false, error: { code: 'gateway/arguments-invalid', message: 'unexpected "model"' } }))
+    const cause = await callPanel({ call }, 'close', { chatId: 'a', sessionId: 'owner' }).catch(e => e)
+    expect(panelActionError(cause, translator(en))).toContain('unexpected "model"')
+    await expect(callPanel({ call }, 'purge', { chatId: 'a' })).rejects.toThrow('sessionId is required')
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates the list row after a confirmed change and surfaces the restart hint on a rejected release', async () => {
+    let model = neon
+    const baseRpc = mockRpc(() => [chat({ currentModel: model, currentEffort: 'high' })])
+    const call = vi.fn<PanelRpc['call']>(async (channel, endpoint, payload) => {
+      if (endpoint === 'acpResumeInfo/features') return { ok: true, value: defaultFeatureView.features }
+      if (endpoint === 'acpResume/chatOptions') return { ok: true, value: {
+        ...readSessionChoices({ configOptions: configOptions(model) }), backend: 'agy', supported: true, canChange: true,
+      } }
+      if (endpoint === 'acpResume/setChatModel') {
+        const { args } = payload as { args: { model: string; sessionId: string } }
+        expect(args.sessionId).toBe(TEST_SESSION)
+        model = args.model
+        return { ok: true, value: null }
+      }
+      if (endpoint === 'acpResume/close') return { ok: false, error: { code: 'gateway/arguments-invalid', message: 'unexpected "sessionId"' } }
+      return baseRpc.call(channel, endpoint, payload)
+    })
+    const { ctx, list } = await panelConnection({ call })
+    try {
+      renderBody(list)
+      fireEvent.click(await screen.findByRole('button', { name: /仅此会话设置/ }))
+      fireEvent.change(await screen.findByRole('combobox', { name: '模型' }), { target: { value: sonnet } })
+      expect(await screen.findByText(sonnet + ' · high')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: '释放 chat-a1b2c3d4' }))
+      expect(await screen.findByText(zh.restartForChatActions)).toBeTruthy()
+      expect(call.mock.calls.filter(args => args[1] === 'acpResume/close')).toHaveLength(1)
+    } finally { cleanup(); await ctx.fiber.dispose() }
+  })
+
+  it('binds both detail mutations to the viewing seat sessionId', async () => {
+    const call = vi.fn<PanelRpc['call']>(async () => ({ ok: true, value: [] }))
+    const ctx = new Context()
+    const services = stubServices()
+    ctx.provide('slots', services.slots)
+    ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
+    ctx.provide('locale', services.locale)
+    ctx.provide('connection', { rpc: { call } })
+    try {
+      await ctx.plugin(client)
+      const view = services.bodies[1]!.options.inject(TEST_SESSION) as ChatDetailInjected
+      await view.close('chat-a')
+      await view.purge('chat-a')
+      for (const method of ['close', 'purge']) expect(call).toHaveBeenCalledWith('/api', 'acpResume/' + method, { args: { chatId: 'chat-a', sessionId: TEST_SESSION } })
+    } finally { await ctx.fiber.dispose() }
   })
 })

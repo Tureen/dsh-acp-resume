@@ -43,6 +43,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { BackendReport } from './backend-status.js'
+import type { ChatOptions } from './chat-options.js'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
@@ -118,6 +119,11 @@ export interface PooledChatInfo {
   readonly backendDisplay: string
   /** Number of configured backends, for optional panel badges. */
   readonly backendCount: number
+  /** Live backend-reported setting, omitted once the process is released. */
+  readonly currentModel?: string
+  readonly currentEffort?: string
+  /** Lets the panel discard an open selector when the live connection changes. */
+  readonly connectionId?: string
   /** Current prompt state, kept only in pool memory and omitted after settlement (D15). */
   readonly inFlight?: InFlightTurn
   /** What the newest turn-log entry asks the user to notice; absent when it settled normally or the log is empty. */
@@ -298,6 +304,7 @@ interface LiveChat {
   conn: AcpConnection
   idleTimer: NodeJS.Timeout | undefined
   busy: boolean
+  changing?: boolean
   /** The in-flight turn's promise; a release cancels it and waits (bounded) for it to settle. */
   busyPromise: Promise<unknown> | undefined
   /** The in-flight prompt's volatile panel projection; removed when this turn settles. */
@@ -517,9 +524,18 @@ export class AcpSessionPool {
       backendDisplay: this.displayBackend(this.backendName(e)),
       backendCount: this.backends.size,
       ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
+      ...this.rowSettings(e.chatId),
       active: this.live.has(e.chatId),
       lastActive: e.lastActive,
     }))
+  }
+
+  private rowSettings(chatId: string) {
+    const chat = this.live.get(chatId)
+    if (!chat || chat.closing || chat.conn.processSettled) return {}
+    const report = chat.conn.settingsReport
+    return { connectionId: chat.conn.id, ...(report?.model && { currentModel: report.model }),
+      ...(report?.effort && { currentEffort: report.effort }) }
   }
 
   /** Add the newest log entry's attention or plain completion; the turn log caches by file stamp, so a poll costs one stat per chat. */
@@ -543,6 +559,52 @@ export class AcpSessionPool {
   /** Does the chatId exist in the durable registry? */
   knows(chatId: string): boolean {
     return this.registry.get(chatId) !== undefined
+  }
+
+  /** Owner claimed by the creating DSH session, including for released chats. */
+  chatOwner(chatId: string): string | undefined { return this.registry.get(chatId)?.ownerSessionId }
+
+  /** Snapshot of the connection report. Reading options never opens or wakes a chat. */
+  chatOptions(chatId: string): ChatOptions {
+    const entry = this.registry.get(chatId)
+    if (!entry) throw new Error(`acp-resume: unknown chat ${chatId}`)
+    const backend = this.backendName(entry)
+    if (this.backends.get(backend)?.protocol === 'codex') {
+      return { backend, supported: false, canChange: false, reason: 'codex session-level switch is not available yet' }
+    }
+    const chat = this.live.get(chatId)
+    if (!chat || chat.closing || chat.conn.processSettled) return { backend, supported: true, canChange: false, reason: 'released' }
+    const reason = (chat.busy || this.starting.has(chatId)) ? 'running' : chat.changing ? 'changing' : undefined
+    return { ...chat.conn.sessionChoices, backend, supported: true, canChange: !reason, ...(reason && { reason }) }
+  }
+
+  setChatModel(chatId: string, value: string): Promise<void> { return this.changeSelection(chatId, 'model', value) }
+  setChatEffort(chatId: string, value: string): Promise<void> { return this.changeSelection(chatId, 'effort', value) }
+
+  private async changeSelection(chatId: string, field: 'model' | 'effort', value: string): Promise<void> {
+    this.assertLive()
+    const state = this.chatOptions(chatId)
+    if (state.reason === 'released') throw new Error(`chat ${chatId} is released; send a message to reconnect first`)
+    if (state.reason === 'running') throw new Error(`chat ${chatId} is running; wait for the turn to finish`)
+    if (state.reason) throw new Error(state.reason === 'changing' ? 'a session setting change is in progress' : state.reason)
+    const selection = state[field]
+    if (!selection || selection === 'not-offered' || !selection.options.some(option => option.value === value)) {
+      throw new Error(`backend does not offer ${field} "${value}" for this chat`)
+    }
+    const chat = this.live.get(chatId)!
+    if (!chat.conn.setSelection) throw new Error('session-level settings are unavailable')
+    chat.changing = true
+    this.clearIdleTimer(chat)
+    try {
+      await chat.conn.setSelection(field, value)
+      if (chat.closing || this.live.get(chatId) !== chat) throw new Error(`chat ${chatId} was released during the setting change`)
+    } catch (error) {
+      this.report(error)
+      throw error
+    } finally {
+      chat.changing = false
+      this.armIdle(chat)
+    }
   }
 
   /** Start a fresh durable chat: new process, new remote session. */
@@ -653,6 +715,7 @@ export class AcpSessionPool {
     if (entry === undefined) throw new Error(`acp-resume: unknown chat ${chatId}`)
     // Existing chats use their saved backend, not the admission policy for new chats.
     const existing = this.live.get(chatId)
+    if (existing?.changing) throw new Error(`chat ${chatId} is changing session settings; try again when it finishes`)
     if (existing?.busy === true || this.starting.has(chatId)) {
       throw new Error(`acp-resume: chat ${chatId} already has a prompt in flight; end your turn or do other work, you will be notified when the current turn finishes`)
     }
