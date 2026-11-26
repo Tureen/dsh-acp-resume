@@ -1,37 +1,13 @@
-/**
- * The chat detail tab body (D18, PANEL-DESIGN §2.6; D30 density pass). One
- * header line: the state dot, the chat's name (label, else first-turn title,
- * else short id — as in the list), and a "⋯" menu with "release process" and
- * "delete record…" (release asks first while a turn is in flight; delete
- * always asks and closes the tab). One quiet meta line under it:
- * `backend · N turns · last active` (the backend only with several
- * backends), replaced while a turn runs by `backend · running 1m20s`, ticking
- * each second. The full chatId, cwd, remote session id, and state sit in the
- * name's hover text; the meta line ends with the cwd's last segment. The
- * history is a borderless list, newest first, rows split by a divider: a
- * running entry on top (spinner, the sent message's first two lines,
- * expandable), then turns as a question preview (primary colour, up to two
- * lines, relative time at the end, a stop-reason tag when not completed, a
- * fresh-session tag) and an answer preview (secondary colour, up to three
- * lines, "full text · N lines" when cut). A turn that ended in error carries a
- * red left rail; one that stopped short or was answered by a fresh session an
- * orange one. Reconnect events are one line on a warning rail. A click on a turn
- * toggles it, and only one turn is open at a time; an open turn shows the full
- * message and answer in scrollable regions, the diagnostic behind its own
- * toggle, and a collapse button. The full text is fetched on demand when a
- * preview is cut; expansion and fetched text live in component state only.
- * Pure props: data arrives through a per-chat {@link DetailSource}, commands
- * through injected callbacks, copy through `t`. Styling uses only
- * `--dsw-alias-*` variables and ui-primitives components.
+/** ACP resource detail tab: session actions, live-to-log handoff and grouped Markdown history (D18/D30/D46/D47).
  * @module dsh-acp-resume/client/ChatDetail
  */
-
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
-import { Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
-import { DisclosureRow, PanelCard, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
+import { DisclosureRow, PanelCard, StatusRail, TextShimmer, Pill, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
 import { formatDayHeader, formatTimeRange, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
-import type { FollowTurn, LiveView } from './live-source.ts'
+import type { FollowTurn } from './live-source.ts'
+import type { LiveFrame } from '../live-buffer.ts'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
 import { parseChatAddress } from './chat-address.ts'
@@ -44,8 +20,6 @@ export type ChatDetailProps = ChatDetailInjected & {
   readonly useTabInfo: TabInfoHook
   readonly t: PanelTranslate
 }
-
-const ROW_DIVIDER = '1px solid var(--dsw-alias-border-l3)'
 
 const styles = {
   root: { display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflowY: 'auto', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-1)' },
@@ -73,12 +47,8 @@ const styles = {
   line: { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0 },
   aside: { flex: 'none', fontSize: 11, color: 'var(--dsw-alias-label-tertiary)' },
 
-  full: { margin: 0, maxHeight: 320, overflow: 'auto', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.6, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l4)' },
-  linkButton: { alignSelf: 'flex-start', padding: 0, border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: 11 },
   diag: { margin: 0, padding: 8, borderRadius: 6, fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)', color: 'var(--dsw-alias-state-error-primary)' },
 
-  // Reconnect event: one line on a warning rail.
-  event: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderLeft: '3px solid var(--dsw-alias-state-warn-primary)', borderBottom: ROW_DIVIDER },
   eventText: { flex: 1, minWidth: 0, margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' },
 
   loadMoreWrap: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' },
@@ -167,7 +137,6 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   const rail = turnRail(item)
   const promptCopy = useClipboardCopy(message)
   const replyCopy = useClipboardCopy(output)
-  // "Full text · N lines" only when the two lines do not already show everything.
   const truncated = question.clipped || answer.clipped || item.messageMore || item.outputMore
   const lines = (item as TurnItem & { outputLines?: number }).outputLines ?? (fullEntry || (!item.outputMore && !item.messageMore) ? countLines(output) : undefined)
   const toggle = (): void => { onToggle(item) }
@@ -180,7 +149,7 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
             {tag ? <Tag tone={tag.tone}>{t(tag.key)}</Tag> : item.stopReason !== 'completed' && <Tag tone="neutral">{item.stopReason}</Tag>}
             {item.freshSession && <Tag tone="info">{t('freshBadge')}</Tag>}
             <span style={{ ...styles.aside, marginLeft: 'auto' }} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
-            <span aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+            <span aria-hidden="true">{open ? <IconChevronUpOutlineRegular size={12} /> : <IconChevronDownOutlineRegular size={12} />}</span>
           </div>
           {!open && <>
             <div style={styles.bubble}><p style={styles.question} data-question>{question.text}</p></div>
@@ -197,7 +166,7 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
           <div data-full="output"><DetailMarkdown text={output || t('noAnswer')} t={t} /></div>
           {full?.status === 'loading' && <p style={styles.notice}>{t('loadingFull')}</p>}
           {full?.status === 'error' && <p role="alert" style={styles.error}>{t('fullFailed', { message: full.message })}</p>}
-          {item.diagnostic !== undefined && <DisclosureRow icon={null} expandable open={diagOpen}
+          {item.diagnostic !== undefined && <DisclosureRow icon={<IconChevronDownOutlineRegular size={12} />} expandable expandOnRowClick open={diagOpen}
             title={t(diagOpen ? 'hideDiagnostic' : 'showDiagnostic')} onToggle={() => setDiagOpen(v => !v)}>
             <p style={styles.diag} data-diagnostic>{item.diagnostic}</p>
           </DisclosureRow>}
@@ -208,50 +177,76 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   )
 }
 
-function LiveOutput({ chatId, startedAt, follow, signal, t }: { signal?: AbortSignal; chatId: string; startedAt: number; follow: FollowTurn; t: PanelTranslate }) {
-  const [frame, setFrame] = useState<LiveView>()
-  const box = useRef<HTMLPreElement>(null)
-  const following = useRef(true)
-  useEffect(() => {
-    if (signal?.aborted) return
-    const stop = follow(chatId, startedAt, setFrame)
-    signal?.addEventListener('abort', stop, { once: true })
-    return () => { signal?.removeEventListener('abort', stop); stop() }
-  }, [follow, chatId, startedAt, signal])
+type TextFrame = Extract<LiveFrame, { kind: 'snapshot' }>
+
+function LiveViewport({ frame, settling, t }: { frame?: TextFrame; settling: boolean; t: PanelTranslate }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [paused, setPaused] = useState(false)
   useLayoutEffect(() => {
-    if (box.current && following.current) box.current.scrollTop = box.current.scrollHeight
-  }, [frame])
-  if (frame?.kind === 'settled') return null
-  if (frame?.kind === 'error') return <p role="status">{t('liveError')}</p>
-  if (!frame?.text) return <p>{t('liveWaiting')}</p>
-  return <div>
-    <p>{t('liveOutput')}{frame.truncated ? ' · ' + t('liveTail') : ''}</p>
-    <pre ref={box} style={{ ...styles.full, maxHeight: 240, overflowY: 'auto' }} data-live-output
+    if (!paused && box.current) box.current.scrollTop = box.current.scrollHeight
+  }, [paused, frame, settling])
+  return <div style={{ position: 'relative' }}>
+    {frame?.truncated && <p style={styles.aside}>{t('liveOutput')} · {t('liveTail')}</p>}
+    <div ref={box} data-live-output style={{ minHeight: 72, maxHeight: 360, overflowY: 'auto', overflowWrap: 'anywhere' }}
       onScroll={event => {
         const el = event.currentTarget
-        following.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 2
-      }}>{frame.text}</pre>
+        setPaused(el.scrollHeight - el.scrollTop - el.clientHeight > 24)
+      }}>
+      {frame?.text ? <DetailMarkdown text={frame.text} streaming={!settling} t={t} />
+        : !settling && <TextShimmer active>{t('liveWaiting')}</TextShimmer>}
+    </div>
+    {paused && <Pill style={{ position: 'absolute', right: 8, bottom: 4 }} onClick={() => setPaused(false)}>{t('liveBottom')}</Pill>}
   </div>
 }
 
-function RunningRow({ item, now, t, chatId, follow, signal }: { signal?: AbortSignal; item: RunningItem; now: number; t: PanelTranslate; chatId: string; follow?: FollowTurn }): ReactNode {
-  const [open, setOpen] = useState(false)
-  const sent = detailPreview(item.message, QUESTION_LINES)
-  const toggle = (): void => setOpen(value => !value)
-  return (
-    <li style={styles.row} data-running>
-      <div style={styles.rowHead} {...pressable(toggle)} aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}>
-        <div style={styles.line}>
-          <ChatStateDot state="ongoing" />
-          <p style={styles.question} data-running-preview>{sent.text}</p>
-          <span title={formatTurnTimeTitle(t, item, now)}><LiveElapsed startedAt={item.startedAt} now={now} t={t} /></span>
-          {follow ? <span style={styles.aside} aria-hidden="true">{t('liveOutput')} {open ? '▴' : '▾'}</span> : null}
-        </div>
+function RunningWorkspace({ item, now, t, chatId, follow, signal, open, onToggle, noLongerRunning }: {
+  item: RunningItem; now: number; t: PanelTranslate; chatId: string; follow?: FollowTurn; signal?: AbortSignal
+  open: boolean; onToggle(): void; noLongerRunning: boolean
+}) {
+  const [promptOpen, setPromptOpen] = useState(false)
+  const [frame, setFrame] = useState<TextFrame>()
+  const [stage, setStage] = useState<'watching' | 'settled' | 'error'>('watching')
+  const [missing, setMissing] = useState(false)
+  const settling = noLongerRunning || stage === 'settled'
+  useEffect(() => {
+    if (!open || !follow || settling || signal?.aborted) return
+    let active = true
+    const unsubscribe = follow(chatId, item.startedAt, next => {
+      if (!active) return
+      if (next.kind === 'snapshot') { setFrame(next); setStage('watching') }
+      else setStage(next.kind)
+    })
+    const stop = () => {
+      if (!active) return
+      active = false
+      unsubscribe()
+    }
+    signal?.addEventListener('abort', stop, { once: true })
+    return () => { signal?.removeEventListener('abort', stop); stop() }
+  }, [open, follow, chatId, item.startedAt, signal, settling])
+  useEffect(() => {
+    if (!settling) return
+    const timer = setTimeout(() => setMissing(true), 3000)
+    return () => clearTimeout(timer)
+  }, [settling])
+  return <section data-live-section="" data-running="" aria-label={t('liveOutput')}>
+    <StatusRail state="running" style={{ ...styles.row, borderRadius: 10, borderTop: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-card-fill)' }}>
+      <div style={styles.line}>
+        <ChatStateDot state="ongoing" />
+        {missing ? <span role="status">{t('liveMissing')}</span> : <TextShimmer active>{t(settling ? 'liveSettling' : 'liveRunning')}</TextShimmer>}
+        {!settling && <span title={formatTurnTimeTitle(t, item, now)}><LiveElapsed startedAt={item.startedAt} now={now} t={t} /></span>}
       </div>
-      {open && sent.clipped ? <div data-running-full><DetailMarkdown text={item.message} t={t} /></div> : null}
-      {open && follow ? <LiveOutput signal={signal} chatId={chatId} startedAt={item.startedAt} follow={follow} t={t} /> : null}
-    </li>
-  )
+      <div style={styles.bubble}>
+        <Button variant="ghost" size="sm" aria-expanded={promptOpen} onClick={() => setPromptOpen(v => !v)}>{t(promptOpen ? 'liveHidePrompt' : 'liveShowPrompt')}</Button>
+        {promptOpen ? <div data-running-full style={{ maxHeight: 160, overflowY: 'auto' }}><DetailMarkdown text={item.message} t={t} /></div>
+          : <p style={styles.question} data-running-preview>{cleanPreview(item.message, { maxLines: QUESTION_LINES })}</p>}
+      </div>
+      {(follow || open) && <Button variant="ghost" size="sm" aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}
+        onClick={() => { if (open) { setFrame(undefined); setStage('watching') }; onToggle() }}>{t('liveOutput')}</Button>}
+      {open && stage === 'error' && <p role="status">{t('liveError')}</p>}
+      {open && (follow || settling) && (stage !== 'error' || frame) && <LiveViewport frame={frame} settling={settling} t={t} />}
+    </StatusRail>
+  </section>
 }
 
 function EventRow({ item, now, t }: { readonly item: EventItem; readonly now: number; readonly t: PanelTranslate }): ReactNode {
@@ -261,7 +256,7 @@ function EventRow({ item, now, t }: { readonly item: EventItem; readonly now: nu
       ? t('eventSessionResetAfterErrors')
       : `${t('eventReconnectFailed', { error: item.error ?? '' })}${item.message === undefined ? '' : ` · ${t('failedMessage', { message: cleanPreview(item.message, { maxLines: 2 }) })}`}`
   return (
-    <li data-seq={item.seq} data-event={item.event}><PanelCard rail={item.event === 'reconnect-failed' ? 'error' : 'warn'} style={styles.line}>
+    <li data-seq={item.seq} data-event={item.event}><PanelCard rail={item.event === 'reconnect-failed' ? 'error' : 'warn'} style={{ ...styles.line, padding: '6px 8px', alignItems: 'center' }}>
       <p style={styles.eventText}>{text}</p>
       <span style={styles.aside} title={formatTurnTimeTitle(t, item, now)}>{formatTurnTime(t, item, now)}</span>
     </PanelCard></li>
@@ -300,11 +295,10 @@ const RECENT_VISIBLE = 3
 const RECENT_FOLD_ABOVE = 4
 type HistoryItem = TurnItem | EventItem
 
-function EarlierHistory({ items, unloaded, footer, renderItem, now, t }: {
+function EarlierHistory({ items, unloaded, footer, renderItem, open, toggle, now, t }: {
+  open: boolean; toggle(): void
   items: HistoryItem[]; unloaded: number; footer: ReactNode; renderItem: (item: HistoryItem) => ReactNode; now: number; t: PanelTranslate
 }) {
-  const [open, setOpen] = useState(false)
-  const toggle = useCallback(() => setOpen(value => !value), [])
   const groups = new Map<string, HistoryItem[]>()
   let errors = 0, events = 0, warnings = 0
   for (const item of items) {
@@ -320,7 +314,7 @@ function EarlierHistory({ items, unloaded, footer, renderItem, now, t }: {
   }
   const times = items.map(item => item.at)
   return <section data-earlier>
-    <DisclosureRow icon={null} expandable expandOnRowClick title={t('detailEarlier', { count: items.length })} open={open} onToggle={toggle}
+    <DisclosureRow icon={<IconChevronDownOutlineRegular size={12} />} expandable expandOnRowClick title={t('detailEarlier', { count: items.length })} open={open} onToggle={toggle}
       collapsedContent={<span style={styles.aside}>{formatTimeRange(t, Math.min(...times), Math.max(...times), now)}</span>}
       headerAccessory={<div style={styles.line}>
         {errors > 0 && <Tag tone="danger">{t('detailErrors', { count: errors })}</Tag>}
@@ -355,6 +349,32 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const short = shortChatId(chatId)
 
+  const [viewed, setViewed] = useState<RunningItem>()
+  const requested = useRef(new Set<number>())
+  const loadFull = useCallback((item: TurnItem) => {
+    if (requested.current.has(item.seq) || (!item.messageMore && !item.outputMore)) return
+    requested.current.add(item.seq)
+    setFulls(current => ({ ...current, [item.seq]: { status: 'loading' } }))
+    source.loadEntry(item.seq).then(
+      entry => setFulls(current => ({ ...current, [item.seq]: { status: 'ready', entry } })),
+      (error: unknown) => setFulls(current => ({ ...current, [item.seq]: { status: 'error', message: failure(error) } })),
+    )
+  }, [source])
+  const [earlierOpen, setEarlierOpen] = useState(false)
+  const toggleEarlier = useCallback(() => setEarlierOpen(v => !v), [])
+  const newestFirst = snapshot.entries.filter((item): item is HistoryItem => item.kind !== 'running').reverse()
+  const folded = newestFirst.length > RECENT_FOLD_ABOVE
+  const matched = viewed && newestFirst.find((item): item is TurnItem => item.kind === 'turn' && item.startedAt === viewed.startedAt)
+  const matchInEarlier = !!matched && folded && newestFirst.indexOf(matched) >= RECENT_VISIBLE
+  // Render the matched card open on the very snapshot which retires the live workspace.
+  useLayoutEffect(() => {
+    if (!matched || snapshot.status === 'gone') return
+    setViewed(undefined)
+    if (matchInEarlier) setEarlierOpen(true)
+    setOpenSeq(matched.seq)
+    loadFull(matched)
+  }, [matched, matchInEarlier, snapshot.status, loadFull])
+
   if (snapshot.status === 'gone') {
     return (
       <section style={styles.root} aria-label={short}>
@@ -367,15 +387,10 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
     )
   }
 
-  const toggle = (item: TurnItem): void => {
-    const opening = openSeq !== item.seq
+  const toggle = (item: TurnItem) => {
+    const opening = item.seq !== openSeq
     setOpenSeq(opening ? item.seq : undefined)
-    if (!opening || fulls[item.seq] !== undefined || (!item.messageMore && !item.outputMore)) return
-    setFulls(current => ({ ...current, [item.seq]: { status: 'loading' } }))
-    source.loadEntry(item.seq).then(
-      (entry) => { setFulls(current => ({ ...current, [item.seq]: { status: 'ready', entry } })) },
-      (error: unknown) => { setFulls(current => ({ ...current, [item.seq]: { status: 'error', message: failure(error) } })) },
-    )
+    if (opening) loadFull(item)
   }
 
   const run = (action: (id: string) => Promise<void>, afterwards?: () => void): void => {
@@ -390,17 +405,18 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   const chat = snapshot.chat
   const now = snapshot.fetchedAt ?? 0
   const running = snapshot.entries.find((item): item is RunningItem => item.kind === 'running')
-  const newestFirst = snapshot.entries.filter((item): item is TurnItem | EventItem => item.kind !== 'running').reverse()
-  const folded = newestFirst.length > RECENT_FOLD_ABOVE
   const recent = folded ? newestFirst.slice(0, RECENT_VISIBLE) : newestFirst
   const renderItem = (item: HistoryItem) => item.kind === 'event'
     ? <EventRow key={item.seq} item={item} now={now} t={t} />
-    : <TurnRow key={item.seq} item={item} now={now} open={openSeq === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />
+    : <TurnRow key={item.seq} item={item} now={now} open={(matched?.seq ?? openSeq) === item.seq} full={fulls[item.seq]} onToggle={toggle} t={t} />
   const unloaded = snapshot.total - newestFirst.length
   const footer = unloaded > 0 && <div style={styles.loadMoreWrap}>
     <span style={styles.sectionCount}>{t('shownOf', { shown: newestFirst.length, total: snapshot.total })}</span>
     <Button size="sm" variant="ghost" onClick={() => { void source.loadMore() }}>{t('loadMore')}</Button>
   </div>
+  const workspaces: RunningItem[] = []
+  if (viewed && !matched && viewed.startedAt !== running?.startedAt) workspaces.push(viewed)
+  if (running && running.startedAt !== matched?.startedAt) workspaces.push(running)
   const inFlightSince = running?.startedAt ?? chat?.inFlight?.startedAt
   const backend = chat !== undefined && (chat.backendCount ?? 1) > 1 && chat.backend !== undefined ? (chat.backendDisplay ?? chat.backend) : undefined
   const turns = chat?.turnCount === undefined ? t('noValue') : String(chat.turnCount)
@@ -435,15 +451,18 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
         ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
         : null}
       {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
+      {workspaces.map(item =>
+        <RunningWorkspace key={item.startedAt} item={item} t={t} now={now} chatId={chatId} follow={follow} signal={tabSignal}
+          noLongerRunning={item.startedAt !== running?.startedAt} open={item.startedAt === viewed?.startedAt}
+          onToggle={() => setViewed(current => current?.startedAt === item.startedAt ? undefined : item)} />)}
       <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
-      {snapshot.status !== 'loading' && running === undefined && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
-      {running === undefined && newestFirst.length === 0 ? null : (
+      {snapshot.status !== 'loading' && !viewed && !running && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
+      {newestFirst.length === 0 ? null : (
         <ul style={styles.list}>
-          {running === undefined ? null : <RunningRow key={running.startedAt} chatId={chatId} signal={tabSignal} follow={follow} item={running} now={now} t={t} />}
           {recent.map(renderItem)}
         </ul>
       )}
-      {folded ? <EarlierHistory items={newestFirst.slice(RECENT_VISIBLE)} unloaded={unloaded} footer={footer} renderItem={renderItem} now={now} t={t} /> : footer}
+      {folded ? <EarlierHistory open={earlierOpen || matchInEarlier} toggle={toggleEarlier} items={newestFirst.slice(RECENT_VISIBLE)} unloaded={unloaded} footer={footer} renderItem={renderItem} now={now} t={t} /> : footer}
       <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
         title={t(confirming === 'release' ? 'releaseConfirmTitle' : 'confirmTitle', { chatId: short })}
         description={t(confirming === 'release' ? 'releaseConfirmBody' : 'confirmBody')}

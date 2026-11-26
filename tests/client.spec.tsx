@@ -51,6 +51,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   IconChevronDownOutlineRegular: () => <svg data-icon="chevron-down" aria-hidden="true" />,
   IconChevronUpOutlineRegular: () => <svg data-icon="chevron-up" aria-hidden="true" />,
   IconEllipsisOutlineRegular: () => <svg data-icon="ellipsis" aria-hidden="true" />,
+
+  IconChevronDownOutlineRegular: () => <svg aria-hidden="true" />,
+  IconChevronUpOutlineRegular: () => <svg aria-hidden="true" />,
+
   IconRefreshOutlineRegular: () => <svg data-icon="refresh" aria-hidden="true" />,
   IconSettingsOutlineRegular: () => <svg data-icon="settings" aria-hidden="true" />,
   IconSlidersTwoOutlineRegular: () => <svg data-icon="sliders" aria-hidden="true" />,
@@ -106,8 +110,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 
   MarkdownText: ({ text, omitHtml, streaming, variant }: { text: string; omitHtml: boolean; streaming: boolean; variant: string }) =>
     <div data-md={variant} data-omit-html={String(omitHtml)} data-streaming={String(streaming)}>{omitHtml ? text.replace(/<[^>]+>/g, '') : text}</div>,
-  Pill: () => null,
-  TextShimmer: () => null,
+  Pill: ({ onClick, children }: { onClick(): void; children: ReactNode }) => <button onClick={onClick}>{children}</button>,
+  TextShimmer: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   extractMarkdownPlainText: (text: string) => text.replace(/\*\*|`/g, '').replace(/^#+ /gm, ''),
 
   useClipboardCopy: () => ({ copied: false, copy: () => {} }),
@@ -1664,11 +1668,9 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(within(row3).getByText('新会话').closest('[data-tag]')?.getAttribute('data-tone')).toBe('info')
     expect(within(row3).getByText(formatTurnTime(t, turn(3), NOW))).toBeTruthy()
     expect(row3.querySelector('[data-answer]')?.textContent).toBe('(无回答文本)')
-    // The seq moved into the hover text; no Q/A labels, no border around the row.
-    expect(row3.textContent).not.toContain('#3')
-    expect(head(container, 3).getAttribute('title')).toBe('#3')
-    expect(row3.style.border).toBe('')
-    expect(row3.style.borderBottom).toMatch(/1px solid/)
+    expect(within(row3).getByText('#3')).toBeTruthy()
+    expect((row3.querySelector('[data-panel-card]') as HTMLElement).style.borderRadius).toBe('10px')
+    expect(container.querySelector('header')?.style.position).toBe('sticky')
     const row1 = container.querySelector('[data-seq="1"]') as HTMLElement
     expect(row1.querySelector('[data-tag]')).toBeNull()
     expect(row1.querySelector('[data-question]')?.textContent).toBe('问题1')
@@ -1684,13 +1686,15 @@ describe('ChatDetail (D18, D30 density)', () => {
     const running: RunningItem = { kind: 'running', startedAt: NOW - 80_000, message: `第一行\n第二行\n${'长文本'.repeat(80)}` }
     const source = fakeSource(detailSnapshot({ entries: [running, turn(1)] }))
     const { container } = render(<ChatDetail {...detailProps(source).injected} />)
-    const top = container.querySelector('li') as HTMLElement
+    const top = container.querySelector('[data-live-section]') as HTMLElement
+    expect(top.closest('ul')).toBeNull()
+    expect(top.querySelector('[data-rail]')?.getAttribute('data-state')).toBe('running')
     expect(top.hasAttribute('data-running')).toBe(true)
     expect(top.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('ongoing')
     expect(top.querySelector('[data-running-preview]')?.textContent).toBe('第一行\n第二行…')
     expect(within(top).getByText('已运行 1分20秒')).toBeTruthy()
     expect(container.querySelector('[data-meta]')?.textContent).toBe('进行中 1分20秒 · tmp')
-    await act(async () => { fireEvent.click(within(top).getByRole('button', { name: '展开进行中的消息' })) })
+    await act(async () => { fireEvent.click(within(top).getByRole('button', { name: zh.liveShowPrompt })) })
     expect(top.querySelector('[data-running-full]')?.textContent).toBe(running.message)
     expect(source.loadEntry).not.toHaveBeenCalled()
   })
@@ -2380,11 +2384,13 @@ describe('live detail body (D46)', () => {
 
   it('pauses following while scrolled up and replaces the stream with the logged turn on settled', async () => {
     let snapshot = detailSnapshot({ entries: [running] })
+    const logReady = Promise.withResolvers<void>()
     const subscribers = new Set<() => void>()
     const source: DetailSource = { ...fakeSource(snapshot), getSnapshot: () => snapshot,
       subscribe(fn) { subscribers.add(fn); return () => { subscribers.delete(fn) } },
       async refresh() {
-        snapshot = detailSnapshot({ entries: [turn(1, { message: running.message, output: '配置检查完成' })] })
+        await logReady.promise
+        snapshot = detailSnapshot({ entries: [turn(1, { startedAt: running.startedAt, message: running.message, output: '配置检查完成' })] })
         for (const fn of subscribers) fn()
       },
     }
@@ -2402,21 +2408,63 @@ describe('live detail body (D46)', () => {
     const follow: FollowTurn = (id, start, fn) => live.subscribe(id, TEST_SESSION, start, fn)
     const { container } = render(<ChatDetail {...detailProps(source, { followTurn: follow }).injected} />)
     await act(async () => fireEvent.click(screen.getByRole('button', { name: zh.runningExpand })))
-    const box = screen.getByText('已读取配置')
+    const box = container.querySelector('[data-live-output]') as HTMLElement
+    expect(box.querySelector('[data-streaming="true"]')).toBeTruthy()
     Object.defineProperties(box, { scrollHeight: { value: 400 }, clientHeight: { value: 100 } })
     box.scrollTop = 40
     fireEvent.scroll(box)
     await act(async () => push({ kind: 'snapshot', seq: 2, text: '已读取配置，正在核对', truncated: false }))
     expect(box.scrollTop).toBe(40)
-    box.scrollTop = 300
-    fireEvent.scroll(box)
+    expect(screen.getByRole('button', { name: zh.liveBottom })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.liveBottom }))
     await act(async () => push({ kind: 'snapshot', seq: 3, text: '已核对', truncated: false }))
     expect(box.scrollTop).toBe(400)
     await act(async () => push({ kind: 'settled', seq: 4 }))
+    expect(screen.getByText(zh.liveSettling)).toBeTruthy()
+    expect(box.textContent).toBe('已核对')
+    expect(box.querySelector('[data-streaming="false"]')).toBeTruthy()
+    expect(container.querySelector('li[data-open]')).toBeNull()
+    await act(async () => logReady.resolve())
     expect(container.querySelector('[data-running]')).toBeNull()
     expect(container.querySelector('[data-live-output]')).toBeNull()
-    expect(container.querySelector('[data-question]')?.textContent).toBe('检查改动')
+    expect(container.querySelector('li[data-open] [data-full="message"]')?.textContent).toBe('检查改动')
     expect(screen.getAllByText('配置检查完成')).toHaveLength(1)
+  })
+
+  it('retains the settled tail when an unrelated history arrives; the deleted state takes precedence', () => {
+    vi.useFakeTimers()
+    let snapshot = detailSnapshot({ entries: [running] })
+    let push!: (frame: LiveFrame) => void
+    const source = { ...fakeSource(snapshot), getSnapshot: () => snapshot }
+    const follow: FollowTurn = (_id, _at, fn) => { push = fn; return () => {} }
+    const { injected } = detailProps(source, { followTurn: follow })
+    const view = render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: zh.runningExpand }))
+    act(() => { push({ kind: 'snapshot', seq: 1, text: '末帧', truncated: false }); push({ kind: 'settled', seq: 2 }) })
+    snapshot = detailSnapshot({ entries: [turn(7)] })
+    view.rerender(<ChatDetail {...injected} />)
+    expect(screen.getByText(zh.liveSettling)).toBeTruthy()
+    act(() => vi.advanceTimersByTime(3000))
+    expect(screen.getByText(zh.liveMissing)).toBeTruthy()
+    expect(screen.getByText('末帧')).toBeTruthy()
+    expect(view.container.querySelector('li[data-open]')).toBeNull()
+    snapshot = { status: 'gone', entries: [], total: 0 }
+    view.rerender(<ChatDetail {...injected} />)
+    expect(screen.getByText(zh.goneTitle)).toBeTruthy()
+    expect(screen.queryByText('末帧')).toBeNull()
+  })
+
+  it('keeps the matched history collapsed after the user closes the live viewport', () => {
+    let snapshot = detailSnapshot({ entries: [running] })
+    const source = { ...fakeSource(snapshot), getSnapshot: () => snapshot }
+    const { injected } = detailProps(source, { followTurn: () => () => {} })
+    const view = render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: zh.runningExpand }))
+    fireEvent.click(screen.getByRole('button', { name: zh.runningCollapse }))
+    snapshot = detailSnapshot({ entries: [turn(8, { startedAt: running.startedAt })] })
+    view.rerender(<ChatDetail {...injected} />)
+    expect(view.container.querySelector('[data-running]')).toBeNull()
+    expect(view.container.querySelector('[data-seq="8"]')?.hasAttribute('data-open')).toBe(false)
   })
 
   it('shares one stream per viewer session/chat/turn and aborts only on last unsubscribe', async () => {
