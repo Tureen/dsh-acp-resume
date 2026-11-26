@@ -906,6 +906,8 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 
 修订（2026-11-26，0.6.0）：0.5.1 曾将 skill 作为默认关闭的第七项独立开关发布。发布后约 15 分钟内决定合并，当时没有已知使用者。只开启技能加载而无法读取 references 缺少完整阅读路径，因此从 0.6.0 起 `readOnlyFs` 统一启用文件核对与技能加载。旧 skill 布尔键仍接受但无效果；仅开启该旧键会在声明加载时告警。默认组合保持原样。
 
+修订（2026-11-26）：D45 将六个工具字段接入官方实时表单。只替换独立声明的 preset 版本，已绑定的 Agent 继续原版本。
+
 ## D38 Dispatcher 提示词可配（2026-11-26，0.5.1）
 
 在 D37 声明插件的同一 `config` 下，`dispatcherPrompt` 与 `dispatcherTools` 并列。用户只调整调度规则时可继续使用工具开关、原有 preset id 和全局 ACP 池。菜单 description 始终只取决于工具配置。
@@ -925,6 +927,8 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - **追加。** `extraRules` 默认空；先去掉首尾空白，保留内部格式。普通模式依次拼身份句、自带派工和目录规则、共享写入边界、工具指引、汇总框架。非空用户文字在框架后另起一段。省略 prompt 或使用空规则时不增加空行，逐字保留 D37 本日修正后的默认 persona。
 - **替换。** `overrideRules` 默认 false。打开后只拼身份句、当前工具指引、空行和用户规则。身份仅指 `You are a task dispatcher.`；原来与其同段的后端检查和随后收集结果的流程都属于调度规则。web、文件核对与执行边界、skill、present、todo 和压缩等按工具配置生成的指引仍有效。默认目录规则里的提问分支随该规则一起替换；关闭 askUser 时保留可在对话中澄清的通用指引。替换模式下用户文字为空则声明加载报配置错误。
 - **作用范围。** 只设置 dsh-persona 的 prefix。设置 `complete: true` 会使该段独占最终系统提示，因此沿用普通 section 组合；宿主其他 section 和 D36 的条件团队片段各按自身条件参与组装。
+
+修订（2026-11-26）：D45 支持从侧栏保存规则，空白覆盖仍拒绝。
 
 ## D39 ACP Resume Docs 随包使用文档（2026-11-26，0.6.0）
 
@@ -970,6 +974,8 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - 就绪服务归独立的 subprocess 子作用域管理。rc.5 Loader 校验 volatile 字段后原位更新引用，服务在每轮检测开始时读取一次；已开始的检测沿用原预算。会话池的释放仍由 ACP 主 fiber 管理。仅调预算无需重新挂载插件、重建池或中断会话。
 - 只有候选自身的截止信号赢得中止竞争时才发布 `unverified / probe-timeout`。面板与状态工具给出重查提示，显式配置的后端仍可派工，自动发现的后端沿用原有就绪门槛。握手拒绝与登录失败保留各自的原因。重查复用在途检测，调用者取消等待只影响该调用；插件拆卸丢弃未完成的检测结果。派工前查找默认命令仍沿用原有的独立 3 秒上限。
 
+修订（2026-11-26）：D45 将探测预算接入侧栏；下次检测读取新值，留空恢复继承。
+
 ## D44 面板按会话切换 ACP 模型与思考强度（2026-11-26，目标 0.7.0）
 
 - 在右侧栏的会话行展开「仅此会话设置」。Kiro / agy 的模型与强度选项取自存活连接在建连、重连、设置回复或 `config_option_update` 中报告的 `configOptions`。缺少可用清单时显示未报告；完整清单移除强度项时显示「此模型不提供」。
@@ -981,3 +987,37 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 ### 未覆盖
 
 Codex 显示「此后端暂不支持会话级切换」。后续单独实现完整模型目录及各模型强度的读取、缓存和逐轮覆盖；当前可在后端配置中修改模型。
+
+## D45 侧栏设置通过官方表单写回 profile（2026-11-26，0.7.0）
+
+- 启用持久面板时，从右侧栏的设置按钮进入。分别用 `configForms.get('subagent-acp-resume')` 和 `configForms.get('acp-dispatcher-settings')` 获取生效值和 revision。每次提交单一路径；编辑文本时保留开始编辑的 revision。读取、写入队列、冲突检测、恢复读取和落盘由 DSH 管理。`plugins.bundle.config` 是插件管理页插槽，按 npm 包名定位，未用于右侧栏。
+- 首次写入前明确提示注释及排版可能变化。确认用 localStorage 记忆，存储受限时仅在本次 DSH 会话中记忆。取消时不发写请求。角色与工作流冲突、空白规则覆盖、超时输入非法在写入前提示；官方表单返回 false 时统一提示“保存失败,已重新读取当前设置”，UI 显示恢复后的值。传输异常另行提示连接失败。
+- `defaultBackend` 供下一次新建或首次角色供给选路；已绑定 chat 仍用原后端。`roles`、`workflow`、`allowChatJobWait` 更新工具子作用域，分别控制角色工具与参数、工作流工具、等待门与 send 描述。更改 workflow 后设置入口刷新面板能力。池的生命周期属于主 fiber，在途任务继续完成。
+- `allowUnverifiedBackends` 关闭后，范围外自动发现 CLI 的已缓存就绪也不能再用于显式选择；开启后通过检测才可明确选用，自动回退仍要求版本在范围内。`idleTimeoutMs` 从下次启动或重设空闲计时器起生效，已启动的计时器沿用原期限。`probeTimeoutMs` 每轮检测开始时读取。
+- `dispatcherTools` 的 readOnlyFs、web、present、todo、askUser、compaction 和 `dispatcherPrompt` 的 extraRules、overrideRules 均为子字段级 volatile。声明插件在自己的 Loader 行生命周期内重注册。新绑定的 Agent 用新版本；已有 Agent 保留原工具与指令。
+- **未覆盖**：command、args、命名后端启动命令与 env 牵涉进程重建。permission、sandbox、approvalPolicy 改变授权边界。registryPath 更换状态库，toolPrefix 改变已有引用的工具名。model、effort、modelSelect 修改所有新会话的默认选择，单会话调整已有 D44 入口。这些配置由用户编辑 profile 并重启。
+- 实测假 profile 仅改变 `probeTimeoutMs` 的解析值。官方 ConfigEditor 重建整行 config 并重新序列化，因此会删除行内注释并改变顺序与写法。保留注释需手改 profile。下列为实际文本 diff。
+
+```diff
+--- before.yml
++++ after.yml
+@@ -2,13 +2,14 @@
+ - id: subagent-acp-resume
+   name: cordis:acp
+   config:
+-    command: "/Users/Tulane/.local/share/mise/installs/node/24.18.0/bin/node" # keep the fixture executable
+-    args: ["/Users/Tulane/Developer/active-projects/dsh-acp-resume/tests/mock-acp-server.ts"]
++    command: /Users/Tulane/.local/share/mise/installs/node/24.18.0/bin/node
++    args:
++      - /Users/Tulane/Developer/active-projects/dsh-acp-resume/tests/mock-acp-server.ts
+     agentEngine: none
+     discoverBackends: false
+-    roles: false
+-    probeTimeoutMs: 4000
+     registryPath: /private/tmp/acp-d45-accept.cv9eBb/home/registry.json
+     env:
+       MOCK_TEXT: completed-through-save
+       MOCK_PROMPT_HOLD: /private/tmp/acp-d45-accept.cv9eBb/home/hold
++    probeTimeoutMs: 9000
++    roles: false
+```

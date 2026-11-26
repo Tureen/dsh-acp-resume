@@ -104,6 +104,10 @@ export function apply(ctx: Context): void {
       // The seat is session-scoped: `inject(sessionId)` names the on-screen
       // session, used for filtering and owner-aware panel calls (D20/D44).
       currentSessionId: sessionId,
+      profileForms: () => {
+        const forms = scope.get('configForms') as { get(id: string): import('./ProfileSettings.tsx').SettingsForm } | undefined
+        return forms && { main: forms.get('subagent-acp-resume'), dispatcher: forms.get('acp-dispatcher-settings') }
+      },
       settings: {
         read: async chatId => await callPanel(scope.connection.rpc, 'chatOptions', { chatId, sessionId }) as import('../chat-options.ts').ChatOptions,
         change: async (chatId, field, value) => {

@@ -4,6 +4,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import { OVERRIDE_REQUIRES_RULES } from './settings-rules.js'
 import z from '@deepseek-ai/schemastery'
 
 /** Host service required by this declaration. */
@@ -14,26 +15,25 @@ type DispatcherTools = typeof defaults & {
   /** @deprecated Skill loading follows readOnlyFs. */
   skill?: boolean
 }
-const promptDefaults = { extraRules: '', overrideRules: false }
-type DispatcherPrompt = typeof promptDefaults
+type DispatcherPrompt = { extraRules: string; overrideRules: boolean }
 
 /** Tool choices govern the menu description. Skill descriptions enter context only on opt-in.
  * Prompt customization affects only the persona prefix.
  */
 export const Config = z.object({
   dispatcherTools: z.object({
-    readOnlyFs: z.boolean().default(defaults.readOnlyFs).description('Read and search files, discover skills, and load their instructions.'),
-    web: z.boolean().default(defaults.web).description('Use web tools for lightweight fact-checking.'),
-    present: z.boolean().default(defaults.present).description('Present deliverables.'),
-    todo: z.boolean().default(defaults.todo).description('Maintain a task list.'),
-    askUser: z.boolean().default(defaults.askUser).description('Use a tool to ask the user for clarification.'),
+    readOnlyFs: z.boolean().default(defaults.readOnlyFs).volatile().description('Read and search files, discover skills, and load their instructions.'),
+    web: z.boolean().default(defaults.web).volatile().description('Use web tools for lightweight fact-checking.'),
+    present: z.boolean().default(defaults.present).volatile().description('Present deliverables.'),
+    todo: z.boolean().default(defaults.todo).volatile().description('Maintain a task list.'),
+    askUser: z.boolean().default(defaults.askUser).volatile().description('Use a tool to ask the user for clarification.'),
     skill: z.boolean().description('Deprecated since 0.6.0: use readOnlyFs for file verification and skill loading.'),
-    compaction: z.boolean().default(defaults.compaction).description('Enable the isolated context compaction group.'),
-  }).default(defaults),
+    compaction: z.boolean().default(defaults.compaction).volatile().description('Enable the isolated context compaction group.'),
+  }).default({}),
   dispatcherPrompt: z.object({
-    extraRules: z.string().default('').description('User dispatch rules, appended after the built-in persona by default.'),
-    overrideRules: z.boolean().default(false).description('Replace the built-in dispatch rules with nonempty extraRules. Keep the identity and tool guidance.'),
-  }).default(promptDefaults),
+    extraRules: z.string().default('').volatile().description('User dispatch rules, appended after the built-in persona by default.'),
+    overrideRules: z.boolean().default(false).volatile().description('Replace the built-in dispatch rules with nonempty extraRules. Keep the identity and tool guidance.'),
+  }).default({}),
 })
 
 const identity = 'You are a task dispatcher.'
@@ -83,7 +83,7 @@ function toolCopy(tools: DispatcherTools) {
 function personaPrefix(askUser: boolean, toolLines: string[], prompt: Partial<DispatcherPrompt>): string {
   const extra = prompt.extraRules?.trim() ?? ''
   if (prompt.overrideRules && !extra) {
-    throw new Error('dispatcherPrompt.overrideRules requires nonempty extraRules to replace the built-in dispatch rules')
+    throw new Error(OVERRIDE_REQUIRES_RULES)
   }
   const lines = prompt.overrideRules ? [identity] : [
     `${identity} ${dispatchProcedure}`,
@@ -99,7 +99,10 @@ function personaPrefix(askUser: boolean, toolLines: string[], prompt: Partial<Di
 }
 
 /** Build a detached preset. dispatcherPrompt changes the prefix; the description follows only the tools. */
-export function buildDispatcherPreset(tools: DispatcherTools = defaults, prompt: Partial<DispatcherPrompt> = {}): PresetDefinition {
+export function buildDispatcherPreset(input: DispatcherTools | ReturnType<typeof Config>['dispatcherTools'] = defaults,
+  rules: Partial<DispatcherPrompt> | ReturnType<typeof Config>['dispatcherPrompt'] = {}): PresetDefinition {
+  const tools = toolValues(input)
+  const prompt = promptValues(rules)
   const { description, lines } = toolCopy(tools)
   const prefix = personaPrefix(tools.askUser, lines, prompt)
   const plugins: PresetDefinition['plugins'][number][] = [
@@ -132,10 +135,41 @@ export function buildDispatcherPreset(tools: DispatcherTools = defaults, prompt:
   return { id: 'acp-dispatcher', name: 'ACP Dispatcher', description, order: 10, plugins }
 }
 
-/** Register the definition and let Cordis retire it on update or unload. */
-export async function* apply(ctx: Context, config: { dispatcherTools: DispatcherTools; dispatcherPrompt: DispatcherPrompt }) {
-  if (config.dispatcherTools.skill && !config.dispatcherTools.readOnlyFs) {
+function value<T extends string | boolean>(input: T | { get(): T }): T {
+  return typeof input === 'object' ? input.get() : input
+}
+
+function toolValues(fields: DispatcherTools | ReturnType<typeof Config>['dispatcherTools']): DispatcherTools {
+  return { readOnlyFs: value(fields.readOnlyFs), web: value(fields.web), present: value(fields.present),
+    todo: value(fields.todo), askUser: value(fields.askUser), compaction: value(fields.compaction) }
+}
+
+function promptValues(fields: Partial<DispatcherPrompt> | ReturnType<typeof Config>['dispatcherPrompt']): DispatcherPrompt {
+  return { extraRules: value(fields.extraRules ?? ''), overrideRules: value(fields.overrideRules ?? false) }
+}
+
+/** Read the volatile form as ordinary values for one immutable preset revision. */
+export function dispatcherValues(config: ReturnType<typeof Config>) {
+  return { tools: toolValues(config.dispatcherTools), prompt: promptValues(config.dispatcherPrompt) }
+}
+
+/** Loader owns this declaration independently of the ACP provider and its pool. */
+export async function* apply(ctx: Context, config: ReturnType<typeof Config>) {
+  const definition = buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt)
+  if (config.dispatcherTools.skill && !config.dispatcherTools.readOnlyFs.get()) {
     ctx.logger.warn('dispatcherTools.skill is deprecated and has no effect; set dispatcherTools.readOnlyFs: true to enable file reads and skill loading.')
   }
-  yield await ctx.agentPresets.register(buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt))
+  ctx.on('internal/config', (fiber, next) => {
+    const candidate = next()
+    if (fiber === ctx.fiber) {
+      const { prompt } = dispatcherValues(candidate)
+      if (prompt.overrideRules && !prompt.extraRules.trim()) throw new Error(OVERRIDE_REQUIRES_RULES)
+    }
+    return candidate
+  }, { prepend: true })
+  // Loader.await tracks entry fibers. Keep replacement of the preset inside its own entry lifecycle.
+  ctx.on('loader/volatile-update', () => {
+    void ctx.fiber.restart().catch(error => ctx.logger.warn('Dispatcher preset update failed: %o', error))
+  })
+  yield await ctx.agentPresets.register(definition)
 }

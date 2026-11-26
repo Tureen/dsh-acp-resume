@@ -38,6 +38,7 @@ import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './eng
 import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
 import { BackendReadinessService, backendPathEnv, type BackendCandidate } from './backend-readiness.js'
+import { WORKFLOW_REQUIRES_ROLES } from './settings-rules.js'
 import { verifyBackend } from './backend-verification.js'
 
 // Cordis exposes an ambient const enum; pin its active value at compile time.
@@ -196,7 +197,10 @@ export interface Config {
   workflow?: boolean
 }
 
-type LiveConfig = Omit<Config, 'probeTimeoutMs'> & { probeTimeoutMs?: { get(): number | undefined } }
+type LiveField = 'idleTimeoutMs' | 'probeTimeoutMs' | 'defaultBackend' | 'allowUnverifiedBackends' | 'allowChatJobWait' | 'roles' | 'workflow'
+type LiveConfig = Omit<Config, LiveField> & {
+  [K in LiveField]-?: { get(): K extends 'probeTimeoutMs' | 'defaultBackend' ? Config[K] : NonNullable<Config[K]> }
+}
 
 export const Config: z<Config, LiveConfig> = z.object({
   providerName: z.string().default('acp-resume'),
@@ -212,7 +216,7 @@ export const Config: z<Config, LiveConfig> = z.object({
   env: z.dict(z.string()).default({}),
   disposeEofGraceMs: z.number().default(DEFAULT_DISPOSE_EOF_GRACE_MS),
   disposeGraceMs: z.number().default(DEFAULT_DISPOSE_GRACE_MS),
-  idleTimeoutMs: z.number().default(600_000),
+  idleTimeoutMs: z.number().max(MAX_TIMER_DELAY_MS).default(600_000).volatile(),
   probeTimeoutMs: z.number().min(1).max(MAX_TIMER_DELAY_MS).step(1).volatile(),
   registryPath: z.string().default(''),
   backends: z.dict(z.object({
@@ -228,14 +232,14 @@ export const Config: z<Config, LiveConfig> = z.object({
     approvalPolicy: z.union(['never', 'untrusted', 'on-request', 'on-failure'] as const),
     description: z.string(),
   })),
-  defaultBackend: z.string(),
+  defaultBackend: z.string().volatile(),
   discoverBackends: z.boolean().default(true),
-  allowUnverifiedBackends: z.boolean().default(false),
+  allowUnverifiedBackends: z.boolean().default(false).volatile(),
   toolPrefix: z.string().default('acp_chat_'),
   enableChatTools: z.boolean().default(true),
-  allowChatJobWait: z.boolean().default(false),
-  roles: z.boolean().default(true),
-  workflow: z.boolean().default(false),
+  allowChatJobWait: z.boolean().default(false).volatile(),
+  roles: z.boolean().default(true).volatile(),
+  workflow: z.boolean().default(false).volatile(),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */
@@ -245,7 +249,7 @@ function assertPositiveFinite(name: string, value: number): void {
   }
 }
 
-type ResolvedConfig = Required<Omit<LiveConfig, 'probeTimeoutMs'>> & Pick<LiveConfig, 'probeTimeoutMs'>
+type ResolvedConfig = Required<Omit<Config, LiveField>> & Pick<LiveConfig, LiveField>
 
 /**
  * The ACP provider. Advertises NO start-time capabilities: an out-of-process
@@ -442,28 +446,43 @@ export function apply(ctx: Context, config: LiveConfig): void {
   const resolved = config as ResolvedConfig
   assertPositiveFinite('disposeEofGraceMs', resolved.disposeEofGraceMs)
   assertPositiveFinite('disposeGraceMs', resolved.disposeGraceMs)
-  assertPositiveFinite('idleTimeoutMs', resolved.idleTimeoutMs)
-  const budget = resolved.probeTimeoutMs?.get()
+  assertPositiveFinite('idleTimeoutMs', resolved.idleTimeoutMs.get())
+  const budget = config.probeTimeoutMs.get()
   if (budget !== undefined) assertPositiveFinite('probeTimeoutMs', budget)
   if (resolved.registryPath !== '' && !isAbsolute(resolved.registryPath)) {
     throw new Error(`acp-resume: registryPath must be an absolute path, got ${JSON.stringify(resolved.registryPath)}`)
   }
   // D33: the workflow engine sends to roles; without roles it has nothing to run on.
-  if (resolved.workflow && !resolved.roles) {
-    throw new Error('acp-resume: workflow: true requires roles: true; the workflow engine dispatches to roles. Set roles: true, or set workflow: false')
+  if (resolved.workflow.get() && !resolved.roles.get()) {
+    throw new Error(WORKFLOW_REQUIRES_ROLES)
   }
   // The connection applies each selected backend's policy. Always supplying the
   // bridge lets a named `permission: ask` backend ask while the default rejects.
   const permissionResolverFor = (agent: Agent | undefined): PermissionRequestResolver | undefined =>
     userQuestionPermissionResolver(ctx.get('userQuestions') as UserQuestionService | undefined, agent)
   const backends = backendSpecs(ctx, resolved)
-  if (resolved.enableChatTools && resolved.defaultBackend !== undefined && !backends.has(resolved.defaultBackend)) {
-    throw new Error(`acp-resume: defaultBackend must name an available backend definition or default`)
+  function validateDefault(candidate: ResolvedConfig, choices: ReadonlyMap<string, BackendSpec>) {
+    const selected = candidate.defaultBackend.get()
+    if (candidate.enableChatTools && selected !== undefined && !choices.has(selected)) {
+      throw new Error('acp-resume: defaultBackend must name an available backend definition or default')
+    }
   }
+  validateDefault(resolved, backends)
+  // ConfigEditor validates before persisting. Ordinary edits can change the candidate backend set too.
+  ctx.on('internal/config', (fiber, next) => {
+    const candidate = next()
+    if (fiber === ctx.fiber) {
+      const live = candidate as ResolvedConfig
+      assertPositiveFinite('idleTimeoutMs', live.idleTimeoutMs.get())
+      if (live.workflow.get() && !live.roles.get()) throw new Error(WORKFLOW_REQUIRES_ROLES)
+      validateDefault(live, backendSpecs(ctx, live))
+    }
+    return candidate
+  }, { prepend: true })
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
   new AcpResumeInfoService(ctx, {
     chatToolsEnabled: resolved.enableChatTools,
-    workflowEnabled: resolved.workflow,
+    get workflowEnabled() { return resolved.workflow.get() },
     startToolName: `${resolved.toolPrefix}start`,
   })
   if (!resolved.enableChatTools) return
@@ -478,15 +497,21 @@ export function apply(ctx: Context, config: LiveConfig): void {
   let usage: UsageService | undefined
   // A configured Kiro command remains the default unless DSH cannot resolve it.
   const allowMissingKiroFallback = resolved.discoverBackends && commandKind(resolved.command) === 'kiro-cli'
-  const preferred = resolved.defaultBackend ?? (allowMissingKiroFallback ? undefined : DEFAULT_BACKEND)
+  const preferred = () => resolved.defaultBackend.get() ?? (allowMissingKiroFallback ? undefined : DEFAULT_BACKEND)
   // Plugin-fiber teardown awaits this promise: in-flight turns are cancelled
   // and every live chat process released; the registry file survives (D14).
   ctx.effect(() => () => pool?.disposeAll())
+  let refreshTools: (() => Promise<void>) | undefined
+  ctx.on('loader/volatile-update', paths => {
+    if (paths.some(([field]) => ['roles', 'workflow', 'allowChatJobWait', 'defaultBackend'].includes(field))) {
+      void refreshTools?.().catch(error => ctx.logger.warn('ACP tool registration failed: %o', error))
+    }
+  })
   ctx.inject(['subprocess'], diagnostics => {
     const readiness = new BackendReadinessService({
-      candidates: readinessCandidates(backends, resolved), preferred,
-      allowUnverifiedBackends: resolved.allowUnverifiedBackends, host: diagnostics.subprocess,
-      get timeoutMs() { return resolved.probeTimeoutMs?.get() },
+      candidates: readinessCandidates(backends, resolved), get preferred() { return preferred() },
+      get allowUnverifiedBackends() { return resolved.allowUnverifiedBackends.get() }, host: diagnostics.subprocess,
+      get timeoutMs() { return config.probeTimeoutMs.get() },
       onWarn: message => { ctx.logger.warn(message) },
       verify: (candidate, executable, signal) => {
         const spec = backends.get(candidate.id)!
@@ -501,50 +526,56 @@ export function apply(ctx: Context, config: LiveConfig): void {
         specBase: backends.get(DEFAULT_BACKEND)!.specBase,
         backends,
         registryPath,
-        idleTimeoutMs: resolved.idleTimeoutMs,
+        get idleTimeoutMs() { return resolved.idleTimeoutMs.get() },
         onWarn: message => { ctx.logger.warn(message) },
         dispatch: readiness,
       })
       // Registered in the tools scope: the tools are revoked when the service goes away.
       const chatPool = pool
-      // D33: `roles` decides role support; `workflow` only adds templates (acp_workflow) on top of it.
-      const roles: RoleSupport | undefined = resolved.roles
-        ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) }, templates: resolved.workflow }
-        : undefined
-      const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
-      const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
-        false, preferred, allowMissingKiroFallback && preferred === undefined)
-      // D32/D33: the team list exists with roles; with roles and workflow off the tool surface is unchanged.
-      for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
-        scope.effect(() => scope.tools.register(tool))
-      }
-      if (roles !== undefined) {
-        scope.inject(['systemPrompt', 'agentPresets'], promptScope => registerTeamPrompt(promptScope, teamListName(resolved.toolPrefix)))
-      }
       usage ??= new UsageService(chatPool, undefined, undefined, () => new Set(readiness.snapshot().backends.filter(row => row.readiness === 'ready').map(row => row.id)))
       if (Object.values(resolved.backends ?? {}).some(backend => backend.protocol === 'codex')) {
         const usageTool = chatUsageTool(usage)
         scope.effect(() => scope.tools.register(usageTool))
       }
-      // Only changes to the jobs service affect send/workflow registration, never readiness.
-      let unregister: (() => void) | undefined
-      let registeredJobs: ChatJobsFace | undefined
-      const registerSend = (jobs?: ChatJobsFace): void => {
-        if (unregister !== undefined && registeredJobs === jobs) return
-        unregister?.()
-        registeredJobs = jobs
-        const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles, resolved.allowChatJobWait),
-          ...(roles === undefined || !resolved.workflow ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
-        const revokers = definitions.map(tool => scope.tools.register(tool))
-        unregister = () => { for (const revoke of revokers) revoke() }
-      }
-      scope.effect(() => { registerSend(scope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
-      scope.inject(['jobs'], (jobsScope) => {
-        registerSend(jobsScope.jobs)
-        if (!resolved.allowChatJobWait) {
-          jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
+      const toolsFiber = scope.plugin((toolScope: Context) => {
+        // D33: `roles` decides role support; `workflow` only adds templates (acp_workflow) on top of it.
+        const roles: RoleSupport | undefined = resolved.roles.get()
+          ? { workspaceDirFor: agent => sessionWorkingDirectory(ctx, agent), onWarn: (message) => { ctx.logger.warn(message) }, templates: resolved.workflow.get() }
+          : undefined
+        const backendChoices = [...backends.values()].map(backend => ({ name: backend.name, description: backend.description }))
+        const [start, list, close, steer] = chatStaticTools(chatPool, resolved.toolPrefix, backendChoices, roles,
+          false, preferred(), allowMissingKiroFallback && preferred() === undefined)
+        // D32/D33: the team list exists with roles; with roles and workflow off the tool surface is unchanged.
+        for (const tool of [start, list, close, steer, backendStatusTool(readiness, resolved.toolPrefix), ...(roles === undefined ? [] : [teamListTool(chatPool, roles, resolved.toolPrefix)])]) {
+          toolScope.effect(() => toolScope.tools.register(tool))
         }
-        jobsScope.effect(() => () => { if (scope.fiber.state === FIBER_ACTIVE) registerSend() })
+        if (roles !== undefined) {
+          toolScope.inject(['systemPrompt', 'agentPresets'], promptScope => registerTeamPrompt(promptScope, teamListName(resolved.toolPrefix)))
+        }
+        // Only changes to the jobs service affect send/workflow registration, never readiness.
+        let unregister: (() => void) | undefined
+        let registeredJobs: ChatJobsFace | undefined
+        const registerSend = (jobs?: ChatJobsFace): void => {
+          if (unregister !== undefined && registeredJobs === jobs) return
+          unregister?.()
+          registeredJobs = jobs
+          const definitions = [chatSendTool(chatPool, resolved.toolPrefix, jobs, permissionResolverFor, roles, resolved.allowChatJobWait.get()),
+            ...(roles === undefined || !resolved.workflow.get() ? [] : [chatWorkflowTool(chatPool, roles, jobs, permissionResolverFor)])]
+          const revokers = definitions.map(tool => toolScope.tools.register(tool))
+          unregister = () => { for (const revoke of revokers) revoke() }
+        }
+        toolScope.effect(() => { registerSend(toolScope.get('jobs') as ChatJobsFace | undefined); return () => unregister?.() })
+        toolScope.inject(['jobs'], (jobsScope) => {
+          registerSend(jobsScope.jobs)
+          if (!resolved.allowChatJobWait.get()) {
+            jobsScope.on('tools/pre-execute', async (exec, next) => decideJobWait(jobsScope.jobs, exec) ?? next())
+          }
+          jobsScope.effect(() => () => { if (toolScope.fiber.state === FIBER_ACTIVE) registerSend() })
+        })
+      })
+      scope.effect(() => {
+        refreshTools = () => toolsFiber.restart()
+        return () => { refreshTools = undefined }
       })
       new AcpResumePanelService(scope, pool, usage, readiness)
       if (!checkedAtStartup) {

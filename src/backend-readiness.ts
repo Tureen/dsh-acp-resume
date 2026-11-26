@@ -148,10 +148,18 @@ export class BackendReadinessService implements BackendStatusService {
 
   snapshot(): BackendStatusSnapshot {
     // Missing discovered CLIs still explain what is supported and how to prepare it.
-    const backends = this.rows
+    const backends = this.rows.map(row => this.admittedRow(row))
     const defaultBackend = this.options.preferred ?? this.automaticDefault()
     const dispatchEnabled = backends.some(row => row.readiness === 'ready' || this.canStart(row))
     return { backends, ...(defaultBackend === undefined ? {} : { defaultBackend }), checking: this.active !== undefined, dispatchEnabled }
+  }
+
+  /** Revoking the opt-in also gates cached successful out-of-range probes. */
+  private admittedRow(row: BackendStatus): BackendStatus {
+    if (row.automatic && row.compatibility === 'unverified-version' && row.readiness === 'ready' && !this.options.allowUnverifiedBackends) {
+      return { ...row, readiness: 'unverified', reason: 'unsupported-version' }
+    }
+    return row
   }
 
   check(): Promise<BackendStatusSnapshot> {
@@ -264,7 +272,7 @@ export class BackendReadinessService implements BackendStatusService {
     if (candidate === undefined) throw new Error(`acp-resume: selected backend is not available: ${explicit}`)
     if (candidate.configured) return candidate.id
     const pick = (): string => {
-      const row = this.rows.find(item => item.id === explicit)!
+      const row = this.admittedRow(this.rows.find(item => item.id === explicit)!)
       if (row.readiness === 'ready') return row.id
       throw new Error(`acp-resume: cannot dispatch: ${describeBackendStatus(row)}`)
     }

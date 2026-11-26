@@ -1,5 +1,7 @@
 # 配置 Dispatcher 的工具和调度方式
 
+右侧栏 → ACP 会话 → 设置可改 `dispatcherTools` 六项和 `dispatcherPrompt` 两项，直接保存到同一份 profile。新绑定的 Agent 使用更新后的工具与 persona，已绑定的 Agent 完成原任务时仍持有原版本。需要保留 YAML 注释时手改 profile。
+
 标准模式已经能用全局 ACP 工具，适合边执行边派工。新会话选 ACP Dispatcher 后，主 Agent 负责分配、转述和汇总，外部 Worker 执行任务。主 Agent 的工具选择对 Worker 的命令、权限和沙箱没有覆盖作用。
 
 编辑 profile 顶层 acp-dispatcher-settings 行，其 name 为 dsh-acp-resume/dispatcher-preset。dispatcherTools 与 dispatcherPrompt 同在该行 config 下。重启 DSH 后在新会话选择模式；运行中若只重载声明，已有绑定仍持有旧组合。模板见[完整覆盖](../templates/profile-override.yml)。

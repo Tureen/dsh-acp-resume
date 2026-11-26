@@ -15,6 +15,8 @@ description: 用户询问 dsh-acp-resume 怎么配置、怎么派工和续聊、
 
 ## 配置速查
 
+右侧栏 → ACP 会话 → 设置可即时保存默认后端、角色与工作流、等待与未验证版本开关、空闲与探测超时，以及 Dispatcher 工具和规则。其余配置仍需改 profile 并重启 DSH。
+
 - 在 `~/.dsh/profiles/<name>/cordis.patch.yml` 顶层写 `- id:`。覆盖主行 `subagent-acp-resume` 时，整个 `config` 会替换，须保留顶层 `command` 和仍需使用的参数。
 - 独立行 `acp-dispatcher-settings` 的 `config.dispatcherTools` 有六项。默认 `readOnlyFs: false`；`web: true`、`present: true`、`todo: true`、`askUser: true`、`compaction: true`。开启只读文件也开启 skill 加载。
 - 同一行的 `config.dispatcherPrompt.extraRules` 默认空，非空文字在自带规则后追加；`overrideRules: true` 需要非空文字，只替换调度流程，保留身份和工具指引。手改 profile 后重启 DSH，在新会话选模式。

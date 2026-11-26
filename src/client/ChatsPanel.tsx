@@ -27,6 +27,7 @@
 import { useEffect, useId, useState, useSyncExternalStore, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import { Button, Modal, StateDot, Tag, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { BackendStatus } from '../backend-status.ts'
+import { ProfileSettings } from './ProfileSettings.tsx'
 import { ChatSettings } from './ChatSettings.tsx'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
@@ -597,8 +598,9 @@ export function ChatsPanel(props: ChatsPanelProps): ReactNode {
   </PanelFeatureGate>
 }
 
-function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, backendStatus, workflowsFor, config, refresh, close, purge, t }:
+function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, profileForms, features, backendStatus, workflowsFor, config, refresh, close, purge, t }:
   ChatsPanelProps & { config?: PanelFeatures }): ReactNode {
+  const [showSettings, setShowSettings] = useState(false)
   const snapshot = useChats(s => s)
   const backendStore = backendStatus ?? NO_BACKEND_STATUS
   const backendView = useSyncExternalStore(backendStore.subscribe, backendStore.getSnapshot)
@@ -658,9 +660,13 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, back
       <div style={styles.header}>
         <h2 style={styles.heading}>{t('title')}</h2>
         <div style={styles.controls}>
+          {profileForms && <button type="button" aria-label={t('profileSettings')} title={t('profileSettings')} aria-expanded={showSettings}
+            onClick={() => setShowSettings(!showSettings)}>⚙</button>}
           <Button size="sm" variant="ghost" onClick={() => { refresh() }}>{t('refresh')}</Button>
         </div>
       </div>
+      {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => b.id)}
+        t={t} onSaved={path => { if (path === 'workflow') void features.refresh() }} />}
       {backendStatus === undefined || backendView === undefined ? null : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} t={t} />}
       <UsageLines usage={snapshot.usage} t={t} />
       {snapshot.status === 'error' && snapshot.error !== undefined

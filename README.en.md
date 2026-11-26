@@ -44,9 +44,12 @@ The bundle includes the **ACP Resume Docs** skill (`acp-resume-docs`). In standa
 
 With `discoverBackends` on by default, the plugin checks CLIs on DSH’s `PATH` and at configured paths against the [published version ranges](docs/backend-compatibility.md), then verifies eligible built-in backends. Checks do not create a session or send a prompt; the CLI itself may access the network. Open **Right sidebar → ACP chats** and expand **Backend status** to see versions, readiness, and failure reasons. After a CLI update, sign-in, or default-model change, use **Recheck backends** on the same row without expanding it or restarting DSH. This does not delete chats, sign you out, or change settings.
 
-| Backend detection setting (main plugin `config`) | Default | When it applies |
+| Settings editable in the sidebar | Profile fields | Scope |
 | --- | --- | --- |
-| `probeTimeoutMs` | 15000 ms for Codex, 5000 ms for other ACP backends | An integer from 1 to 2147483647 overrides the budget for each backend. A live DSH settings update takes effect on the next check. Active chats continue. |
+| Backend check budget | `probeTimeoutMs` | 15000 ms for Codex, 5000 ms for other ACP backends. A whole number from 1 to 2147483647 overrides the budget for every backend from the next check. |
+| Routing and tool access | `defaultBackend`, `roles`, `workflow`, `allowChatJobWait`, `allowUnverifiedBackends` | Routing applies to new chats. Role tools, workflow registration and wait policy update in the running host. Recheck after enabling unverified versions. |
+| Idle release delay | `idleTimeoutMs` | Applies the next time an idle timer starts. An existing timer keeps its deadline. |
+| ACP Dispatcher | Six `dispatcherTools` switches and both `dispatcherPrompt` fields | Newly bound agents receive the new tools and instructions. |
 
 ### Use a single backend
 
@@ -120,6 +123,7 @@ For the first request, the model opens a chat with `acp_chat_start` and passes t
 ### Follow a task in the sidebar
 
 - **Check the model and reasoning effort.** Expand **Backend status** to see Codex defaults reported by a session-free check, or the most recent report and timestamp from an active Kiro or agy chat. Differences from the plugin configuration are labeled, and missing fields show “Not reported.”
+- **Profile settings.** Open **Right sidebar → ACP chats → Settings** to edit live fields from both plugin entries. Switches and lists save on selection. Numbers and multiline text save when you leave the field. The first save asks for confirmation because the DSH configuration editor rebuilds that entry’s `config` node. It may remove comments and reformat YAML while preserving other parsed values. Edit the profile by hand to retain its comments.
 - **Change one chat.** Expand **Settings for this chat** on an idle Kiro or agy row. Select a model, then choose from its reported effort levels. After release, send a message to reconnect with the configured settings. For Codex, change the model in backend configuration until per-chat switching is available.
 - **Track progress.** The list shows subagent chats created in the current DSH session. A spinner and elapsed time mark a turn in progress. A green dot means the latest turn completed normally, red signals a turn or reconnection error, and amber means the agent started a fresh session. A solid gray dot marks an idle process and a hollow gray dot marks a released one. Open a chat to read its questions, answers, and reconnection history.
 - **Release or delete a chat.** Releasing the process keeps the chat record so the next message can reconnect. If a turn is running, the panel asks for confirmation because releasing the process stops that turn. Deleting the chat removes both its local record and its turn log.

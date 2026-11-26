@@ -233,6 +233,7 @@ export interface ChatSettingsActions {
 }
 
 export interface ChatsPanelInjected {
+  readonly profileForms?: () => import('./ProfileSettings.tsx').ProfileForms | undefined
   readonly settings?: ChatSettingsActions
   readonly features: FeatureStore
   readonly hooks: { readonly chats: Observable<ChatsSnapshot> }

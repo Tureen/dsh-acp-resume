@@ -67,7 +67,7 @@ it('opens the four read-only rows together and warns when only the deprecated sw
   const ids = golden.plugins.map((row: { id: string }) => row.id)
   ids.splice(ids.indexOf('present'), 0, 'tool-fs', 'tool-fs-search', 'skill-filesystem', 'tool-skill')
   const enabled = dispatcher.Config({ dispatcherTools: { readOnlyFs: true, skill: false } })
-  expect(dispatcher.buildDispatcherPreset(enabled.dispatcherTools).plugins.map(row => row.id)).toEqual(ids)
+  expect(dispatcher.buildDispatcherPreset(dispatcher.dispatcherValues(enabled).tools).plugins.map(row => row.id)).toEqual(ids)
   const warnings: string[] = []
   ctx.logger.exporter({ export(m) { if (m.type === 'warn') warnings.push(...m.args.map(String)) } })
   await ctx.loader.root.update([{ id: 'settings', name: 'dsh-acp-resume/dispatcher-preset', config: { dispatcherTools: { skill: true } } }])
@@ -112,7 +112,8 @@ it('parses each copyable profile as top-level row overrides with complete schema
         expect(row.id).toBe('acp-dispatcher-settings')
         expect(row.name).toBe('dsh-acp-resume/dispatcher-preset')
         const config = dispatcher.Config(row.config)
-        expect(dispatcher.buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt).id).toBe(golden.id)
+        const values = dispatcher.dispatcherValues(config)
+        expect(dispatcher.buildDispatcherPreset(values.tools, values.prompt).id).toBe(golden.id)
       }
     }
   }

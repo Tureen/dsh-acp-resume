@@ -6,6 +6,8 @@
 
 | 原文 / 错误码 | 含义 | 怎么改 |
 |---|---|---|
+| 保存后 profile 里的注释不见了或格式变了 | 官方配置编辑器重建了该行的 config 节点。 | 用 YAML 解析对比：除目标字段外其他值保持不变。要保留注释，请手改 profile。 |
+| 保存失败,已重新读取当前设置 | 官方表单拒绝本次保存并重新读取快照。 | 以显示的当前值为准，核对后重新编辑。返回值无法区分冲突与其他拒绝。 |
 | DUPLICATE_PROVIDER / a subagent provider named "<name>" is already registered | provider 重名 | 移除重复 insert 或 preset 子项，用 id 覆盖现有行。 |
 | patch: entry "preset-acp-dispatcher" not found | 旧覆盖跳过 | 改用 acp-dispatcher-settings，见[迁移说明](dispatcher.md)。 |
 | Duplicate agent preset: acp-dispatcher | 声明重名 | 只启用一处声明。 |

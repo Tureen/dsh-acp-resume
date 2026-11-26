@@ -17,12 +17,13 @@ import { fileURLToPath } from 'node:url'
 
 const bundle = loadOverlayPatches('dsh', fileURLToPath(new URL('../cordis.patch.yml', import.meta.url)))
 const declarationId = 'acp-dispatcher-settings'
-const defaultTools = dispatcher.Config({}).dispatcherTools
-type Tools = typeof defaultTools
+const defaultTools = dispatcher.dispatcherValues(dispatcher.Config({})).tools
+type Tools = typeof defaultTools & { skill?: boolean }
 
-function preset(changes: Partial<Tools>, prompt?: Partial<ReturnType<typeof dispatcher.Config>['dispatcherPrompt']>) {
+function preset(changes: Partial<Tools>, prompt?: Partial<ReturnType<typeof dispatcher.dispatcherValues>['prompt']>) {
   const config = dispatcher.Config({ dispatcherTools: changes, dispatcherPrompt: prompt })
-  return dispatcher.buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt)
+  const values = dispatcher.dispatcherValues(config)
+  return dispatcher.buildDispatcherPreset(values.tools, values.prompt)
 }
 
 function prefix(definition: PresetDefinition): string {
@@ -71,7 +72,7 @@ it('replaces dispatch procedure, target selection, shared writes and synthesis, 
 it('rejects an override without rules at plugin activation, before registration', async () => {
   const { ctx } = await host()
   for (const extraRules of [undefined, '', ' \n\t ']) {
-    const config = dispatcher.Config({ dispatcherPrompt: { overrideRules: true, extraRules } })
+    const config = { dispatcherPrompt: { overrideRules: true, extraRules } }
     await expect(Promise.resolve(ctx.plugin(dispatcher, config))).rejects.toThrow('dispatcherPrompt.overrideRules requires nonempty extraRules')
   }
   expect(await ctx.agentPresets.list()).toEqual([])

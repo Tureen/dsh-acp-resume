@@ -15,6 +15,7 @@ dsh-acp-resume 是 DeepSeek Harness 的可续聊 ACP 子代理后端:`@deepseek-
 ```
 src/
   index.ts       插件入口:Config(全字段见 README「配置」;`roles` 默认 true、`workflow` 默认 false,`roles: false` + `workflow: true` 加载即报错,D33)+ provider 与工具注册；按命令识别 ACP 强度项并校验档位(D40)
+  settings-rules.ts D45:共享前置校验文案。主 Config 的 defaultBackend、roles、workflow、allowChatJobWait、allowUnverifiedBackends、idleTimeoutMs、probeTimeoutMs 为 volatile。工具注册子作用域独立于 ACP 池。
   backend-compatibility.ts D31:发布的 CLI 版本范围；`pnpm check:compatibility` 校验生成文档
   backend-status.ts / backend-readiness.ts / backend-verification.ts D31/D41/D43:子作用域在每轮检测读取 volatile 超时预算；区分超时与握手失败。共享状态、启动版本探测、无会话验证与派工准入；模型与强度的探测报告独立于派工选择
   command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
@@ -38,6 +39,7 @@ src/
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
   panel.ts       D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
 - `src/client/features-source.ts` / `PanelFeatureGate.tsx`（D35）：列表、详情正文和标题共享连接级能力查询，关闭时均不订阅业务数据源。工作流关闭时 `workflows-source.ts` 只在区块打开或手动刷新时读取历史。
+- `src/client/ProfileSettings.tsx`（D45）：两个官方 ConfigForm、逐字段保存和首次写回确认。
 - `src/client/ChatSettings.tsx`（D44）：展开时读取单会话选项，改完刷新；旧宿主签名不符提示重启。
 - `src/client/` 后端卡片标示模型与强度的报告来源、配置差异和未报告项(D41)。详情与列表：ChatsPanel 的运行中徽标与持续时长、ChatDetail 的运行中合成条目及本地全文展开；数据只跟随既有数据源轮询，唯一的本地时钟是 ChatsPanel 在途行的 1 秒计时(只在有在途轮时挂载，只重绘该时长)。
   engine.ts      --agent-engine 旗标:追加(用户已写则不追加)与指纹比较时剔除(D19)
@@ -55,6 +57,7 @@ tests/
   connection-codex.spec.ts Codex 连接层(D25):开/恢复、流式、停止原因、steer/取消、审批(含 ask 桥)、进程失败
   pool.spec.ts           池生命周期
   dispatcher-preset.spec.ts D37:默认定义深比较、工具勾选、旧 profile 警告、已绑定 Agent 的版本隔离、真实 skill 发现/加载与自定义调度提示组装
+  live-settings.spec.ts / profile-settings.spec.tsx D45：真实临时 profile 逐字段保存、在途轮和 Agent 隔离；侧栏表单和写回确认。
   skill-docs.spec.ts     D39:标准模式和 Dispatcher 文档发现、加载、引用文件和可用配置范例
   team-prompt.spec.ts    D36:用 rc.5 Agent、preset 注册表和工具准入组装实际系统提示
   team.spec.ts           D27:工作区配置读取、花名册、角色自动供给与工具 role 参数
@@ -83,7 +86,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 671 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 91 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 29 + `client.spec.tsx` 121 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 691 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 91 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 29 + `client.spec.tsx` 121 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
@@ -92,6 +95,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 - ESM(`"type": "module"`)。相对导入写 `.js` 后缀(NodeNext);跨包引用一律用包名。TypeScript `strict` + `noImplicitAny` + `verbatimModuleSyntax` + `isolatedModules`。
 - **仅命名导出**:默认导出会丢 loader 元数据(index.ts 头注引官方 postmortem 0001)。
 - schemastery `~3.19.0`（D42，2026-11-26 实测）：3.18.5 与 3.19.0 均无 `.optional()`。可选字段直接用 `z.string()`，缺省时结果中没有该键。必填用 `.required()`，缺省值用 `.default(...)`。主插件与 Dispatcher 的对象 schema 都保留未知键。需要热更新的字段可用 `.default(...).volatile()`，解析后的值通过 `.get()` 读取。
+- 新增 Config 字段时先判断重载是否会释放池。能安全实时应用时，用 volatile 引用并将需要重注册的消费者放在独立子作用域；否则保留普通字段。
 - 模块头 JSDoc:一段话讲清契约与边界,`@module` 标识;公共导出与 Config 字段补简明 JSDoc。
 - 注释直接、具体:不重述代码、不写推理过程;命令、路径、报错保留原文。
 - 凭据走 Config `env` 显式叠加,父进程环境先经官方清洗逻辑;不在测试、夹具、文档写入真实 key。
