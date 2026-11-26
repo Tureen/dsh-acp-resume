@@ -30,6 +30,8 @@ dsh plugin --profile <name> add dsh-acp-resume
 
 > ⚠️ **不要从 GitHub 地址安装。** 仓库不含构建产物，也没有安装时编译的 `prepare` 脚本，直接安装会因缺少 `lib/index.js` 加载失败。
 
+插件随包提供 **ACP Resume Docs** 使用文档（`acp-resume-docs`）。在标准模式询问插件配置或派工报错时，模型可自动查阅这份 skill；在 Dispatcher 中开启 `readOnlyFs` 即可加载并阅读其参考页。
+
 ## 选择后端
 
 <a id="配置"></a><a id="后端支持等级"></a>
@@ -52,6 +54,9 @@ dsh plugin --profile <name> add dsh-acp-resume
 - id: subagent-acp-resume
   name: dsh-acp-resume
   config:
+    command: kiro-cli
+    args: [acp]
+    permission: allow
     backends:
       agy:
         command: agy
@@ -120,7 +125,7 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
 
 **选择主 Agent 可用的工具。** 编辑 `~/.dsh/profiles/<name>/cordis.patch.yml`，其中 `<name>` 与安装时的 `--profile <name>` 相同。下面两个工具配置示例是同一条覆盖的两种写法，选用其中一种即可。它位于文件**顶层**，与 `- id: subagent-acp-resume` 并列：`- id:` 顶格，`name:` 和 `config:` 缩进两格，`dispatcherTools:` 缩进四格，各开关缩进六格。
 
-在默认工具组合上增加文件核对，允许主 Agent 用 `read`、`grep` 和 `glob` 检查 Worker 的结果：
+在默认组合上开启只读文件，让主 Agent 核对文件并加载 skill：
 
 ```yaml
 - id: acp-dispatcher-settings
@@ -130,7 +135,7 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
       readOnlyFs: true
 ```
 
-如果还要加载 skill 并关闭任务清单，把这几项写在同一个 `dispatcherTools` 下。未写的字段使用默认值，无需列全七项：
+如果还要关闭任务清单，把这两项写在同一个 `dispatcherTools` 下。未写的字段使用默认值，无需列全六项：
 
 ```yaml
 - id: acp-dispatcher-settings
@@ -138,23 +143,23 @@ Codex 的 `effort` 设置每轮推理强度，`sandbox` 可选 `read-only`（默
   config:
     dispatcherTools:
       readOnlyFs: true
-      skill: true
       todo: false
 ```
 
 | `dispatcherTools` 字段 | 默认值 | 控制的能力 |
 |---|---|---|
-| `readOnlyFs` | `false` | 读取、搜索文件。保持图片读取、写入、编辑、补丁关闭。 |
+| `readOnlyFs` | `false` | 读取、搜索文件，并发现和加载 skill。保持图片读取、写入、编辑、补丁关闭。 |
 | `web` | `true` | 轻量联网查证（含 fetch）。 |
 | `present` | `true` | 展示交付物。 |
 | `todo` | `true` | 维护任务清单。 |
 | `askUser` | `true` | 用工具向用户澄清问题。关闭后仍可在对话中提问。 |
-| `skill` | `false` | 让主 Agent 查看可用 skill 的说明，遇到匹配的任务时加载完整指引。说明会占用上下文，因此默认关闭。 |
 | `compaction` | `true` | 整组启用上下文压缩、手动压缩命令与工具结果裁剪。 |
+
+0.5.1 的 `dispatcherTools.skill` 已弃用。需要文件核对与技能读取时使用 `readOnlyFs: true`。
 
 在 profile 里改完 Dispatcher 配置后，需要重启 DSH 以重新读取配置。在新会话中选择 ACP Dispatcher，新绑定的 Agent 会使用新工具组合及对应的模式说明和 persona。如果仅在运行中的宿主内重载声明，当前进程中已绑定的 Agent 保留原组合，ACP 会话池也继续运行。
 
-这七项开关保留了纯派工的边界：主 Agent 通过 ACP 把执行工作交给 Worker。bash、文件写入与编辑、DSH 内置子代理委派工具都不在开关范围内；开放这些执行入口后，与标准模式的区别就只剩提示词约定。需要这些工具的配置可采用下文的完整自定义声明。
+这六项开关保留了纯派工的边界：主 Agent 通过 ACP 把执行工作交给 Worker。bash、文件写入与编辑、DSH 内置子代理委派工具都不在开关范围内；开放这些执行入口后，与标准模式的区别就只剩提示词约定。需要这些工具的配置可采用下文的完整自定义声明。
 
 **自定义调度规则。** 下面仍是 profile 的 `cordis.patch.yml` 顶层条目。如果已配置工具开关，将 `dispatcherPrompt` 写在同一条目的 `config` 下，与 `dispatcherTools` 并列。
 

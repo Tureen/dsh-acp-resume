@@ -86,6 +86,9 @@ These are top-level overrides in the profile's `cordis.patch.yml` while the bund
 - id: subagent-acp-resume
   name: 'dsh-acp-resume'
   config:
+    command: kiro-cli
+    args: [acp]
+    permission: allow
     backends:
       codex:
         protocol: codex
@@ -106,7 +109,7 @@ An optional session mode, "ACP Dispatcher": one session is a multi-worker workbe
 - **Good for**: parallel sub-tasks; cross-checking one question across backends; long-running work; keeping the main agent's context lean.
 - **Switching**: pick **ACP Dispatcher** in the mode menu of a new session. If you don't, nothing changes, and `acp_chat_*` stays available in the standard mode.
 
-Set `dispatcherTools` on the `acp-dispatcher-settings` row. Read-only file verification and `skill` default to off. Web lookups, deliverable presentation, task lists, clarification, and compaction default to on. With `skill: true`, the main agent sees skill descriptions and can load the full instructions when needed. If your profile overrode the old `preset-acp-dispatcher` row, migrate that override when upgrading. [Configuration and migration guide](../README.en.md#acp-dispatcher-mode)
+Set `dispatcherTools` on the `acp-dispatcher-settings` row. Read-only file access, including skill loading, defaults to off. Web lookups, deliverable presentation, task lists, clarification, and compaction default to on. Standard mode can look up the bundled acp-resume-docs skill. Enable `readOnlyFs` in Dispatcher to load it and read its references. If your profile overrode the old `preset-acp-dispatcher` row, migrate that override when upgrading. [Configuration and migration guide](../README.en.md#acp-dispatcher-mode)
 
 ## Known limitations
 

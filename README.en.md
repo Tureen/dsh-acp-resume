@@ -30,6 +30,8 @@ To upgrade, append `@<version>` to the package name. You can also pin a version 
 
 > ⚠️ **Do not install from a GitHub URL.** The repository omits compiled files and has no `prepare` script to build them at install time. DSH will fail to load the plugin because `lib/index.js` is missing.
 
+The bundle includes the **ACP Resume Docs** skill (`acp-resume-docs`). In standard mode the model can look it up automatically when you ask how to configure the plugin or troubleshoot dispatch. In Dispatcher, enable `readOnlyFs` to load skills and read their reference pages.
+
 ## Choose a backend
 
 <a id="configuration"></a><a id="backend-support-levels"></a>
@@ -52,6 +54,9 @@ Auto-discovered Antigravity runs `agy acp`, uses its CLI model settings, and den
 - id: subagent-acp-resume
   name: dsh-acp-resume
   config:
+    command: kiro-cli
+    args: [acp]
+    permission: allow
     backends:
       agy:
         command: agy
@@ -120,7 +125,7 @@ Enable the bundle, restart DSH, and select **ACP Dispatcher** from the **mode me
 
 **Choose the main agent’s tools.** Edit `~/.dsh/profiles/<name>/cordis.patch.yml`, using the same `<name>` you passed to `--profile <name>` at installation. The two tool configuration examples below are alternatives for the same override. Place it at the **top level**, alongside `- id: subagent-acp-resume`. Start `- id:` in the first column, indent `name:` and `config:` by two spaces, `dispatcherTools:` by four, and each switch by six.
 
-To add file verification to the default tool set, enable `read`, `grep`, and `glob` so the main agent can check worker results:
+To let the main agent verify files and load skill instructions, enable read-only file access:
 
 ```yaml
 - id: acp-dispatcher-settings
@@ -130,7 +135,7 @@ To add file verification to the default tool set, enable `read`, `grep`, and `gl
       readOnlyFs: true
 ```
 
-To also load skills and turn off the task list, put all three switches under the same `dispatcherTools` key. Omitted fields use their defaults, so you can leave out the other switches:
+To also turn off the task list, put both switches under the same `dispatcherTools` key. Omitted fields use their defaults, so you can leave out the other switches:
 
 ```yaml
 - id: acp-dispatcher-settings
@@ -138,23 +143,23 @@ To also load skills and turn off the task list, put all three switches under the
   config:
     dispatcherTools:
       readOnlyFs: true
-      skill: true
       todo: false
 ```
 
 | `dispatcherTools` field | Default | Capability |
 |---|---|---|
-| `readOnlyFs` | `false` | Read and search files. Image reads, writes, edits, and patches stay disabled. |
+| `readOnlyFs` | `false` | Read and search files, discover skills and load their instructions. Image reads, writes, edits, and patches stay disabled. |
 | `web` | `true` | Lightweight web lookups, including fetch. |
 | `present` | `true` | Present deliverables. |
 | `todo` | `true` | Maintain a task list. |
 | `askUser` | `true` | Ask for clarification with a tool. The agent can still ask in conversation when disabled. |
-| `skill` | `false` | Show the main agent descriptions of available skills and let it load the full instructions when a task matches. Off by default because the descriptions use context space. |
 | `compaction` | `true` | Enable context compaction, the compact command, and tool-result pruning together. |
+
+The old `dispatcherTools.skill` field from 0.5.1 is deprecated. Set `readOnlyFs: true` for both file verification and skill access.
 
 After editing the Dispatcher configuration in the profile, restart DSH so it reads the new configuration. Select ACP Dispatcher in a new session to bind an agent to the updated tool set and its matching description and persona. If only the declaration is reloaded within a running host, agents already bound in that process keep their previous tool set and the ACP pool keeps running.
 
-These seven switches preserve the Dispatcher’s role: the main agent delegates execution to workers through ACP. They exclude bash, file writes and edits, and DSH’s built-in subagent delegation tools. Enabling those execution paths would leave only the prompt to distinguish Dispatcher from standard mode. A profile that needs them can use the complete custom declaration described below.
+These six switches preserve the Dispatcher’s role: the main agent delegates execution to workers through ACP. They exclude bash, file writes and edits, and DSH’s built-in subagent delegation tools. Enabling those execution paths would leave only the prompt to distinguish Dispatcher from standard mode. A profile that needs them can use the complete custom declaration described below.
 
 **Customize dispatch rules.** This example is a top-level entry in the profile’s `cordis.patch.yml`. If you already have a tool override, put `dispatcherPrompt` beside `dispatcherTools` under the same entry’s `config`.
 

@@ -9,8 +9,11 @@ import z from '@deepseek-ai/schemastery'
 /** Host service required by this declaration. */
 export const inject = ['agentPresets']
 
-const defaults = { readOnlyFs: false, web: true, present: true, todo: true, askUser: true, skill: false, compaction: true }
-type DispatcherTools = typeof defaults
+const defaults = { readOnlyFs: false, web: true, present: true, todo: true, askUser: true, compaction: true }
+type DispatcherTools = typeof defaults & {
+  /** @deprecated Skill loading follows readOnlyFs. */
+  skill?: boolean
+}
 const promptDefaults = { extraRules: '', overrideRules: false }
 type DispatcherPrompt = typeof promptDefaults
 
@@ -19,12 +22,12 @@ type DispatcherPrompt = typeof promptDefaults
  */
 export const Config = z.object({
   dispatcherTools: z.object({
-    readOnlyFs: z.boolean().default(defaults.readOnlyFs).description('Read and search files to verify worker results.'),
+    readOnlyFs: z.boolean().default(defaults.readOnlyFs).description('Read and search files, discover skills, and load their instructions.'),
     web: z.boolean().default(defaults.web).description('Use web tools for lightweight fact-checking.'),
     present: z.boolean().default(defaults.present).description('Present deliverables.'),
     todo: z.boolean().default(defaults.todo).description('Maintain a task list.'),
     askUser: z.boolean().default(defaults.askUser).description('Use a tool to ask the user for clarification.'),
-    skill: z.boolean().default(defaults.skill).description('Include skill descriptions in the main agent’s context and let it load matching skills. Off by default to keep the prompt smaller.'),
+    skill: z.boolean().description('Deprecated since 0.6.0: use readOnlyFs for file verification and skill loading.'),
     compaction: z.boolean().default(defaults.compaction).description('Enable the isolated context compaction group.'),
   }).default(defaults),
   dispatcherPrompt: z.object({
@@ -54,12 +57,12 @@ When the target is unambiguous, proceed without asking. If several directories a
 
 function toolCopy(tools: DispatcherTools) {
   const description = ['纯派工模式:主 Agent 只做调度,ACP 会话做实际 Worker。']
-  description.push(tools.readOnlyFs ? '可用 read/grep/glob 核对结果，无 bash，不改文件。' : '无 bash/fs,')
+  description.push(tools.readOnlyFs ? '可用 read/grep/glob 核对结果并加载 skill，无 bash，不改文件。' : '无 bash/fs,')
   description.push(tools.web ? '轻量联网查询保留。' : '联网查询交给 Worker。')
   const lines: string[] = []
   if (tools.web) lines.push('For lightweight fact-checking use web tools directly; delegate full research tasks to workers.')
   lines.push(tools.readOnlyFs
-    ? 'Use read, grep, and glob to verify worker results. Delegate shell commands, file changes, and code analysis to workers.'
+    ? 'Use read, grep, and glob to verify worker results. Load a matching skill before acting on its instructions. Delegate shell commands, file changes, and code analysis to workers.'
     : 'You do not execute tasks directly — no bash, no file operations, no code analysis.')
   if (!tools.present) {
     description.push('交付物在对话中说明。')
@@ -70,10 +73,6 @@ function toolCopy(tools: DispatcherTools) {
     lines.push('Track outstanding tasks in the conversation.')
   }
   if (!tools.askUser) description.push('需要澄清时直接在对话中提问。')
-  if (tools.skill) {
-    description.push('可加载 skill。')
-    lines.push('When a task matches an available skill’s description, load that skill before acting.')
-  }
   if (!tools.compaction) {
     description.push('上下文压缩组已关闭。')
     lines.push('Keep worker summaries concise because the Dispatcher compaction group is disabled.')
@@ -115,14 +114,12 @@ export function buildDispatcherPreset(tools: DispatcherTools = defaults, prompt:
   if (tools.readOnlyFs) plugins.push(
     { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs', config: { read: true, readImage: false, write: false, edit: false, applyPatch: false } },
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
-  )
-  if (tools.present) plugins.push({ id: 'present', name: '@deepseek-ai/dsh-tool-present' })
-  if (tools.skill) plugins.push(
     { id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem', config: {
       customSkillDirs: [{ __jsExpr: "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')" }],
     } },
     { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
   )
+  if (tools.present) plugins.push({ id: 'present', name: '@deepseek-ai/dsh-tool-present' })
   if (tools.compaction) plugins.push({
     id: 'compaction', name: 'cordis:group', group: true, isolate: { compaction: true, toolResultPruner: true },
     config: [
@@ -137,5 +134,8 @@ export function buildDispatcherPreset(tools: DispatcherTools = defaults, prompt:
 
 /** Register the definition and let Cordis retire it on update or unload. */
 export async function* apply(ctx: Context, config: { dispatcherTools: DispatcherTools; dispatcherPrompt: DispatcherPrompt }) {
+  if (config.dispatcherTools.skill && !config.dispatcherTools.readOnlyFs) {
+    ctx.logger.warn('dispatcherTools.skill is deprecated and has no effect; set dispatcherTools.readOnlyFs: true to enable file reads and skill loading.')
+  }
   yield await ctx.agentPresets.register(buildDispatcherPreset(config.dispatcherTools, config.dispatcherPrompt))
 }

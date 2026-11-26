@@ -1,35 +1,21 @@
 /** D37: compare with the shipped D36 declaration and exercise rc.5 profile composition and preset revisions.
  * @module dsh-acp-resume/tests/dispatcher-preset
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { Context } from '@deepseek-ai/cordis'
-import Loader, { EntryTree, Group } from '@deepseek-ai/cordis-plugin-loader'
-import Registry, { type PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
+import type { PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { assembleContextFor } from '@deepseek-ai/dsh-agent'
-import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { auditStartupEntries, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
+import { auditStartupEntries, loadOverlayPatches, mountRootInclude } from '@deepseek-ai/dsh-app-boot'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import * as Persona from '@deepseek-ai/dsh-persona'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import SkillRegistry from '@deepseek-ai/dsh-skill'
-import * as SkillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
-import Subs from '@deepseek-ai/dsh-subagent'
-import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
-import * as FsTools from '@deepseek-ai/dsh-tool-fs'
-import * as FsSearch from '@deepseek-ai/dsh-tool-fs-search'
-import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
-import { expect, it, onTestFinished, vi } from 'vitest'
-import { parse } from 'yaml'
+import { expect, it } from 'vitest'
 import * as dispatcher from '../src/dispatcher-preset.ts'
-import * as acp from '../src/index.ts'
+import { dispatcherHost as host, golden } from './helpers/dispatcher-host.ts'
+import { fileURLToPath } from 'node:url'
 
-const golden = JSON.parse(readFileSync(new URL('./fixtures/dispatcher-preset-46978eb.json', import.meta.url), 'utf8'))
-const bundle = parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
+const bundle = loadOverlayPatches('dsh', fileURLToPath(new URL('../cordis.patch.yml', import.meta.url)))
 const declarationId = 'acp-dispatcher-settings'
 const defaultTools = dispatcher.Config({}).dispatcherTools
 type Tools = typeof defaultTools
@@ -44,7 +30,7 @@ function prefix(definition: PresetDefinition): string {
 }
 
 it('matches the reference definition including the intentional target-directory revision', () => {
-  expect(defaultTools).toEqual({ readOnlyFs: false, web: true, present: true, todo: true, askUser: true, skill: false, compaction: true })
+  expect(defaultTools).toEqual({ readOnlyFs: false, web: true, present: true, todo: true, askUser: true, compaction: true })
   expect(preset({})).toEqual(golden)
   expect(dispatcher.buildDispatcherPreset()).toEqual(golden)
 })
@@ -58,7 +44,7 @@ it('keeps the corrected built-in prefix byte-for-byte for omitted, blank and non
 const userRules = 'Assign one owner per deliverable.\nAsk for the evidence before closing the task.'
 
 it('appends trimmed user rules once after synthesis and preserves the selected tool guidance', () => {
-  const tools = { readOnlyFs: true, skill: true }
+  const tools = { readOnlyFs: true }
   const original = preset(tools)
   const configured = preset(tools, { extraRules: `\n${userRules}\n` })
   expect(prefix(configured)).toBe(prefix(original) + '\n\n' + userRules)
@@ -66,16 +52,15 @@ it('appends trimmed user rules once after synthesis and preserves the selected t
 })
 
 it('replaces dispatch procedure, target selection, shared writes and synthesis, retaining identity and tool guidance', () => {
-  const tools = { readOnlyFs: true, skill: true, present: false, todo: false, askUser: false, compaction: false }
+  const tools = { readOnlyFs: true, present: false, todo: false, askUser: false, compaction: false }
   const configured = preset(tools, { overrideRules: true, extraRules: userRules })
   expect(prefix(configured)).toBe([
     'You are a task dispatcher.',
     'When clarification is needed, ask in the conversation.',
     'For lightweight fact-checking use web tools directly; delegate full research tasks to workers.',
-    'Use read, grep, and glob to verify worker results. Delegate shell commands, file changes, and code analysis to workers.',
+    'Use read, grep, and glob to verify worker results. Load a matching skill before acting on its instructions. Delegate shell commands, file changes, and code analysis to workers.',
     'Report deliverables and their locations in the conversation.',
     'Track outstanding tasks in the conversation.',
-    'When a task matches an available skill’s description, load that skill before acting.',
     'Keep worker summaries concise because the Dispatcher compaction group is disabled.',
     '', userRules,
   ].join('\n'))
@@ -128,75 +113,23 @@ it('limits read-only file verification to the two allowlisted rows and keeps web
     { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
   ])
   expect(both.plugins.map(row => row.id)).toEqual([
-    'persona', 'agent-instructions', 'time-context', 'tool-jobs', 'tool-todo', 'tool-ask-user', 'tool-fs', 'tool-fs-search', 'present', 'compaction',
+    'persona', 'agent-instructions', 'time-context', 'tool-jobs', 'tool-todo', 'tool-ask-user', 'tool-fs', 'tool-fs-search', 'skill-filesystem', 'tool-skill', 'present', 'compaction',
   ])
-  expect(both.description).toContain('read/grep/glob 核对结果，无 bash，不改文件')
+  expect(both.description).toContain('read/grep/glob 核对结果并加载 skill，无 bash，不改文件')
   expect(both.description).toContain('联网查询交给 Worker')
   expect(prefix(both)).toContain('Use read, grep, and glob to verify worker results.')
   expect(prefix(both)).not.toMatch(/no file operations|use web tools directly/)
 })
 
-it('inserts only the skill provider and tool between present and compaction when enabled', () => {
-  expect(preset({ skill: false })).toEqual(golden)
-  const enabled = preset({ skill: true })
-  const ids = golden.plugins.map((row: { id: string }) => row.id)
-  ids.splice(ids.indexOf('present') + 1, 0, 'skill-filesystem', 'tool-skill')
-  expect(enabled.plugins.map(row => row.id)).toEqual(ids)
-  expect(enabled.description).toBe(golden.description + '可加载 skill。')
-  expect(prefix(enabled)).toContain('When a task matches an available skill’s description, load that skill before acting.')
-  expect(prefix(enabled)).not.toContain('dsh-doc')
+it('ignores the deprecated skill flag in both directions', () => {
+  expect(preset({ skill: true })).toEqual(golden)
+  expect(preset({ readOnlyFs: true, skill: false })).toEqual(preset({ readOnlyFs: true }))
 })
-
-async function host() {
-  const dir = mkdtempSync(join(tmpdir(), 'acp-dispatcher-'))
-  const ctx = new Context()
-  const originalImport = EntryTree.prototype.import
-  // The unrelated preset children need no CLI or account. Use real modules for the
-  // declaration, persona, file and skill tools, ACP provider and Cordis Include/group.
-  const passive = new Set(golden.plugins.flatMap((row: { group?: boolean; config?: { name: string }[]; name: string }) =>
-    row.group ? row.config!.map(child => child.name) : [row.name]))
-  const skillFilesystemApply = vi.fn(SkillFilesystem.apply)
-  const modules = new Map<string, unknown>([
-    ['dsh-acp-resume/dispatcher-preset', dispatcher], ['dsh-acp-resume', acp],
-    ['@deepseek-ai/dsh-persona', Persona], ['@deepseek-ai/dsh-tool-fs', FsTools], ['@deepseek-ai/dsh-tool-fs-search', FsSearch],
-    ['@deepseek-ai/dsh-skill-filesystem', { ...SkillFilesystem, apply: skillFilesystemApply }], ['@deepseek-ai/dsh-tool-skill', ToolSkill],
-  ])
-  const imports = vi.spyOn(EntryTree.prototype, 'import').mockImplementation(function (this: EntryTree, name, stack) {
-    if (modules.has(name)) return modules.get(name)
-    if (passive.has(name)) return { apply() {} }
-    return originalImport.call(this, name, stack)
-  })
-  onTestFinished(async () => {
-    try { await ctx.fiber.dispose() } finally {
-      imports.mockRestore()
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-  ctx.baseUrl = pathToFileURL(dir + '/').href
-  await ctx.plugin(Loader)
-  ctx.loader.builtins.group = Group
-  await mountAgentLoopTestDependencies(ctx, { workingDirectory: true })
-  await mountAgentLoopTestHarness(ctx)
-  await ctx.plugin(Subs)
-  await ctx.plugin(LocalSubprocess)
-  await ctx.plugin(Registry, { default: 'acp-dispatcher' })
-  const mainOverride = { id: 'subagent-acp-resume', config: { command: 'fixture-acp', discoverBackends: false, registryPath: join(dir, 'registry.json') } }
-  return { ctx, dir, mainOverride, skillFilesystemApply }
-}
 
 it('resolves the installed preset skills from the Loader baseUrl and loads dsh-doc through the Agent skill tool', async () => {
   const { ctx, dir, skillFilesystemApply } = await host()
-  // Give the temporary profile its own dependency resolution base and isolated skill homes.
   const presetDir = dirname(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-agent-preset/package.json'))
-  const packages = join(dir, 'node_modules', '@deepseek-ai')
-  mkdirSync(packages, { recursive: true })
-  symlinkSync(presetDir, join(packages, 'dsh-agent-preset'), 'junction')
-  vi.stubEnv('DSH_HOME', join(dir, 'dsh'))
-  vi.stubEnv('DSH_AGENTS_HOME', join(dir, 'agents'))
-  vi.stubEnv('DSH_BUNDLED_SKILL_DIR', undefined)
-  onTestFinished(() => { vi.unstubAllEnvs() })
-  await ctx.plugin(SkillRegistry)
-  await ctx.loader.root.update([{ id: declarationId, name: 'dsh-acp-resume/dispatcher-preset', config: { dispatcherTools: { skill: true } } }])
+  await ctx.loader.root.update([{ id: declarationId, name: 'dsh-acp-resume/dispatcher-preset', config: { dispatcherTools: { readOnlyFs: true } } }])
   await ctx.loader.await()
   const { agent } = await ctx.agents.create({ sessionId: SessionId('skills-enabled'), meta: { cwd: dir } })
   await ctx.agentPresets.select(agent, golden.id)
@@ -239,10 +172,10 @@ it('logs an orphaned old override and still mounts the migrated profile with one
   expect(ctx.tools.get('read', agent)).toBeUndefined()
 })
 
-it('reloads only the declaration; new Agents gain exactly glob/grep/read and an existing Agent keeps its tools', async () => {
+it('reloads only the declaration; new Agents gain exactly glob/grep/read and skill and an existing Agent keeps its tools', async () => {
   const { ctx, mainOverride } = await host()
-  const rows = bundle.flatMap((patch: { insert: object[] }) => patch.insert)
-  await ctx.loader.root.update(rows.map((row: { id: string }) => row.id === mainOverride.id ? { ...row, config: mainOverride.config } : row))
+  const rows = bundle.flatMap(patch => patch.insert ?? [])
+  await ctx.loader.root.update(rows.map(row => row.id === mainOverride.id ? { ...row, config: mainOverride.config } : row))
   expect(await ctx.agentPresets.list()).toEqual([{ id: golden.id, name: golden.name, description: golden.description, order: 10 }])
   const owner = ctx.loader.resolve(mainOverride.id).fiber
   const select = async (id: string) => {
@@ -260,5 +193,5 @@ it('reloads only the declaration; new Agents gain exactly glob/grep/read and an 
   expect(await ctx.agentPresets.list()).toEqual([{ id: golden.id, name: golden.name, order: 10, description: preset({ readOnlyFs: true }).description }])
   expect(ctx.loader.resolve(mainOverride.id).fiber).toBe(owner)
   expect(names(first)).toEqual(before)
-  expect(names(await select('after'))).toEqual([...before, 'glob', 'grep', 'read'].sort())
+  expect(names(await select('after'))).toEqual([...before, 'glob', 'grep', 'read', 'skill'].sort())
 })

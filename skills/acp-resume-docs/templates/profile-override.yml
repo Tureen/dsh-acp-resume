@@ -1,0 +1,25 @@
+# 已启用 bundle 的 profile：在 cordis.patch.yml 顶层覆盖这两行。
+# 模板名和角色蓝图写在工作区 .agents/acp-team.yml。
+- id: subagent-acp-resume
+  name: dsh-acp-resume
+  config:
+    command: kiro-cli
+    args: [acp]
+    permission: ask
+    roles: true
+    workflow: true
+    backends:
+      codex:
+        protocol: codex
+        command: codex
+        sandbox: read-only
+        approvalPolicy: on-request
+        permission: ask
+- id: acp-dispatcher-settings
+  name: dsh-acp-resume/dispatcher-preset
+  config:
+    dispatcherTools:
+      readOnlyFs: true
+    dispatcherPrompt:
+      extraRules: |
+        对互相依赖的评审结论，注明依赖关系与证据。

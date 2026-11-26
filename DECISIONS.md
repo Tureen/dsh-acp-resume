@@ -896,6 +896,8 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 
 修订（2026-11-26，0.5.1）：有意更正默认 persona 的目标目录规则及对应回归夹具。此前只说目录不清楚时提问，主 Agent 即使明知用户指的是另一个仓库，也可能把自己的工作目录传给 Worker。创建 chat 前应识别目标项目、仓库或 worktree，显式传入其绝对路径；只有请求或前文明确指向调度者目录时才使用它。目标唯一就直接派工，有多个候选就列出请用户选择，无法识别则先问清目标。关闭提问工具时在对话中询问。
 
+修订（2026-11-26，0.6.0）：0.5.1 曾将 skill 作为默认关闭的第七项独立开关发布。发布后约 15 分钟内决定合并，当时没有已知使用者。只开启技能加载而无法读取 references 缺少完整阅读路径，因此从 0.6.0 起 `readOnlyFs` 统一启用文件核对与技能加载。旧 skill 布尔键仍接受但无效果；仅开启该旧键会在声明加载时告警。默认组合保持原样。
+
 ## D38 Dispatcher 提示词可配（2026-11-26，0.5.1）
 
 在 D37 声明插件的同一 `config` 下，`dispatcherPrompt` 与 `dispatcherTools` 并列。用户只调整调度规则时可继续使用工具开关、原有 preset id 和全局 ACP 池。菜单 description 始终只取决于工具配置。
@@ -915,3 +917,10 @@ Dispatcher 的调度身份仍由 bundle 中的 persona 提供。角色间如何�
 - **追加。** `extraRules` 默认空；先去掉首尾空白，保留内部格式。普通模式依次拼身份句、自带派工和目录规则、共享写入边界、工具指引、汇总框架。非空用户文字在框架后另起一段。省略 prompt 或使用空规则时不增加空行，逐字保留 D37 本日修正后的默认 persona。
 - **替换。** `overrideRules` 默认 false。打开后只拼身份句、当前工具指引、空行和用户规则。身份仅指 `You are a task dispatcher.`；原来与其同段的后端检查和随后收集结果的流程都属于调度规则。web、文件核对与执行边界、skill、present、todo 和压缩等按工具配置生成的指引仍有效。默认目录规则里的提问分支随该规则一起替换；关闭 askUser 时保留可在对话中澄清的通用指引。替换模式下用户文字为空则声明加载报配置错误。
 - **作用范围。** 只设置 dsh-persona 的 prefix。设置 `complete: true` 会使该段独占最终系统提示，因此沿用普通 section 组合；宿主其他 section 和 D36 的条件团队片段各按自身条件参与组装。
+
+## D39 ACP Resume Docs 随包使用文档（2026-11-26，0.6.0）
+
+- 安装包的 `skills/acp-resume-docs/` 包含中文 SKILL.md、七份按任务读取的参考页与一份 profile 模板。使用说明是按需读取的内容，沿用宿主已有的 skill 工具，不新增操作端点或子代理。文件存在与否不受 Dispatcher 配置控制。
+- bundle 单独插入全局 `acp-resume-skill-filesystem` 行，只注入本包文档根，provider 名为 `acp-resume-docs`。关闭默认根扫描和目录监听；用 Loader 的 `baseUrl` 与 `createRequire` 运行时解析本包导出的 package.json，再取同级 skills 目录。标准模式和具备 skill 工具的 Dispatcher 均继承这个 provider。Dispatcher 的作用域 provider 继续负责用户根及官方 dsh-doc。
+- 入口自带配置位置、六项默认开关、调度规则追加与替换、常见故障分流，使一次加载即可处理高频问题。深层字段以当前安装的 Config、工作区解析器和工具 schema 为准，运行状态由当前宿主核对；参考页和 README 不能代替现场证据。
+- 门槛实测使用 rc.5 标准 preset 的原始组合、真实 Loader、skills 注册表、文件系统 provider 和加载工具。标准模式加全局行前后，11 个用户 skill 完整保留，新增文档来源 custom，官方 dsh-doc 仍在；两种会话均能加载全局文档。此项不代表完整桌面组合验收。

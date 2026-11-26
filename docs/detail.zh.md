@@ -86,6 +86,9 @@
 - id: subagent-acp-resume
   name: 'dsh-acp-resume'
   config:
+    command: kiro-cli
+    args: [acp]
+    permission: allow
     backends:
       codex:
         protocol: codex
@@ -106,7 +109,7 @@
 - **好用场景**:多任务并行;同一问题派给不同后端交叉验证;长任务托管;让主 Agent 上下文保持精简。
 - **切换**:新会话的模式菜单里选 **ACP Dispatcher**;不选则一切照旧,标准模式下 `acp_chat_*` 照常可用。
 
-在 `acp-dispatcher-settings` 行设置 `dispatcherTools`。只读文件核对和 `skill` 默认关，web、交付物展示、任务清单、澄清提问和压缩组默认开。设置 `skill: true` 后，主 Agent 能看到 skill 说明并按需加载完整指引。升级前覆盖过 `preset-acp-dispatcher` 的用户需迁移旧行。[配置示例与迁移指引](../README.md#acp-dispatcher-模式)
+在 `acp-dispatcher-settings` 行设置 `dispatcherTools`。只读文件核对（含技能读取）默认关，web、交付物展示、任务清单、澄清提问和压缩组默认开。标准模式可直接查随包的 acp-resume-docs；Dispatcher 开启 `readOnlyFs` 后也可加载文档及参考页。升级前覆盖过 `preset-acp-dispatcher` 的用户需迁移旧行。[配置示例与迁移指引](../README.md#acp-dispatcher-模式)
 
 ## 已知限制
 

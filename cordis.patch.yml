@@ -26,3 +26,14 @@
 - insert:
     - id: acp-dispatcher-settings
       name: 'dsh-acp-resume/dispatcher-preset'
+
+# Make this package's manual discoverable in every preset with a skill tool.
+- insert:
+    - id: acp-resume-skill-filesystem
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: acp-resume-docs
+        includeDefaultRoots: false
+        watch: false
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-acp-resume/package.json')), 'skills')

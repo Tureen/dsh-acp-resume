@@ -26,7 +26,7 @@ src/
   codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
   connection-codex.ts Codex app-server 私有协议连接层(D25;与 AcpConnection 同形状,自带 JSON-RPC 行传输,不用 ACP SDK)
   pool.ts        持久会话池:start/send/steer/close、空闲释放、注册表原子落盘、重连与降级;轮结算与重连事件写按轮日志;D27 角色:sendByRole / startForRole / releaseRole 与自动供给
-  dispatcher-preset.ts D37/D38:独立全局声明插件；dispatcherTools 七项开关控制子行、description 与工具指引，dispatcherPrompt 追加或替换 persona 的调度规则；声明热更新与 ACP 池隔离
+  dispatcher-preset.ts D37/D38:独立全局声明插件；dispatcherTools 六项开关（readOnlyFs 含 skill）控制子行、description 与工具指引，dispatcherPrompt 追加或替换 persona 的调度规则；声明热更新与 ACP 池隔离
   team-prompt.ts D36:在 Dispatcher 实际绑定且本步团队工具可用时注入角色转述规则
   team-config.ts D27:读工作区 .agents/acp-team.yml(向上至多 3 层),角色蓝图 + 模板的解析与校验;不可用时 onWarn 并视为无配置
   usage.ts       D28:后端额度统一结构与缓存(5 分钟，失败 1 分钟，过期先回旧值后台刷新、按后端单飞);Codex 只读 account/read + account/rateLimits/read
@@ -44,7 +44,8 @@ src/
                  (defineTool + ctx.tools.register,不走 ctx.subagents);roles: true(默认)时另注册 <prefix>team_list(D32,默认 acp_team_list)并给 send/close/steer 加 role,workflow: true 时再注册 acp_workflow(D27;须 roles: true,D33);有 ctx.jobs 时 send 注册
                  acp-chat 后台任务并立即返回 jobId(D17),无 jobs 时同步等待、轮非 completed 抛工具错误
 locale/         en.json / zh.json:插件显示元数据(meta.title/description),经 exports 的 ./locale/*.json 暴露
-cordis.patch.yml bundle 层:插入 ACP 主插件和独立的 Dispatcher 声明行 `acp-dispatcher-settings`（D26/D37）
+cordis.patch.yml bundle 层:插入 ACP 主插件和独立的 Dispatcher 声明行 `acp-dispatcher-settings`及全局文档发现行 acp-resume-skill-filesystem（D26/D37/D39）
+skills/acp-resume-docs/ D39:随包的中文使用文档，入口 + 七份任务参考 + 完整 profile 模板
 icon.svg        插件图标,由 package.json 顶层 icon 字段声明;locale 与图标都须在 files 里
 tests/
   subagent-acp.spec.ts   官方协议面回归(含 42 例协议面门槛)
@@ -52,6 +53,7 @@ tests/
   connection-codex.spec.ts Codex 连接层(D25):开/恢复、流式、停止原因、steer/取消、审批(含 ask 桥)、进程失败
   pool.spec.ts           池生命周期
   dispatcher-preset.spec.ts D37:默认定义深比较、工具勾选、旧 profile 警告、已绑定 Agent 的版本隔离、真实 skill 发现/加载与自定义调度提示组装
+  skill-docs.spec.ts     D39:标准模式和 Dispatcher 文档发现、加载、引用文件和可用配置范例
   team-prompt.spec.ts    D36:用 rc.5 Agent、preset 注册表和工具准入组装实际系统提示
   team.spec.ts           D27:工作区配置读取、花名册、角色自动供给与工具 role 参数
   workflow-log.spec.ts   D29:工作流运行日志、运行中跟踪、孤儿清理、Remote 与 runId 共用
@@ -79,7 +81,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 630 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 45 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 20 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 16 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 635 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 45 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 88 + `tools.spec.ts` 57 + `jobs.spec.ts` 12 + `panel.spec.ts` 23 + `client.spec.tsx` 111 + `steer.spec.ts` 5 + `engine.spec.ts` 20 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 16 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 16 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 19 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 17 + `backend-compatibility.spec.ts` 29;新套件落地时在此登记。
 - D8 豁免已恢复为条件运行:官方 checkout(默认按 `~/Developer/open-source-projects/deepseek-harness` 探测,可用环境变量 `DSH_OFFICIAL_CHECKOUT` 覆盖)在场时全绿、`pnpm test` 退出码 0;缺席时该 24 例自动跳过,其余仍须全绿。
 - 测试同时验证 lib/ 与源码行为前先 `pnpm build`,保证 lib/ 不是陈旧产物。
 
