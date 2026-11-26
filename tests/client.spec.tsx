@@ -114,8 +114,6 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   TextShimmer: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   extractMarkdownPlainText: (text: string) => text.replace(/\*\*|`/g, '').replace(/^#+ /gm, ''),
 
-  useClipboardCopy: () => ({ copied: false, copy: () => {} }),
-
   useClipboardCopy: () => ({ copied: false, onCopy: () => {} }),
 
   Modal: ({ open, title, description, footer, tone }: { open: boolean; title: string; description?: string; footer?: ReactNode; tone?: string }) =>
