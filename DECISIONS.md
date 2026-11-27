@@ -229,7 +229,7 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 
 决策与细则:
 - **日志文件**:`<registryPath 的父目录>/turns/<chatId>.jsonl`,只追加,一行一条 JSON。两类记录,共用每会话递增的 `seq`(从 1 起,裁剪后不复用):
-  - `turn`:`startedAt`、`at`(结算时刻)、`message`、`output`(回答文本)、`stopReason`(completed / aborted / error / max-tokens / refusal / …)、`freshSession`、可选 `diagnostic`;每个 `completed` 之外的结局也记。
+  - `turn`:`startedAt`、`at`(结算时刻)、`message`、`output`(回答文本)、`stopReason`(completed / aborted / error / max-tokens / refusal / …)、`freshSession`、可选 `diagnostic`、可选 `failureKind?: 'quota'`(D50，2026-11-27 补充：老记录无此字段，读出为 `undefined`，不迁移)；每个 `completed` 之外的结局也记。
   - `event`:`session-lost`(`session/load` 被协议拒绝,新开远端会话顶替;随后同一次 send 还会记一条 `freshSession: true` 的 `turn`)、`session-reset-after-errors`(当前池实例同一 chat 连续 3 条 `error` 轮后，下一次 send 主动跳过 load、新开远端会话；它不是 `session-lost`，不表示 load 被拒绝)、`reconnect-failed`(send 在 prompt 发出前失败:load 的非协议类失败、进程起不来、已记录的 agent 指纹与当前配置不符;带上未发出的消息与错误文案)。拆卸引起的中止(`was released before the prompt started`)与池已销毁不记。
 - **不记的**:steer(不是轮)、send 在做任何事之前就被拒绝的情形(未知会话、在途、信号已中止)、启动(start)。
 - **写入点**:`AcpSessionPool.send` 的轮结算处(紧跟注册表更新,因此 jobs 与同步两种 send 都覆盖,tools.ts 不改)与重连窗口/失败处。写之前复查注册表里该会话还在,与"结算前 purge 不得复活记录"同一条规则,所以 purge 之后不会留下孤儿日志。
@@ -786,6 +786,8 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 
 修订（2026-11-26，D47）：侧栏后端状态行改用官方 `DisclosureRow` 与官方「重新检测后端」`Button`，额度归入同卡底栏；仅在 `dispatchEnabled === false` 或检测失败时于顶栏下方显示 1 行条件告警条。独立手动重查与只读轮询契约不变。
 
+修订（2026-11-27，D50）：沿用「原始后端错误文本不回显到面板与模型工具」原则——额度耗尽在宿主侧识别为固定标签 `failureKind: 'quota'` 与固定换后端指引，绝不透传后端原始报错文本。
+
 ## D32 Dispatcher 的团队上下文：角色摘要、播种前置上下文与团队列表(2026-11-25)
 
 ### 动机
@@ -1152,6 +1154,30 @@ rc.5 探针与源码核实得出两条硬边界：
 ### 边界与验收说明（待真机确认）
 
 本方案基于录屏像素级证据与 Chromium 合成器机制推断根因；jsdom 单元测试可严格锁定 DOM 分层结构、`isolation`/`contain` 样式、代码块静态化 CSS、离屏 `IntersectionObserver` 暂停逻辑与数据源快照引用稳定性，但 **jsdom 无法复现或断言真实 Electron/Chromium macOS Metal/Skia GPU 瓦片重绘**。最终消除约 8Hz 闪白的效果**待真机录屏对比确认**。
+
+## D50 后端额度耗尽的宿主侧识别与独立标注（2026-11-27，0.7.7）
+
+### 动机
+
+此前所有失败轮在面板上一律标为红色 `stopError`（「出错」/「failed」），把后端额度耗尽与代码/协议故障混为一谈。两者处置截然不同：故障需要查诊断与日志，额度耗尽只能等重置或切换后端。
+
+### 决策与细则
+
+- **宿主侧分类、原文绝不回显（延续 D31）**：新建纯函数模块 `src/failure-class.ts`（`classifyFailure`），只检查错误对象的 `codexErrorInfo` / `message` / `data` / `details`，输出固定枚举 `FailureKind = 'quota' | undefined`。后端原始错误文本可能夹带用户配置、账号或租户信息，**永不原样写入轮日志、面板或工具错误**；`diagnostic` 保持既有固定安全事实句。
+- **识别表（宁可漏认不可误认）**：
+  1. **Codex（已实发验证）**：`codexErrorInfo === 'usageLimitExceeded'`（支持字符串及单键对象变体）。`connection-codex.ts` 在 `turn/completed` 失败结算时将带 `codexErrorInfo` 的错误传给 `onError` 并分类。
+  2. **通用 JSON-RPC / HTTP（推断性正则，待真实样本校准）**：`message` / `data` / `details` 中的字符串值命中 `/usage limit|rate limit exceeded|quota exceeded|insufficient_quota|overage.*limit|exceeded your usage/i` → `'quota'`（只查字符串值，不匹配对象键名）。
+  3. **其余一切错误（含普通 `-32603 internal error`、`session not found`、`ENOENT`、以及未知格式的 agy / kiro 报错）** → `undefined`，照旧按通用「出错」展示。
+- **轮日志与注册表边界（延续 D6 / D18）**：`TurnRecord` 新增可选字段 `failureKind?: 'quota'`，轮结算时由连接层传递、池写入轮日志；旧记录无此字段，读出即为 `undefined`；`TurnSummary` / `LatestTurnSummary` / `TurnItem` 透传该可选字段。**注册表结构与字节零改动**；`attentionOf()` 对 `failureKind === 'quota'` 派生 `warning`（橙）而非 `error`（红）；`src/run.ts` 按 D11 不动。
+- **模型工具指引**：`acp_chat_send`（同步抛错与后台任务失败详情）遇到 `failureKind === 'quota'` 时，在既有安全错误句前追加固定指引 `backend quota exhausted; wait for the reset or switch backend`，引导调度模型换后端而非盲目重试；同样不回显原文。
+- **面板展示（延续 D30 / D47）**：
+  - 详情页 `TurnRow`：`stopTag()` 对 `quota` 渲染新键 `stopQuota`（「额度耗尽」/「quota used up」），`tone="warning"`（橙色，非故障红）；`turnRail()` 走橙色竖条（`--dsw-alias-state-warn-primary`）；折叠的「更早记录」将其计入「需留意」（warning）而非「出错」（error）。
+  - 团队派工视图 `TeamSection`：`teamCardState()` 仍将 `quota` 归入 `error` 紧急度分组（排在 `running` 之后、`cancelled` 之前），但视觉上用橙色竖条、橙色状态点与橙色「额度耗尽」Tag。
+
+### 诚实边界
+
+- **Codex 已实发验证**（`codexErrorInfo === 'usageLimitExceeded'`）；**agy / kiro 既无查额度接口（D28），目前也无真实额度耗尽报错样本**，暂靠上述通用正则兜底，**待真实样本校准**。未编造任何 agy / kiro 专属错误格式写入识别表。
+
 
 
 

@@ -1934,6 +1934,43 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(container.querySelector('[data-diagnostic]')).toBeNull()
   })
 
+  it('renders a quota-exhausted turn with warning tag, orange rail, zh/en copy, and counts it as warning rather than error (D50)', () => {
+    const now = new Date(2026, 10, 26, 12).getTime()
+    const day = 86400000
+    const entries = [
+      turn(1, { stopReason: 'error', failureKind: 'quota', at: now - 2 * day }),
+      turn(2, { stopReason: 'error', at: now - day }),
+      turn(3, { at: now - 30_000 }),
+      turn(4, { at: now - 20_000 }),
+      turn(5, { stopReason: 'error', failureKind: 'quota', at: now - 10_000 }),
+    ]
+    const view = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries, fetchedAt: now }))).injected} />)
+
+    // Recent quota turn (#5): warning tone tag + orange rail (not danger/red).
+    const recentQuota = view.container.querySelector('[data-seq="5"]') as HTMLElement
+    const zhTag = within(recentQuota).getByText(zh.stopQuota).closest('[data-tag]') as HTMLElement
+    expect(zhTag.textContent).toBe('额度耗尽')
+    expect(zhTag.getAttribute('data-tone')).toBe('warning')
+    expect(recentQuota.getAttribute('data-rail')).toBe('warn')
+    expect((recentQuota.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft).toMatch(/3px solid var\(--dsw-alias-state-warn-primary\)/)
+
+    // Folded earlier history (#1 quota + #2 generic error): 1 failed, 1 need attention (quota counted under warning, not error).
+    const earlier = within(view.container.querySelector('[data-earlier]') as HTMLElement)
+    expect(earlier.getByText('1 出错')).toBeTruthy()
+    expect(earlier.getByText('1 需留意')).toBeTruthy()
+
+    // English copy check.
+    view.rerender(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries, fetchedAt: now })), { t: translator(en) }).injected} />)
+    const enQuota = view.container.querySelector('[data-seq="5"]') as HTMLElement
+    const enTag = within(enQuota).getByText(en.stopQuota).closest('[data-tag]') as HTMLElement
+    expect(enTag.textContent).toBe('quota used up')
+    expect(enTag.getAttribute('data-tone')).toBe('warning')
+    expect(enQuota.getAttribute('data-rail')).toBe('warn')
+    const enEarlier = within(view.container.querySelector('[data-earlier]') as HTMLElement)
+    expect(enEarlier.getByText('1 failed')).toBeTruthy()
+    expect(enEarlier.getByText('1 need attention')).toBeTruthy()
+  })
+
   it('shows the failure when the full text cannot be read, keeping the preview', async () => {
     const source = fakeSource(detailSnapshot({ entries: [turn(1, { message: '问…', messageMore: true })] }), async () => { throw new Error('acp-resume/unknown-turn: trimmed') })
     const { container } = render(<ChatDetail {...detailProps(source).injected} />)
@@ -3076,5 +3113,42 @@ describe('TeamSection & mutual exclusion (D47 Step 5)', () => {
     stopB()
     standaloneSource.dispose()
     teamSource.dispose()
+  })
+
+  it('groups a quota-exhausted role under error urgency with orange rail and warning stopQuota tag in zh and en (D50)', () => {
+    const rows: PanelChat[] = [
+      chat({
+        chatId: 'chat-role-cancel',
+        role: 'auditor',
+        active: true,
+        latestTurn: { seq: 1, startedAt: NOW - 80_000, at: NOW - 60_000, message: '检查', output: '停', stopReason: 'aborted', freshSession: false },
+      }),
+      chat({
+        chatId: 'chat-role-quota',
+        role: 'coder',
+        active: false,
+        attention: 'warning',
+        latestTurn: { seq: 2, startedAt: NOW - 50_000, at: NOW - 40_000, message: '写代码', output: '', stopReason: 'error', failureKind: 'quota', freshSession: false },
+      }),
+    ]
+    const { container, rerender } = render(<ChatsPanel {...props(ready(rows))} />)
+    const cards = [...container.querySelectorAll('[data-team-role]')] as HTMLElement[]
+    expect(cards.map(c => [c.getAttribute('data-team-role'), c.getAttribute('data-team-state')])).toEqual([
+      ['coder', 'error'],
+      ['auditor', 'cancelled'],
+    ])
+    const quotaCard = cards[0] as HTMLElement
+    expect(quotaCard.querySelector('[data-panel-card]')?.getAttribute('data-state')).toBe('warn')
+    expect((quotaCard.querySelector('[data-panel-card]') as HTMLElement).style.borderLeft).toMatch(/3px solid var\(--dsw-alias-state-warn-primary\)/)
+    expect(quotaCard.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('warning')
+    const zhTag = within(quotaCard).getByText(zh.stopQuota).closest('[data-tag]') as HTMLElement
+    expect(zhTag.textContent).toBe('额度耗尽')
+    expect(zhTag.getAttribute('data-tone')).toBe('warning')
+
+    rerender(<ChatsPanel {...props(ready(rows), { t: translator(en) })} />)
+    const enCard = container.querySelector('[data-team-role="coder"]') as HTMLElement
+    const enTag = within(enCard).getByText(en.stopQuota).closest('[data-tag]') as HTMLElement
+    expect(enTag.textContent).toBe('quota used up')
+    expect(enTag.getAttribute('data-tone')).toBe('warning')
   })
 })

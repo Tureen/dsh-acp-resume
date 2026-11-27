@@ -17,6 +17,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { FailureKind } from './failure-class.js'
 
 /** Entries kept after a trim; reads never return more than the file holds. */
 export const RETAINED_ENTRIES = 200
@@ -45,6 +46,8 @@ export interface TurnRecord {
   /** The saved remote session was replaced and a fresh one answered. */
   readonly freshSession: boolean
   readonly diagnostic?: string
+  /** Host-classified failure reason for an `error` turn (D50); absent on older records or generic errors. */
+  readonly failureKind?: FailureKind
   readonly messageTruncated?: true
   readonly outputTruncated?: true
 }
@@ -200,6 +203,7 @@ export class TurnLog {
       v: 1, seq, kind: 'turn', startedAt: input.startedAt, at: input.at,
       message: message.text, output: output.text, stopReason: input.stopReason, freshSession: input.freshSession,
       ...(diagnostic === undefined ? {} : { diagnostic }),
+      ...(input.failureKind === undefined ? {} : { failureKind: input.failureKind }),
       ...(message.truncated ? { messageTruncated: true as const } : {}),
       ...(output.truncated ? { outputTruncated: true as const } : {}),
     }

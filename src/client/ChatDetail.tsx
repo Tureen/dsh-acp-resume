@@ -7,6 +7,7 @@ import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
 import { DisclosureRow, PanelCard, StatusRail, TextShimmer, Pill, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
 import { formatDayHeader, formatTimeRange, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 import type { FollowTurn } from './live-source.ts'
+import type { FailureKind } from '../failure-class.ts'
 import type { LiveFrame } from '../live-buffer.ts'
 import { panelActionError } from './chats-source.ts'
 import { PanelFeatureGate } from './PanelFeatureGate.tsx'
@@ -72,9 +73,9 @@ function countLines(text: string): number {
 const QUESTION_LINES = 2
 const ANSWER_LINES = 3
 
-/** The rail of a turn: red for an error, orange for a stop short of completion or a fresh-session answer, none otherwise. */
+/** The rail of a turn: red for a generic error, orange for quota exhaustion, a stop short of completion, or a fresh-session answer, none otherwise. */
 function turnRail(item: TurnItem): 'error' | 'warn' | undefined {
-  if (item.stopReason === 'error') return 'error'
+  if (item.stopReason === 'error') return item.failureKind === 'quota' ? 'warn' : 'error'
   if (item.stopReason !== 'completed' || item.freshSession) return 'warn'
   return undefined
 }
@@ -86,7 +87,8 @@ export function cwdName(cwd: string): string {
 }
 
 /** The stop reason's localized label and tag tone, for a turn that did not end `completed`. */
-function stopTag(stopReason: string): { key: PanelCopyKey; tone: TagTone } | undefined {
+function stopTag(stopReason: string, failureKind?: FailureKind): { key: PanelCopyKey; tone: TagTone } | undefined {
+  if (stopReason === 'error' && failureKind === 'quota') return { key: 'stopQuota', tone: 'warning' }
   switch (stopReason) {
     case 'aborted': return { key: 'stopAborted', tone: 'neutral' }
     case 'error': return { key: 'stopError', tone: 'danger' }
@@ -135,7 +137,7 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
   const fullEntry = full?.status === 'ready' && full.entry.kind === 'turn' ? full.entry : undefined
   const message = fullEntry?.message ?? item.message
   const output = fullEntry?.output ?? item.output
-  const tag = item.stopReason === 'completed' ? undefined : stopTag(item.stopReason)
+  const tag = item.stopReason === 'completed' ? undefined : stopTag(item.stopReason, item.failureKind)
   const question = detailPreview(item.message, QUESTION_LINES)
   const answer = item.output === '' ? { text: t('noAnswer'), clipped: false } : detailPreview(item.output, ANSWER_LINES)
   const rail = turnRail(item)
@@ -325,8 +327,11 @@ function EarlierHistory({ items, unloaded, footer, renderItem, open, toggle, now
   let errors = 0, events = 0, warnings = 0
   for (const item of items) {
     if (item.kind === 'event') events++
-    else if (item.stopReason === 'error') errors++
-    else if (turnRail(item)) warnings++
+    else {
+      const rail = turnRail(item)
+      if (rail === 'error') errors++
+      else if (rail === 'warn') warnings++
+    }
     if (open) {
       const day = formatDayHeader(t, item.at, now)
       const group = groups.get(day)

@@ -8,6 +8,8 @@
  * @module dsh-acp-resume/team-view
  */
 
+import type { FailureKind } from './failure-class.js'
+
 /** Maximum characters (code points) kept in a `latestTurn` line preview. */
 export const LATEST_TURN_PREVIEW_CHARS = 320
 
@@ -22,6 +24,8 @@ export interface LatestTurnSummary {
   readonly output: string
   readonly stopReason: string
   readonly freshSession: boolean
+  /** Host-classified failure reason for an `error` turn (D50); absent otherwise. */
+  readonly failureKind?: FailureKind
 }
 
 /** Structural slice of a turn-log entry needed for pure projection (keeps this module node-free). */
@@ -34,6 +38,7 @@ export interface TurnLogEntryLike {
   readonly output?: string
   readonly stopReason?: string
   readonly freshSession?: boolean
+  readonly failureKind?: FailureKind
 }
 
 /** Five display states of a team role card, ordered by urgency (D47). */
@@ -94,6 +99,7 @@ export function latestTurnOf(entries: readonly TurnLogEntryLike[], maxChars = LA
       output: firstNonEmptyLinePreview(entry.output ?? '', maxChars),
       stopReason: entry.stopReason ?? 'completed',
       freshSession: entry.freshSession === true,
+      ...(entry.failureKind === undefined ? {} : { failureKind: entry.failureKind }),
     }
   }
   return undefined

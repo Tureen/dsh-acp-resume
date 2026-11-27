@@ -24,6 +24,7 @@ function latestTurnEqual(a: PanelChat['latestTurn'], b: PanelChat['latestTurn'])
     && a.output === b.output
     && a.stopReason === b.stopReason
     && a.freshSession === b.freshSession
+    && a.failureKind === b.failureKind
 }
 
 /** Two chat rows carry the same facts (the fields the panel renders). */
@@ -62,7 +63,7 @@ function entryEqual(a: TurnItem | EventItem | RunningItem, b: TurnItem | EventIt
     return a.seq === b.seq && a.startedAt === b.startedAt && a.at === b.at
       && a.message === b.message && a.output === b.output
       && a.messageMore === b.messageMore && a.outputMore === b.outputMore && a.outputLines === b.outputLines
-      && a.stopReason === b.stopReason && a.freshSession === b.freshSession && a.diagnostic === b.diagnostic
+      && a.stopReason === b.stopReason && a.freshSession === b.freshSession && a.diagnostic === b.diagnostic && a.failureKind === b.failureKind
   }
   if (a.kind === 'event' && b.kind === 'event') {
     return a.seq === b.seq && a.event === b.event && a.at === b.at && a.message === b.message && a.error === b.error

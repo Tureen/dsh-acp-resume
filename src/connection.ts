@@ -35,6 +35,7 @@ import type { SessionChoices } from './chat-options.js'
 import { readSessionChoices, readAcpSettings } from './acp-reported-settings.js'
 import type { ReportedSettings } from './backend-status.js'
 import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
+import { classifyFailure, type FailureKind } from './failure-class.js'
 import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestResolver } from './permission-request.js'
 
 export type { PermissionPolicy }
@@ -131,6 +132,8 @@ export interface AcpTurnResult {
   readonly stopReason: SubagentStopReason
   /** Fixed safe diagnostic line, when the turn needs one. */
   readonly diagnostic: string | undefined
+  /** Host-classified failure reason when `stopReason === 'error'` (D50); absent otherwise. */
+  readonly failureKind?: FailureKind
 }
 
 /** Direct connection callers pass a callback; the pool reuses its live chat as the sink. */
@@ -812,8 +815,10 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
           ? { stage: 'prompt', category: 'transport' }
           : { stage: 'process', category: 'process-exit', outcome })
           + (latestPermission === undefined ? '' : `\n${permissionDiagnostic(latestPermission)}`)
-        try { spec.onError?.(processFailure ?? toError(error), 'error') } catch { /* sink cannot replace the failure */ }
-        return { output: turnOutput(), stopReason: 'error', diagnostic }
+        const reportedError = processFailure ?? toError(error)
+        const failureKind = classifyFailure(reportedError)
+        try { spec.onError?.(reportedError, 'error') } catch { /* sink cannot replace the failure */ }
+        return { output: turnOutput(), stopReason: 'error', diagnostic, ...(failureKind === undefined ? {} : { failureKind }) }
       } finally {
         promptSignal.removeEventListener('abort', onTurnAbort)
       }

@@ -53,6 +53,7 @@
 | send aborted before it started / was released before the prompt started | 发送前已取消 | 查状态再决定是否重发。 |
 | releasing chat <id> failed; its record is kept | 释放失败 | 保留记录，查进程诊断。 |
 | the agent stopped before finishing / the agent failed before it finished / the agent ran out of room / the agent declined to answer | 轮次非 completed | 查看部分输出和 stop reason，按取消、进程失败、上下文不足或拒绝分别。 |
+| backend quota exhausted; wait for the reset or switch backend / 面板橙色「额度耗尽」（quota used up） | 当前后端额度已用尽（并非代码或插件故障）。Codex 已按实发错误码 `usageLimitExceeded` 验证；agy / kiro 暂无真实样本，暂靠通用正则兜底，未命中时仍显示红色「出错」。 | 不要反复重试同一后端。等待额度重置，或改用其他就绪后端新建会话继续（Codex 可在侧栏后端状态卡底栏看重置时间）。 |
 | backend detection is disposed / pool already disposed / open window aborted by pool teardown | 插件在拆卸 | 重载后重查。 |
 | subagent request was aborted before the ACP child started | 启动前取消 | 查上游取消状态。 |
 | is not a Codex backend / missing settings for Codex backend | 协议不符 | 查对应的 protocol 和命令。 |

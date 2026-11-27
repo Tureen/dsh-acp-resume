@@ -300,6 +300,7 @@ function makeAgent() {
       }
       const ordinal = promptCount
       if (CRASH_ON_PROMPT || switchOn('MOCK_CRASH_ON_PROMPT_FILE') || CRASH_PROMPTS.has(ordinal)) process.exit(1)
+      if (process.env.MOCK_PROMPT_ERROR !== undefined) throw new RequestError(-32603, process.env.MOCK_PROMPT_ERROR)
       const hold = process.env.MOCK_PROMPT_HOLD
       if (hold !== undefined) {
         const released = Promise.withResolvers<undefined>()

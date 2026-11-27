@@ -43,6 +43,7 @@ import {
   type OpenAcpMode,
 } from './connection.js'
 import { COMMAND_NOT_FOUND_GUIDANCE, isCommandNotFound } from './command-not-found.js'
+import { classifyFailure, type FailureKind } from './failure-class.js'
 import { acpStopReason, disposeAcpChild, type AcpRunSpec } from './run.js'
 import { isCodexApprovalMethod, resolveCodexApproval } from './codex-approval.js'
 import type { PermissionRequestResolver } from './permission-request.js'
@@ -74,10 +75,12 @@ interface CodexProbeConnection {
 /** JSON-RPC error reply from the Codex server. */
 class CodexRpcError extends Error {
   readonly code: number
-  constructor(code: number, message: string) {
+  readonly data?: unknown
+  constructor(code: number, message: string, data?: unknown) {
     super(message)
     this.name = 'CodexRpcError'
     this.code = code
+    if (data !== undefined) this.data = data
   }
 }
 
@@ -142,6 +145,14 @@ function toCodexInput(blocks: readonly AcpContentBlock[]): Array<{ type: 'text';
   return [{ type: 'text', text, text_elements: [] }]
 }
 
+/** Terminal payload captured from a `turn/completed` notification. */
+interface CodexTurnTerminal {
+  readonly status: string | undefined
+  readonly errorInfo: string | undefined
+  readonly errorMessage?: string
+  readonly errorDetails?: unknown
+}
+
 /** Per-turn state; replaced wholesale at each prompt start. */
 interface TurnState {
   /** Known after the `turn/start` reply; notifications seen earlier wait in `early`. */
@@ -150,7 +161,7 @@ interface TurnState {
   deltas: string
   finalAnswer: string | undefined
   observer: TextSink | undefined
-  resolveTerminal: (terminal: { status: string | undefined; errorInfo: string | undefined }) => void
+  resolveTerminal: (terminal: CodexTurnTerminal) => void
 }
 
 /** Open a new/existing thread, or initialize only for usage reads (D28). */
@@ -278,10 +289,18 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
       }
     } else if (method === 'turn/completed') {
       const turnInfo = asRecord(params['turn']) ?? params
+      const turnError = asRecord(turnInfo['error'])
       // codexErrorInfo is a bare string for unit variants, or a one-key object for data variants.
-      const info = asRecord(turnInfo['error'])?.['codexErrorInfo']
+      const info = turnError?.['codexErrorInfo']
       const errorInfo = typeof info === 'string' ? info : Object.keys(asRecord(info) ?? {})[0]
-      state.resolveTerminal({ status: str(turnInfo['status']), errorInfo })
+      const errorMessage = str(turnError?.['message'])
+      const errorDetails = turnError?.['additionalDetails'] ?? turnError?.['details']
+      state.resolveTerminal({
+        status: str(turnInfo['status']),
+        errorInfo,
+        ...(errorMessage === undefined ? {} : { errorMessage }),
+        ...(errorDetails === undefined ? {} : { errorDetails }),
+      })
     }
   }
 
@@ -329,7 +348,7 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
     pending.delete(messageId)
     const rpcError = asRecord(message['error'])
     if (rpcError !== undefined) {
-      entry.reject(new CodexRpcError(typeof rpcError['code'] === 'number' ? rpcError['code'] : -32603, str(rpcError['message']) ?? 'Codex request failed'))
+      entry.reject(new CodexRpcError(typeof rpcError['code'] === 'number' ? rpcError['code'] : -32603, str(rpcError['message']) ?? 'Codex request failed', rpcError['data']))
     } else {
       entry.resolve(message['result'])
     }
@@ -497,7 +516,7 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
       let turnCancelled = false
       let turnCancelSettled!: () => void
       const turnCancel = new Promise<void>((resolve) => { turnCancelSettled = resolve })
-      const terminal = Promise.withResolvers<{ status: string | undefined; errorInfo: string | undefined }>()
+      const terminal = Promise.withResolvers<CodexTurnTerminal>()
       const state: TurnState = {
         turnId: undefined,
         early: [],
@@ -568,7 +587,19 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
         const diagnostic = stopReason === 'error'
           ? failureDiagnostic({ stage: 'prompt', category: 'protocol', stopReason: end.status ?? 'unknown' })
           : undefined
-        return { output: turnOutput(), stopReason, diagnostic }
+        let failureKind: FailureKind | undefined
+        if (stopReason === 'error') {
+          const turnError = Object.assign(
+            new Error(end.errorMessage ?? `Codex turn failed (${end.errorInfo ?? end.status ?? 'unknown'})`),
+            {
+              ...(end.errorInfo === undefined ? {} : { codexErrorInfo: end.errorInfo }),
+              ...(end.errorDetails === undefined ? {} : { details: end.errorDetails }),
+            },
+          )
+          failureKind = classifyFailure(turnError)
+          try { spec.onError?.(turnError, 'error') } catch { /* sink cannot replace the failure */ }
+        }
+        return { output: turnOutput(), stopReason, diagnostic, ...(failureKind === undefined ? {} : { failureKind }) }
       } catch (error: unknown) {
         settleTurn()
         if (turnCancelled || flags.cancelled) return { output: turnOutput(), stopReason: 'aborted', diagnostic: undefined }
@@ -577,8 +608,10 @@ export async function openCodexConnection(spec: CodexConnectionSpec, open: Codex
         const diagnostic = failureDiagnostic(outcome === undefined
           ? { stage: 'prompt', category: 'transport' }
           : { stage: 'process', category: 'process-exit', outcome })
-        try { spec.onError?.(processFailure ?? toError(error), 'error') } catch { /* sink cannot replace the failure */ }
-        return { output: turnOutput(), stopReason: 'error', diagnostic }
+        const reportedError = processFailure ?? toError(error)
+        const failureKind = classifyFailure(reportedError)
+        try { spec.onError?.(reportedError, 'error') } catch { /* sink cannot replace the failure */ }
+        return { output: turnOutput(), stopReason: 'error', diagnostic, ...(failureKind === undefined ? {} : { failureKind }) }
       } finally {
         promptSignal.removeEventListener('abort', onTurnAbort)
         // Per-turn listener: left attached, each turn adds one (MaxListenersExceededWarning at turn 11).

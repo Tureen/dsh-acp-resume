@@ -16,7 +16,8 @@
  * - `MOCK_HANG`          — if `1`, never answer on its own; only `turn/interrupt` ends the turn.
  * - `MOCK_READY_FILE`    — touched when the turn is in flight (after `item/started`).
  * - `MOCK_CODEX_TURN_STATUS` — terminal status: `completed` (default) | `interrupted` | `failed` |
- *                          `contextWindowExceeded` (a failed turn carrying that `codexErrorInfo`).
+ *                          `contextWindowExceeded` | `usageLimitExceeded` (a failed turn carrying that `codexErrorInfo`).
+ * - `MOCK_CODEX_ERROR_MESSAGE` — error message attached to a failed `turn/completed` (default `mock failure`).
  * - `MOCK_CODEX_COMMENTARY` — if `1`, first stream a `commentary`-phase message (not the final answer).
  * - `MOCK_CODEX_APPROVAL` — `command` | `file` | `permissions`: before the answer, send the matching
  *                          `item/<kind>/requestApproval` request and apply the decision. `accept` runs on;
@@ -94,7 +95,7 @@ const finishTurn = (turn: ActiveTurn, status: string, errorInfo?: string): void 
     turn: {
       id: turn.turnId,
       status: failed ? 'failed' : status,
-      ...(failed ? { error: { message: 'mock failure', codexErrorInfo: errorInfo ?? 'other' } } : {}),
+      ...(failed ? { error: { message: env['MOCK_CODEX_ERROR_MESSAGE'] ?? 'mock failure', codexErrorInfo: errorInfo ?? 'other' } } : {}),
     },
   })
   if (active === turn) active = undefined
@@ -148,7 +149,7 @@ const runTurn = async (turn: ActiveTurn, prompt: string, record: ThreadRecord): 
   if (env['MOCK_CODEX_COMMENTARY'] === '1') streamMessage(turn, 'thinking about it', 'commentary')
   streamMessage(turn, text, 'final_answer')
   const status = env['MOCK_CODEX_TURN_STATUS'] ?? 'completed'
-  if (status === 'contextWindowExceeded') finishTurn(turn, 'failed', 'contextWindowExceeded')
+  if (status === 'contextWindowExceeded' || status === 'usageLimitExceeded') finishTurn(turn, 'failed', status)
   else finishTurn(turn, status)
 }
 

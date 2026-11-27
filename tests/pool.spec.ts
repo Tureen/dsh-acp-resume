@@ -1369,6 +1369,53 @@ describe('AcpSessionPool turn log (D18)', () => {
     writeFileSync(logFile(registryPath, 'chat-stray'), `${JSON.stringify({ v: 1, seq: 1, kind: 'event', event: 'session-lost', at: 1 })}\n`)
     expect(pool.turnEntries('chat-stray')).toEqual([])
   })
+
+  it('writes failureKind: quota to the turn log, reads legacy entries without it as undefined, and leaves registry bytes untouched (D50)', async () => {
+    const fixedNow = 1_800_000_000_000
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+    try {
+      const { pool, registryPath } = makePool({
+        backends: new Map([['codex', codexBackend({
+          MOCK_CODEX_TURN_STATUS: 'usageLimitExceeded',
+          MOCK_CODEX_ERROR_MESSAGE: 'raw-account-secret usage limit',
+        })]]),
+      })
+      const chat = await pool.start(process.cwd(), undefined, { backend: 'codex' })
+      const registryBefore = readFileSync(registryPath)
+
+      const res = await pool.send(chat.chatId, 'check quota')
+      expect(res.stopReason).toBe('error')
+      expect(res.failureKind).toBe('quota')
+      expect(res.diagnostic).not.toContain('raw-account-secret')
+
+      // Registry bytes stay identical (no failureKind or extra field persisted).
+      expect(readFileSync(registryPath)).toEqual(registryBefore)
+
+      const lines = logLines(registryPath, chat.chatId)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toMatchObject({ kind: 'turn', stopReason: 'error', failureKind: 'quota' })
+      expect(JSON.stringify(lines[0])).not.toContain('raw-account-secret')
+      expect(pool.turnEntries(chat.chatId)[0]).toMatchObject({ kind: 'turn', stopReason: 'error', failureKind: 'quota' })
+      expect(pool.chatInfo(chat.chatId)).toMatchObject({
+        attention: 'warning',
+        latestTurn: expect.objectContaining({ stopReason: 'error', failureKind: 'quota' }),
+      })
+
+      // Legacy JSONL turn record without failureKind reads back with undefined.
+      const legacyLine = JSON.stringify({
+        v: 1, seq: 2, kind: 'turn', startedAt: fixedNow, at: fixedNow,
+        message: 'old', output: '', stopReason: 'error', freshSession: false,
+      })
+      writeFileSync(logFile(registryPath, chat.chatId), `${readFileSync(logFile(registryPath, chat.chatId), 'utf8')}${legacyLine}\n`)
+      const reread = pool.turnEntries(chat.chatId)
+      expect(reread).toHaveLength(2)
+      const legacy = reread[1] as { failureKind?: string }
+      expect(legacy.failureKind).toBeUndefined()
+      expect('failureKind' in legacy).toBe(false)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
 })
 
 /** A Codex (D25) named backend over the mock app-server; `spawned` records its children. */

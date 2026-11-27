@@ -44,6 +44,12 @@
    - **现在靠什么防**:`AGENTS.md` 明确禁用默认导出,`src/index.ts`、`src/dispatcher-preset.ts`、`src/client/index.ts` 全部命名导出,并由 loader 夹具测试覆盖。
    - **证据**:`AGENTS.md`「Conventions」、`src/index.ts` 头注。
 
+7. **后端错误文本不回显、分类要在宿主侧做**。
+   - **违反会怎样**:把外部 CLI 或上游接口返回的原始 `error.message` / `data` 原样塞进 `diagnostic`、轮日志、面板文案或工具报错,可能直接泄露用户配置、路径、账号/租户信息;而若推迟到前端再凭字符串猜错误类型,既破坏隐私边界又导致模型工具与面板口径分裂。
+   - **根因**:外部后端错误文本不受本插件控制,且 D31 已明确原始错误文本不得原样进入面板与模型工具。
+   - **现在靠什么防**:宿主侧 `src/failure-class.ts` 统一检查 `codexErrorInfo` / `message` / `data` / `details` 并只输出固定枚举 `failureKind?: 'quota'`;轮日志、面板和工具只消费该固定标签与固定指引(`backend quota exhausted; wait for the reset or switch backend`),原文只留在宿主内部 `onError` 诊断链路;由 `tests/failure-class.spec.ts`、`tests/connection-codex.spec.ts`、`tests/pool.spec.ts`、`tests/tools.spec.ts` 共同断言原文不泄露。
+   - **证据**:D31、D50、`src/failure-class.ts`、`tests/tools.spec.ts`、`tests/pool.spec.ts`。
+
 ---
 
 ## 二、官方组件:以类型声明为准
@@ -344,3 +350,4 @@
 - **2026-11-27｜父作用域 `scope.get('remote')` 触发 DSH `without inject` 拦截**:真机详情页始终显示「实时输出不可用」,裸 Cordis 单测未复现,0.7.5 改为子作用域捕获 + 结构性断言守门(提交 `a9232eb`)。
 - **2026-11-27｜探针证伪 `backends.*.model` 标 `volatile` 与 `configEditor.edit` 热改**:证实字典子项不可标 `volatile`、写普通字段必销毁池杀在途轮,改走顶层 `backendDefaults` 字典(D48、提交 `6f8f0ce`)。
 - **2026-11-27｜详情页单滚动容器触发约 7.8 Hz GPU 瓦片闪白与顶缝漏字**:录屏逐帧抓出跨秒同像素行水平半字裁切,0.7.6 拆分隔离滚动区、离屏停动画并稳定在途快照,待真机复核(D49、提交 `45b0faf`)。
+- **2026-11-27｜后端额度耗尽与通用故障混标为红「出错」**:Codex `usageLimitExceeded` 实发后暴露调度模型与面板无法区分「换后端/等重置」与代码故障,0.7.7 新增宿主侧 `failure-class.ts` 分类与橙色「额度耗尽」标注、原文不回显,agy/kiro 通用正则待样本校准(D50)。

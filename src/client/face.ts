@@ -9,6 +9,7 @@
 
 import type { PanelFeatures } from '../panel-features.ts'
 import type { BackendStatusSnapshot } from '../backend-status.ts'
+import type { FailureKind } from '../failure-class.ts'
 import type { LatestTurnSummary } from '../team-view.ts'
 
 /**
@@ -128,6 +129,8 @@ export interface TurnItem {
   readonly stopReason: string
   readonly freshSession: boolean
   readonly diagnostic?: string
+  /** Host-classified failure reason for an `error` turn (D50); absent otherwise or with older hosts. */
+  readonly failureKind?: FailureKind
 }
 
 /** A reconnect event. Mirrors the host `EventSummary`. */
@@ -148,7 +151,7 @@ export interface RunningItem {
 
 /** One turn-log entry in full, as `acpResume/turn` returns it (subset the page reads). */
 export type FullEntry =
-  | { readonly seq: number; readonly kind: 'turn'; readonly message: string; readonly output: string; readonly diagnostic?: string }
+  | { readonly seq: number; readonly kind: 'turn'; readonly message: string; readonly output: string; readonly diagnostic?: string; readonly failureKind?: FailureKind }
   | { readonly seq: number; readonly kind: 'event'; readonly message?: string; readonly error?: string }
 
 /** The detail page's published view of one chat. */

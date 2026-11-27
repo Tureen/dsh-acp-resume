@@ -8,6 +8,7 @@
  */
 
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import type { FailureKind } from '../failure-class.ts'
 import { teamCardState, type TeamCardState } from '../team-view.ts'
 import { ChatSettings } from './ChatSettings.tsx'
 import type { ChatsPanelInjected, PanelChat } from './face.ts'
@@ -68,28 +69,30 @@ function shortId(chatId: string): string {
   return chatId.startsWith('chat-') ? `chat-${chatId.slice(5, 13)}` : chatId.slice(0, 8)
 }
 
-function teamDot(state: TeamCardState, active: boolean): { readonly key: string; readonly dot: StateDotState; readonly step?: true } {
+function teamDot(state: TeamCardState, active: boolean, failureKind?: FailureKind): { readonly key: string; readonly dot: StateDotState; readonly step?: true } {
   switch (state) {
     case 'running': return { key: 'ongoing', dot: 'ongoing' }
-    case 'error': return { key: 'error', dot: 'error' }
+    case 'error': return failureKind === 'quota' ? { key: 'warning', dot: 'warning' } : { key: 'error', dot: 'error' }
     case 'cancelled': return { key: 'warning', dot: 'warning' }
     case 'completed': return { key: 'done', dot: 'done' }
     case 'idle': return active ? { key: 'idle', dot: 'idle' } : { key: 'released', dot: 'idle', step: true }
   }
 }
 
-function teamRail(state: TeamCardState, freshSession: boolean): RailState {
+function teamRail(state: TeamCardState, freshSession: boolean, failureKind?: FailureKind): RailState {
   switch (state) {
     case 'running': return 'running'
-    case 'error': return 'error'
+    case 'error': return failureKind === 'quota' ? 'warn' : 'error'
     case 'cancelled': return 'warn'
     case 'completed': return freshSession ? 'warn' : 'none'
     case 'idle': return 'none'
   }
 }
 
-function teamTag(state: TeamCardState, stopReason: string | undefined, freshSession: boolean): { readonly key: PanelCopyKey; readonly tone: TagTone } | undefined {
-  if (state === 'error') return { key: 'stopError', tone: 'danger' }
+function teamTag(state: TeamCardState, stopReason: string | undefined, freshSession: boolean, failureKind?: FailureKind): { readonly key: PanelCopyKey; readonly tone: TagTone } | undefined {
+  if (state === 'error') {
+    return failureKind === 'quota' ? { key: 'stopQuota', tone: 'warning' } : { key: 'stopError', tone: 'danger' }
+  }
   if (state === 'cancelled') {
     if (stopReason === 'max-tokens') return { key: 'stopMaxTokens', tone: 'warning' }
     if (stopReason === 'refusal') return { key: 'stopRefusal', tone: 'warning' }
@@ -113,9 +116,9 @@ function TeamRoleCard({ chat, settings, now, pending, onOpen, onRelease, onDelet
   const state = teamCardState(chat)
   const turn = chat.latestTurn
   const fresh = turn?.freshSession === true
-  const dotInfo = teamDot(state, chat.active)
-  const rail = teamRail(state, fresh)
-  const tag = teamTag(state, turn?.stopReason, fresh)
+  const dotInfo = teamDot(state, chat.active, turn?.failureKind)
+  const rail = teamRail(state, fresh, turn?.failureKind)
+  const tag = teamTag(state, turn?.stopReason, fresh, turn?.failureKind)
   const short = shortId(chat.chatId)
   const roleName = chat.role ?? chat.label ?? short
   const menuItems: MenuEntry[] = [

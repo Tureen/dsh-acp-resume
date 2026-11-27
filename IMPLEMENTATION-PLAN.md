@@ -66,6 +66,8 @@
 
 | 0.7.6 | D49 详情页滚动容器拆分、层隔离与在途态快照稳定 | `ChatDetail` 固定非 sticky 顶栏 + 独立 `isolation: isolate` 滚动区（消顶缝漏字与 `zIndex` 倒挂）、`RunningWorkspace` `contain: layout paint` + `IntersectionObserver`/`tab.visible` 离屏停动画、`.acp-detail-md` 取消代码块二级 sticky；`detail-source`/`chats-source`/`workflows-source` 在途态保快轮询不发重复快照 | `panel-chrome` 7/7 通过、`client` 151/152（仅新增 D49 断言中 jsdom 将 `flex: 'none'` 规范化为 `'0 0 auto'`，已修正待复跑/CI）、`typecheck:client` 与 `build` 通过；**macOS Desktop GPU 瓦片闪白消除待真机录屏确认** | ◐ |
 
+| 0.7.7 | D50 后端额度耗尽宿主侧识别与面板独立标注 | `src/failure-class.ts`（Codex `usageLimitExceeded` 已实发验证 + 通用推断正则待 agy/kiro 样本校准，不回显原文）；`TurnRecord` 可选 `failureKind?: 'quota'`（注册表字节不变）；`acp_chat_send` 固定换后端指引；详情页与 `TeamSection` 橙色竖条 + 橙色「额度耗尽」/「quota used up」Tag，折叠历史计入「需留意」而非「出错」 | `typecheck:client` 与 `build` 通过；`failure-class` 4/4、`connection-codex` 40/40、`pool` 98/98、`tools` 59/59 均绿；`client.spec.tsx` 与其余 D18/D22/D28/D31 套件因本机 1 分钟负载升至 35.87（> 20）按约束暂停，待低负载或 CI 补跑 | ◐ |
+
 | 待办 | Codex 会话级切换 | 读取并缓存完整模型目录及逐模型强度清单，再接入每轮覆盖 | 当前显示暂不支持；版本待定 | ☐ |
 
 ## 冒烟剧本(第 6 步固定内容)

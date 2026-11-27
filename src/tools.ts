@@ -22,6 +22,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpSteerUnsupportedError } from './connection.js'
+import { QUOTA_TOOL_GUIDANCE } from './failure-class.js'
 import { freshSessionNotice, type AcpSessionPool, type PoolSendHooks, type PoolSendResult, type PooledChatInfo, type RoleCallContext } from './pool.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import { bindParams, runWorkflow, type WorkflowObserver, type WorkflowResult } from './workflow-engine.js'
@@ -116,8 +117,10 @@ function turnFailureHeadline(result: PoolSendResult): string {
   switch (result.stopReason) {
     case 'aborted':
       return 'the agent stopped before finishing; the chat may hold a partial turn — check its state before resending'
-    case 'error':
-      return `the agent failed before it finished${diagnosticExcerpt(result.diagnostic)}`
+    case 'error': {
+      const base = `the agent failed before it finished${diagnosticExcerpt(result.diagnostic)}`
+      return result.failureKind === 'quota' ? `${QUOTA_TOOL_GUIDANCE}; ${base}` : base
+    }
     case 'max-tokens':
       return 'the agent ran out of room before it finished its answer'
     case 'refusal':

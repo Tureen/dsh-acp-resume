@@ -19,6 +19,7 @@ src/
   backend-compatibility.ts D31:发布的 CLI 版本范围；`pnpm check:compatibility` 校验生成文档
   backend-status.ts / backend-readiness.ts / backend-verification.ts D31/D41/D43:子作用域在每轮检测读取 volatile 超时预算；区分超时与握手失败。共享状态、启动版本探测、无会话验证与派工准入；模型与强度的探测报告独立于派工选择
   command-not-found.ts 固定 ENOENT 判断与模型侧行动指引(不回显用户配置)
+  failure-class.ts D50:宿主侧额度耗尽分类(纯函数;Codex usageLimitExceeded 已实发验证,通用正则待 agy/kiro 样本校准;不回显原文)
   permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
   connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose;
@@ -59,7 +60,7 @@ locale/         en.json / zh.json:插件显示元数据(meta.title/description),
 cordis.patch.yml bundle 层:插入 ACP 主插件和独立的 Dispatcher 声明行 `acp-dispatcher-settings`及全局文档发现行 acp-resume-skill-filesystem（D26/D37/D39）
 skills/acp-resume-docs/ D39:随包的中文使用文档，入口 + 七份任务参考 + 完整 profile 模板
 icon.svg        插件图标,由 package.json 顶层 icon 字段声明;locale 与图标都须在 files 里
-docs/LESSONS.md 开发经验(D50):按主题索引的坑与手法,链到证据;新踩的坑追加到对应章节并在年表加一行
+docs/LESSONS.md 开发经验:按主题索引的坑与手法,链到证据;新踩的坑追加到对应章节并在年表加一行
 scripts/
   backend-compatibility.mjs 生成/校验兼容表
   release.mjs    发布流水线:八个子命令各是一道门槛;tag 只在 CI 于完整 sha 上 success 时才打
@@ -101,7 +102,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 757 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 97 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 31 + `client.spec.tsx` 152 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 17 + `profile-settings.spec.tsx` 5 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 766 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 40 + `pool.spec.ts` 98 + `tools.spec.ts` 59 + `jobs.spec.ts` 12 + `panel.spec.ts` 31 + `client.spec.tsx` 154 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 17 + `profile-settings.spec.tsx` 5 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5 + `failure-class.spec.ts` 4;新套件落地时在此登记。
 
 
 

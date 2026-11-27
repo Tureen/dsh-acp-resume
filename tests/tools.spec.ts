@@ -169,6 +169,18 @@ describe('chat tools', () => {
     await expect(call('send', { chatId, message: 'x' })).rejects.toThrow(/the agent failed before it finished: Subagent failure \(provider: ACP; .*process-exit/)
   })
 
+  it('prepends fixed quota switch-backend guidance without echoing raw backend error text (D50)', async () => {
+    const raw = 'Rate limit exceeded for tenant=secret-tenant-xyz'
+    const { call } = mountTools({ MOCK_PROMPT_ERROR: raw })
+    const { chatId } = await call('start', { cwd: process.cwd() })
+    const error = await call('send', { chatId, message: 'x' }).then(() => undefined, (e: unknown) => e as Error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error?.message).toContain('backend quota exhausted; wait for the reset or switch backend')
+    expect(error?.message).toContain('switch backend')
+    expect(error?.message).not.toContain('secret-tenant-xyz')
+    expect(error?.message).not.toContain('Rate limit exceeded')
+  })
+
   it('prefixes a degraded answer with the fresh-session note', async () => {
     const dir = tempDir('acp-resume-tools-store-')
     const store = join(dir, 's.json')

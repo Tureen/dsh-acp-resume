@@ -19,6 +19,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
+import type { FailureKind } from './failure-class.js'
 import type { LiveFrame } from './live-buffer.js'
 import type { ChatOptions } from './chat-options.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
@@ -61,6 +62,8 @@ export interface TurnSummary {
   readonly stopReason: string
   readonly freshSession: boolean
   readonly diagnostic?: string
+  /** Host-classified failure reason for an `error` turn (D50); absent otherwise. */
+  readonly failureKind?: FailureKind
 }
 
 /** A reconnect event as the detail list shows it. */
@@ -120,6 +123,7 @@ function summarize(entry: LogEntry): TurnSummary | EventSummary {
     outputLines: countNonEmptyLines(entry.output),
     stopReason: entry.stopReason, freshSession: entry.freshSession,
     ...(entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic }),
+    ...(entry.failureKind === undefined ? {} : { failureKind: entry.failureKind }),
   }
 }
 

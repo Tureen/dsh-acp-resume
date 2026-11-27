@@ -19,6 +19,7 @@ import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { AcpConnectionError, AcpSteerUnsupportedError, type AcpConnection, type OpenAcpMode } from '../src/connection.ts'
 import { openCodexConnection, type CodexSessionSpec } from '../src/connection-codex.ts'
 import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
+import { classifyFailure } from '../src/failure-class.ts'
 import type { PermissionPolicy } from '../src/run.ts'
 import { toCodexPermissionRequest } from '../src/codex-approval.ts'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from '../src/permission-request.ts'
@@ -234,6 +235,21 @@ describe('codex prompt turns', () => {
   it('maps contextWindowExceeded to max-tokens', async () => {
     const conn = await open(makeSpec({ MOCK_CODEX_TURN_STATUS: 'contextWindowExceeded' }))
     expect((await conn.prompt(ask('p'), live())).stopReason).toBe('max-tokens')
+  })
+
+  it('classifies usageLimitExceeded on turn/completed as quota via onError without echoing raw error text', async () => {
+    const reported: Error[] = []
+    const conn = await open(makeSpec(
+      { MOCK_CODEX_TURN_STATUS: 'usageLimitExceeded', MOCK_CODEX_ERROR_MESSAGE: 'secret-token-xyz usage limit hit' },
+      { onError: error => reported.push(error) },
+    ))
+    const turn = await conn.prompt(ask('p'), live())
+    expect(turn.stopReason).toBe('error')
+    expect(turn.failureKind).toBe('quota')
+    expect(turn.diagnostic).toContain('provider: Codex')
+    expect(turn.diagnostic).not.toContain('secret-token-xyz')
+    expect(reported).toHaveLength(1)
+    expect(classifyFailure(reported[0])).toBe('quota')
   })
 })
 

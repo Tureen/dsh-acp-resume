@@ -51,6 +51,7 @@ import { openCodexConnection } from './connection-codex.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { buildChildArgs, stripVolatileFlags, type AgentEngineSetting, type ModelSelect } from './engine.js'
+import type { FailureKind } from './failure-class.js'
 import { commandKind, effortKindFor, resolveEffectiveBackendDefault, validateBackendDefaultEffort, type BackendDefault } from './settings-rules.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
@@ -155,7 +156,10 @@ export type ChatAttention = 'error' | 'warning'
 /** Attention of the newest log entry, if any (see {@link ChatAttention}). */
 export function attentionOf(entry: LogEntry | undefined): ChatAttention | undefined {
   if (entry === undefined) return undefined
-  if (entry.kind === 'turn') return entry.stopReason === 'error' ? 'error' : entry.freshSession ? 'warning' : undefined
+  if (entry.kind === 'turn') {
+    if (entry.stopReason === 'error') return entry.failureKind === 'quota' ? 'warning' : 'error'
+    return entry.freshSession ? 'warning' : undefined
+  }
   return entry.event === 'reconnect-failed' ? 'error' : 'warning'
 }
 
@@ -186,6 +190,8 @@ export interface PoolSendResult {
   /** Why `freshSession` is true; absent when this turn stayed on its saved session. */
   readonly freshSessionReason: FreshSessionReason | undefined
   readonly diagnostic: string | undefined
+  /** Host-classified failure reason when `stopReason === 'error'` (D50); absent otherwise. */
+  readonly failureKind?: FailureKind
 }
 
 /** Optional observers of one {@link AcpSessionPool.send}; a throwing observer is contained. */
@@ -957,9 +963,11 @@ export class AcpSessionPool {
       } else {
         this.consecutiveErrorTurns.delete(chatId)
       }
+      const failureKind = turn.stopReason === 'error' ? turn.failureKind : undefined
       this.logEntry(chatId, {
         kind: 'turn', startedAt, at: settledAt, message, output, stopReason: turn.stopReason, freshSession,
         ...(turn.diagnostic === undefined ? {} : { diagnostic: turn.diagnostic }),
+        ...(failureKind === undefined ? {} : { failureKind }),
       })
       // A cancelled turn leaves the connection's stream state indeterminate: ACP
       // updates carry no turn identity, so a late chunk from the cancelled turn
@@ -978,6 +986,7 @@ export class AcpSessionPool {
         freshSession,
         freshSessionReason,
         diagnostic: turn.diagnostic,
+        ...(failureKind === undefined ? {} : { failureKind }),
       }
     } finally {
       this.recordBackendChoices(chatId, chat.conn.sessionChoices)
