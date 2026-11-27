@@ -54,6 +54,10 @@ interface PoolSetup {
   onError?: (error: Error) => void
   backends?: ReadonlyMap<string, BackendSpec>
   dispatch?: PoolOptions['dispatch']
+  sessionModel?: string
+  sessionEffort?: string
+  effortOptionId?: 'effortLevel' | 'thought_level'
+  backendDefaults?: PoolOptions['backendDefaults']
 }
 
 function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: string; spawns: SpawnLog } {
@@ -65,6 +69,9 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
       args: setup.args ?? [mockServer],
       permission: 'reject',
       env: setup.env ?? {},
+      ...(setup.sessionModel === undefined ? {} : { sessionModel: setup.sessionModel }),
+      ...(setup.sessionEffort === undefined ? {} : { sessionEffort: setup.sessionEffort }),
+      ...(setup.effortOptionId === undefined ? {} : { effortOptionId: setup.effortOptionId }),
       // 测试用短宽限:取消后连接作废会同步走一次销毁梯子,默认 6s EOF 窗口会超用例预算
       disposeEofGraceMs: setup.disposeEofGraceMs ?? 500,
       disposeGraceMs: setup.disposeGraceMs ?? 500,
@@ -79,6 +86,7 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
     registryPath,
     idleTimeoutMs: setup.idleTimeoutMs ?? 600_000,
     ...(setup.backends === undefined ? {} : { backends: setup.backends }),
+    ...(setup.backendDefaults === undefined ? {} : { backendDefaults: setup.backendDefaults }),
     ...(setup.dispatch === undefined ? {} : { dispatch: setup.dispatch }),
     ...(setup.onWarn === undefined ? {} : { onWarn: setup.onWarn }),
   }
@@ -1602,11 +1610,11 @@ describe('D44 live chat selection', () => {
     expect(readFileSync(registryPath, 'utf8')).toBe(registry)
   })
 
-  it('blocks a setting RPC during a turn and after release without spawning or sending a request', async () => {
+  it('blocks a setting RPC during a turn, and records released overrides without spawning or sending a request', async () => {
     const dir = tempDir('acp-choice-busy-')
     const hold = join(dir, 'hold'), log = join(dir, 'requests')
     writeFileSync(hold, '')
-    const { pool, spawns } = makePool({ env: { ...selectionEnv(), MOCK_PROMPT_HOLD: hold, MOCK_SET_MODEL_FILE: log } })
+    const { pool, spawns, registryPath } = makePool({ env: { ...selectionEnv(), MOCK_PROMPT_HOLD: hold, MOCK_SET_MODEL_FILE: log } })
     const { chatId } = await pool.start(dir)
     const pending = pool.send(chatId, 'hold')
     try {
@@ -1614,10 +1622,13 @@ describe('D44 live chat selection', () => {
       await expect(pool.setChatModel(chatId, sonnet)).rejects.toThrow('is running; wait for the turn to finish')
     } finally { rmSync(hold); await pending }
     await pool.close(chatId)
-    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: false, reason: 'released' })
-    await expect(pool.setChatModel(chatId, sonnet)).rejects.toThrow('send a message to reconnect first')
+    const registryBefore = readFileSync(registryPath, 'utf8')
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: true, reason: 'released', model: { current: neon } })
+    await pool.setChatModel(chatId, sonnet)
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: true, reason: 'released', model: { current: sonnet } })
     expect(existsSync(log)).toBe(false)
     expect(spawns.children).toHaveLength(1)
+    expect(readFileSync(registryPath, 'utf8')).toBe(registryBefore)
   })
 
   it('falls back to the model config option and warns when an effort change is not confirmed', async () => {
@@ -1628,6 +1639,73 @@ describe('D44 live chat selection', () => {
     await expect(pool.setChatEffort(chatId, 'low')).rejects.toThrow('backend did not confirm effort "low"')
     expect(warnings).toContain('backend did not confirm effort "low"')
     expect(pool.chatOptions(chatId).effort).toMatchObject({ current: 'high' })
+  })
+
+  it('sources released chatOptions from live sibling, backend cache, or choicesUnknown (D48)', async () => {
+    const dir = tempDir('acp-choice-sources-')
+    const store = join(dir, 'sessions.json')
+    const { pool, registryPath } = makePool({ env: { ...selectionEnv(), MOCK_SESSION_STORE: store } })
+    const a = await pool.start(dir)
+    const b = await pool.start(dir)
+    await pool.setChatModel(b.chatId, sonnet)
+    await pool.close(a.chatId)
+    // Source 1: live sibling b on the same backend provides catalog (sonnet has 3 effort options).
+    const fromLive = pool.chatOptions(a.chatId)
+    expect(fromLive).toMatchObject({ supported: true, canChange: true, reason: 'released' })
+    expect(fromLive.choicesUnknown).toBeUndefined()
+    expect(fromLive.effort !== 'not-offered' && fromLive.effort?.options.map(o => o.value)).toEqual(['low', 'medium', 'high'])
+    // Source 2: once b is also released, in-memory backend cache still supplies the catalog.
+    await pool.close(b.chatId)
+    const fromCache = pool.chatOptions(a.chatId)
+    expect(fromCache).toMatchObject({ supported: true, canChange: true, reason: 'released' })
+    expect(fromCache.choicesUnknown).toBeUndefined()
+    expect(fromCache.model?.options.map(o => o.value)).toEqual([neon, sonnet, orchestrator])
+    // Source 3: fresh pool reading the same registry has neither live connections nor cache -> choicesUnknown.
+    const { pool: coldPool } = makePool({ registryPath, env: { ...selectionEnv(), MOCK_SESSION_STORE: store } })
+    expect(coldPool.chatOptions(a.chatId)).toEqual({
+      backend: 'default', supported: true, canChange: true, choicesUnknown: true, reason: 'released',
+    })
+  })
+
+  it('applies configured defaults then released reconnect override on openLoad, keeps registry untouched, and clears on purge (D48)', async () => {
+    const dir = tempDir('acp-choice-reconnect-')
+    const store = join(dir, 'sessions.json'), log = join(dir, 'requests.log')
+    const { pool, registryPath, spawns } = makePool({
+      sessionModel: neon,
+      sessionEffort: 'high',
+      effortOptionId: 'thought_level',
+      env: {
+        ...selectionEnv(),
+        MOCK_SESSION_STORE: store,
+        MOCK_SET_MODEL_FILE: log,
+        MOCK_SET_CONFIG_FILE: log,
+        MOCK_EFFORT_OPTION_ID: 'thought_level',
+      },
+    })
+    const { chatId, remoteSessionId } = await pool.start(dir)
+    await pool.close(chatId)
+    const registryBefore = readFileSync(registryPath, 'utf8')
+    await pool.setChatModel(chatId, sonnet)
+    await pool.setChatEffort(chatId, 'medium')
+    expect(spawns.children).toHaveLength(1)
+    expect(readFileSync(registryPath, 'utf8')).toBe(registryBefore)
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: true, reason: 'released', model: { current: sonnet }, effort: { current: 'medium' } })
+
+    // Reconnect via send: configured defaults (neon / high) apply first, then override (sonnet / medium).
+    writeFileSync(log, '')
+    const result = await pool.send(chatId, 'continue')
+    expect(result).toMatchObject({ remoteSessionId, freshSession: false, stopReason: 'completed' })
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+      `set_model ${remoteSessionId} ${neon}`,
+      `set_config_option ${remoteSessionId} thought_level high`,
+      `set_model ${remoteSessionId} ${sonnet}`,
+      `set_config_option ${remoteSessionId} thought_level medium`,
+    ])
+    expect(pool.chatOptions(chatId)).toMatchObject({ canChange: true, model: { current: sonnet }, effort: { current: 'medium' } })
+
+    // Purge cleans up the in-memory reconnect override as well.
+    await pool.remove(chatId)
+    expect(pool['reconnectOverrides'].has(chatId)).toBe(false)
   })
 })
 

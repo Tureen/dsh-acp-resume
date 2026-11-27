@@ -1,6 +1,6 @@
 # 配置 Dispatcher 的工具和调度方式
 
-右侧栏 → ACP 会话 → 设置可改 `dispatcherTools` 六项和 `dispatcherPrompt` 两项，直接保存到同一份 profile。新绑定的 Agent 使用更新后的工具与 persona，已绑定的 Agent 完成原任务时仍持有原版本。需要保留 YAML 注释时手改 profile。
+右侧栏 → ACP 会话 → 设置可改 `dispatcherTools` 六项和 `dispatcherPrompt` 两项（以及主插件的 `backendDefaults` 等实时项），直接保存到同一份 profile。新绑定的 Agent 使用更新后的工具与 persona，已绑定的 Agent 完成原任务时仍持有原版本；在途的 ACP 会话不受影响。需要保留 YAML 注释时手改 profile。
 
 标准模式已经能用全局 ACP 工具，适合边执行边派工。新会话选 ACP Dispatcher 后，主 Agent 负责分配、转述和汇总，外部 Worker 执行任务。主 Agent 的工具选择对 Worker 的命令、权限和沙箱没有覆盖作用。
 

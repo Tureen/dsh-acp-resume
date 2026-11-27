@@ -819,7 +819,14 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
           </>
         ) : null}
       </div>
-      {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => b.id)}
+      {showSettings && <ProfileSettings key={currentSessionId} sessionId={currentSessionId} forms={profileForms?.()} backends={(backendView?.data?.backends ?? []).filter(b => b.configured || b.automatic).map(b => ({
+        id: b.id,
+        label: b.label,
+        ...(b.automatic ? { automatic: true as const } : {}),
+        ...(b.effortKind ? { effortKind: b.effortKind } : {}),
+        ...(b.staticModel ? { staticModel: b.staticModel } : {}),
+        ...(b.staticEffort ? { staticEffort: b.staticEffort } : {}),
+      }))}
         t={t} onSaved={path => { if (path === 'workflow') void features.refresh() }} />}
       {backendAlert === undefined ? null : (
         <button

@@ -54,10 +54,11 @@ function SettingsForm({ chat, actions, t }: Props) {
   function select(field: 'model' | 'effort', entry?: Selection) {
     const title = t(field === 'model' ? 'sessionModel' : 'sessionEffort')
     if (!entry?.options.length) return <p style={styles.hint}>{title} · {t('optionsUnreported')}</p>
+    const disabled = saving || running || data?.reason === 'changing' || data?.canChange === false
     return (
       <label style={styles.field}>
         <span>{title}</span>
-        <select style={styles.select} value={entry.current ?? ''} disabled={saving || running || data?.reason === 'changing'}
+        <select style={styles.select} value={entry.current ?? ''} disabled={disabled}
           onChange={event => { void change(field, event.target.value) }}>
           {!entry.options.some(o => o.value === entry.current) && <option value={entry.current ?? ''} disabled>{entry.current ?? t('optionsUnreported')}</option>}
           {entry.options.map(option => <option key={option.value} value={option.value}>{option.name}</option>)}
@@ -65,16 +66,19 @@ function SettingsForm({ chat, actions, t }: Props) {
       </label>
     )
   }
+  const released = data?.reason === 'released' || !chat.active
+  const legacyReleased = released && data?.canChange === false
   return (
     <div style={styles.body} data-chat-settings-body="">
       {error && <p role="alert" style={styles.error}>{error}</p>}
-      {!data ? !error && <p style={styles.notice}>{t('loading')}</p> : !data.supported ? <p style={styles.hint}>{t('switchUnsupported')}</p>
-        : data.reason === 'released' || !chat.active ? <p style={styles.hint}>{t('switchReleased')}</p>
+      {!data ? !error && <p style={styles.notice}>{t('loading')}</p>
+        : !data.supported ? <p style={styles.hint}>{t('switchUnsupported')}</p>
+        : data.choicesUnknown ? <p style={styles.hint}>{t('switchChoicesUnknown')}</p>
+        : legacyReleased ? <p style={styles.hint}>{t('switchReleased')}</p>
         : <>
           {select('model', data.model)}
           {data.effort === 'not-offered' ? <p style={styles.hint}>{t('sessionEffort')} · {t('effortNotOffered')}</p> : select('effort', data.effort)}
-          {running && <p style={styles.hint}>{t('switchRunning')}</p>}
-          <p style={styles.hint}>{t('switchLifetime')}</p>
+          <p style={styles.hint}>{t(running ? 'switchRunning' : released ? 'switchReleased' : 'switchLifetime')}</p>
         </>}
     </div>
   )

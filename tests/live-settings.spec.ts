@@ -24,7 +24,7 @@ const changes = [
   ['dispatcherPrompt.extraRules', 'Share findings.'], ['dispatcherPrompt.overrideRules', true],
 ] as const
 
-async function fixture() {
+async function fixture(extraMain: Record<string, unknown> = {}) {
   const { ctx, dir } = await dispatcherHost()
   const home = join(dir, 'home'), profileDir = join(home, 'profiles', 'test'), patchPath = join(profileDir, 'cordis.patch.yml')
   const bundle = 'test-settings-bundle'
@@ -34,10 +34,13 @@ async function fixture() {
   writeFileSync(join(home, 'package.json'), '{"name":"temporary-installation"}')
   writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: bundle, version: '1.0.0', dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
   const hold = join(dir, 'hold')
+  const extraEnv = (extraMain.env as Record<string, string> | undefined) ?? {}
+  const { env: _ignoredEnv, ...restMain } = extraMain
   const rows = [
     { id: main, name: 'dsh-acp-resume', config: { command: process.execPath, args: [mock], agentEngine: 'none', discoverBackends: false,
       backends: { alternate: { command: process.execPath, args: [mock] } }, defaultBackend: 'default',
-      probeTimeoutMs: 4000, registryPath: join(dir, 'registry.json'), env: { MOCK_PROMPT_HOLD: hold, MOCK_TEXT: 'saved' } } },
+      probeTimeoutMs: 4000, registryPath: join(dir, 'registry.json'), ...restMain,
+      env: { MOCK_PROMPT_HOLD: hold, MOCK_TEXT: 'saved', ...extraEnv } } },
     { id: declaration, name: 'dsh-acp-resume/dispatcher-preset', config: { dispatcherPrompt: { extraRules: 'Original rule.' } } },
   ]
   writeFileSync(join(pkg, 'cordis.patch.yml'), stringify([{ insert: rows.map(row => ({ id: row.id, name: row.name })) }]))
@@ -131,5 +134,86 @@ it('preserves accepted settings on conflicts, forbidden paths and invalid combin
   await expect(ctx.settings.mutate(main, [{ op: 'set', path: ['probeTimeoutMs'], value: 50 }], revision)).rejects.toThrow('changed since it was read')
   await expect(ctx.settings.mutate(main, [{ op: 'set', path: ['command'], value: 'another' }])).rejects.toThrow('is not volatile')
   await expect(ctx.settings.mutate(main, [{ op: 'set', path: ['workflow'], value: true }])).rejects.toThrow('workflow: true requires roles: true')
+  await expect(ctx.settings.mutate(main, [{ op: 'set', path: ['backendDefaults', 'default', 'effort'], value: 'bogus' }])).rejects.toThrow('is not a valid effort level')
   expect(readFileSync(patchPath, 'utf8')).toBe(before)
 })
+
+it('updates backendDefaults live without remounting the pool, finishes in-flight turns, and applies to new and reconnected chats (D48)', async () => {
+  const logName = 'd48-requests.log'
+  const storeName = 'd48-sessions.json'
+  const { ctx, dir, hold, patchPath } = await fixture({
+    modelSelect: 'session',
+    model: 'static-model',
+    effort: 'low',
+    backends: {
+      alternate: { command: process.execPath, args: [mock], agentEngine: 'none', modelSelect: 'session' },
+      agy: { command: 'agy', args: ['acp'], agentEngine: 'none', modelSelect: 'session' },
+    },
+  })
+  const log = join(dir, logName)
+  const store = join(dir, storeName)
+  const entry = () => ctx.loader.resolve('include:' + main)
+  const fiber = entry().fiber
+  const panel = ctx.get('acpResume')!
+  const pool = panel['pool']
+  const disposed = vi.spyOn(pool, 'disposeAll')
+  // Attach mock log/store env to the default backend spec so every spawned process records its startup RPCs.
+  pool['backends'].get('default')!.specBase.env.MOCK_SET_MODEL_FILE = log
+  pool['backends'].get('default')!.specBase.env.MOCK_SET_CONFIG_FILE = log
+  pool['backends'].get('default')!.specBase.env.MOCK_SESSION_STORE = store
+
+  const releasedChat = await pool.start(dir)
+  await pool.close(releasedChat.chatId)
+  const activeChat = await pool.start(dir)
+
+  writeFileSync(hold, '')
+  const inFlightTurn = pool.send(activeChat.chatId, 'in-flight-work')
+  const describe = () => ctx.settings.describe().find(row => row.ns === main)!
+  try {
+    expect(panel.list().find(row => row.chatId === activeChat.chatId)?.inFlight?.chatId).toBe(activeChat.chatId)
+    const rev = describe().revision
+    await ctx.settings.mutate(main, [
+      { op: 'set', path: ['backendDefaults', 'default', 'model'], value: 'live-model' },
+      { op: 'set', path: ['backendDefaults', 'default', 'effort'], value: 'xhigh' },
+    ], rev)
+    expect(entry().fiber === fiber && ctx.get('acpResume')!['pool'] === pool).toBe(true)
+    expect(disposed).not.toHaveBeenCalled()
+    expect(panel.list().find(row => row.chatId === activeChat.chatId)?.inFlight?.chatId).toBe(activeChat.chatId)
+    expect(describe().value.backendDefaults).toEqual({ default: { model: 'live-model', effort: 'xhigh' } })
+    const beforeReject = readFileSync(patchPath, 'utf8')
+    await expect(ctx.settings.mutate(main, [{ op: 'set', path: ['backendDefaults', 'agy', 'effort'], value: 'max' }], describe().revision))
+      .rejects.toThrow('is not a valid effort level for agy')
+    expect(readFileSync(patchPath, 'utf8')).toBe(beforeReject)
+  } finally {
+    rmSync(hold, { force: true })
+  }
+  expect(await inFlightTurn).toMatchObject({ remoteSessionId: activeChat.remoteSessionId, output: 'saved', stopReason: 'completed' })
+  expect(disposed).not.toHaveBeenCalled()
+
+  // New chat uses live backendDefaults instead of static model/effort.
+  writeFileSync(log, '')
+  const freshChat = await pool.start(dir)
+  expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+    `set_model ${freshChat.remoteSessionId} live-model`,
+    `set_config_option ${freshChat.remoteSessionId} effortLevel xhigh`,
+  ])
+
+  // Released chat reconnects with live backendDefaults.
+  writeFileSync(log, '')
+  const reconnected = await pool.send(releasedChat.chatId, 'after-update')
+  expect(reconnected).toMatchObject({ remoteSessionId: releasedChat.remoteSessionId, freshSession: false, stopReason: 'completed' })
+  expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+    `set_model ${releasedChat.remoteSessionId} live-model`,
+    `set_config_option ${releasedChat.remoteSessionId} effortLevel xhigh`,
+  ])
+
+  // Clearing backendDefaults.default falls back to static model/effort.
+  await ctx.settings.mutate(main, [{ op: 'unset', path: ['backendDefaults', 'default'] }], describe().revision)
+  writeFileSync(log, '')
+  const fallbackChat = await pool.start(dir)
+  expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([
+    `set_model ${fallbackChat.remoteSessionId} static-model`,
+    `set_config_option ${fallbackChat.remoteSessionId} effortLevel low`,
+  ])
+  expect(disposed).not.toHaveBeenCalled()
+}, 15_000)

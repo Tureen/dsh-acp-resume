@@ -203,7 +203,7 @@ function TeamRoleCard({ chat, settings, now, pending, onOpen, onRelease, onDelet
             )}
           </>
         )}
-        {settings && chat.active ? <ChatSettings key={chat.connectionId ?? 'released'} chat={chat} actions={settings} t={t} /> : null}
+        {settings ? <ChatSettings key={chat.connectionId ?? 'released'} chat={chat} actions={settings} t={t} /> : null}
       </PanelCard>
     </li>
   )

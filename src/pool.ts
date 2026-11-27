@@ -44,13 +44,14 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { BackendReport } from './backend-status.js'
 import { LiveBuffer, type LiveSubscription } from './live-buffer.js'
-import type { ChatOptions } from './chat-options.js'
+import type { ChatOptions, SessionChoices } from './chat-options.js'
 import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
-import { stripVolatileFlags } from './engine.js'
+import { buildChildArgs, stripVolatileFlags, type AgentEngineSetting, type ModelSelect } from './engine.js'
+import { commandKind, effortKindFor, resolveEffectiveBackendDefault, validateBackendDefaultEffort, type BackendDefault } from './settings-rules.js'
 import { TurnLog, type LogEntry, type LogEntryInput } from './turn-log.js'
 import type { PermissionRequestResolver } from './permission-request.js'
 import type { DispatchRoute } from './backend-readiness.js'
@@ -208,6 +209,12 @@ export interface BackendSpec {
   readonly protocol?: 'acp' | 'codex'
   /** Synthesized from installed CLI discovery, rather than authored by the user. */
   readonly automatic?: true
+  /** Static launch metadata needed to overlay live `backendDefaults` without remounting (D48). */
+  readonly rawArgs?: readonly string[]
+  readonly agentEngine?: AgentEngineSetting
+  readonly modelSelect?: ModelSelect
+  readonly staticModel?: string
+  readonly staticEffort?: string
   /** Codex thread parameters; model may be resolved by the readiness probe. */
   readonly codex?: {
     readonly model?: string
@@ -226,6 +233,8 @@ export interface PoolOptions {
   readonly registryPath: string
   /** Idle window (ms) after a settled turn before the process is released; positive, ≤ `MAX_TIMER_DELAY_MS`. */
   readonly idleTimeoutMs: number
+  /** Live per-backend default model/effort overrides, read on each new session and reconnect (D48). */
+  readonly backendDefaults?: () => Readonly<Record<string, BackendDefault>>
   /** Non-fatal pool conditions (e.g. a corrupt registry file set aside). */
   readonly onWarn?: (message: string) => void
   /** Host admission for new chats, independent of existing chats' saved bindings. */
@@ -515,6 +524,10 @@ export class AcpSessionPool {
   private readonly workflowLog: WorkflowLog
   /** D29 runs in progress by owner session; memory only. */
   private readonly runningWorkflows = new Map<string, Map<string, TrackedRun>>()
+  /** Per-backend latest reported SessionChoices cache for released chats; memory only (D48). */
+  private readonly backendChoicesCache = new Map<string, SessionChoices>()
+  /** Per-chat session-level overrides applied after config defaults on reconnect; memory only, never persisted (D44/D48). */
+  private readonly reconnectOverrides = new Map<string, { readonly model?: string; readonly effort?: string }>()
   private disposed = false
 
   constructor(private readonly opts: PoolOptions) {
@@ -605,7 +618,45 @@ export class AcpSessionPool {
     return chat.buffer.subscribe()
   }
 
-  /** Snapshot of the connection report. Reading options never opens or wakes a chat. */
+  /** Cache the latest choices observed for a chat's backend (memory only, D48). */
+  private recordBackendChoices(chatId: string, choices: SessionChoices | undefined): void {
+    if (!choices) return
+    const entry = this.registry.get(chatId)
+    if (!entry) return
+    this.backendChoicesCache.set(this.backendName(entry), choices)
+  }
+
+  /** Find options for a backend: prefer another live connection on the same backend, else the in-memory cache (D48). */
+  private choicesForBackend(backend: string): SessionChoices | undefined {
+    let best: SessionChoices | undefined
+    let bestAt = -1
+    for (const live of this.live.values()) {
+      if (live.closing || live.conn.processSettled || !live.conn.sessionChoices) continue
+      const row = this.registry.get(live.chatId)
+      if (!row || this.backendName(row) !== backend) continue
+      const at = live.conn.settingsReport?.at ?? 0
+      if (best === undefined || at >= bestAt) {
+        best = live.conn.sessionChoices
+        bestAt = at
+      }
+    }
+    if (best !== undefined) {
+      this.backendChoicesCache.set(backend, best)
+      return best
+    }
+    return this.backendChoicesCache.get(backend)
+  }
+
+  /** Effective defaults for a backend: live `backendDefaults[id]` > static profile fields (D48). */
+  private effectiveDefaultsFor(backend: BackendSpec): { readonly model?: string; readonly effort?: string } {
+    return resolveEffectiveBackendDefault(
+      this.opts.backendDefaults?.()[backend.name],
+      backend.protocol === 'codex' ? backend.codex?.model : (backend.staticModel ?? backend.specBase.sessionModel),
+      backend.protocol === 'codex' ? backend.codex?.effort : (backend.staticEffort ?? backend.specBase.sessionEffort),
+    )
+  }
+
+  /** Snapshot of the connection report or released-chat catalog. Reading options never opens or wakes a chat. */
   chatOptions(chatId: string): ChatOptions {
     const entry = this.registry.get(chatId)
     if (!entry) throw new Error(`acp-resume: unknown chat ${chatId}`)
@@ -614,7 +665,26 @@ export class AcpSessionPool {
       return { backend, supported: false, canChange: false, reason: 'codex session-level switch is not available yet' }
     }
     const chat = this.live.get(chatId)
-    if (!chat || chat.closing || chat.conn.processSettled) return { backend, supported: true, canChange: false, reason: 'released' }
+    if (!chat || chat.closing || chat.conn.processSettled) {
+      const choices = this.choicesForBackend(backend)
+      if (!choices) return { backend, supported: true, canChange: true, choicesUnknown: true, reason: 'released' }
+      const override = this.reconnectOverrides.get(chatId)
+      const spec = this.backends.get(backend)
+      const defaults = spec ? this.effectiveDefaultsFor(spec) : {}
+      const modelCurrent = override?.model ?? defaults.model ?? choices.model?.current
+      const effortCurrent = override?.effort ?? defaults.effort ?? (choices.effort && choices.effort !== 'not-offered' ? choices.effort.current : undefined)
+      const projected: SessionChoices = {
+        ...(choices.model ? { model: { ...choices.model, ...(modelCurrent === undefined ? {} : { current: modelCurrent }) } } : {}),
+        ...(choices.effort === 'not-offered'
+          ? { effort: 'not-offered' }
+          : choices.effort
+            ? { effort: { ...choices.effort, ...(effortCurrent === undefined ? {} : { current: effortCurrent }) } }
+            : {}),
+        ...(choices.effortId === undefined ? {} : { effortId: choices.effortId }),
+      }
+      return { ...projected, backend, supported: true, canChange: true, reason: 'released' }
+    }
+    this.recordBackendChoices(chatId, chat.conn.sessionChoices)
     const reason = (chat.busy || this.starting.has(chatId)) ? 'running' : chat.changing ? 'changing' : undefined
     return { ...chat.conn.sessionChoices, backend, supported: true, canChange: !reason, ...(reason && { reason }) }
   }
@@ -625,9 +695,28 @@ export class AcpSessionPool {
   private async changeSelection(chatId: string, field: 'model' | 'effort', value: string): Promise<void> {
     this.assertLive()
     const state = this.chatOptions(chatId)
-    if (state.reason === 'released') throw new Error(`chat ${chatId} is released; send a message to reconnect first`)
     if (state.reason === 'running') throw new Error(`chat ${chatId} is running; wait for the turn to finish`)
-    if (state.reason) throw new Error(state.reason === 'changing' ? 'a session setting change is in progress' : state.reason)
+    if (state.reason === 'changing') throw new Error('a session setting change is in progress')
+    if (!state.supported) throw new Error(state.reason ?? 'session-level settings are unavailable')
+    if (state.reason === 'released') {
+      if (!state.choicesUnknown) {
+        const selection = state[field]
+        if (!selection || selection === 'not-offered' || !selection.options.some(option => option.value === value)) {
+          throw new Error(`backend does not offer ${field} "${value}" for this chat`)
+        }
+      } else {
+        if (!value.trim()) throw new Error(`${field} must be a non-empty string`)
+        if (field === 'effort') {
+          const spec = this.backends.get(state.backend)
+          const kind = spec ? effortKindFor({ protocol: spec.protocol, command: spec.specBase.command }) : 'kiro'
+          const invalid = validateBackendDefaultEffort(state.backend, value, kind)
+          if (invalid !== undefined) throw new Error(invalid)
+        }
+      }
+      const prior = this.reconnectOverrides.get(chatId) ?? {}
+      this.reconnectOverrides.set(chatId, { ...prior, [field]: value })
+      return
+    }
     const selection = state[field]
     if (!selection || selection === 'not-offered' || !selection.options.some(option => option.value === value)) {
       throw new Error(`backend does not offer ${field} "${value}" for this chat`)
@@ -639,6 +728,16 @@ export class AcpSessionPool {
     try {
       await chat.conn.setSelection(field, value)
       if (chat.closing || this.live.get(chatId) !== chat) throw new Error(`chat ${chatId} was released during the setting change`)
+      this.recordBackendChoices(chatId, chat.conn.sessionChoices)
+      const prior = this.reconnectOverrides.get(chatId) ?? {}
+      if (field === 'model') {
+        const nextEffort = chat.conn.sessionChoices?.effort
+        const keepEffort = prior.effort !== undefined && nextEffort !== undefined && nextEffort !== 'not-offered'
+          && nextEffort.options.some(option => option.value === prior.effort)
+        this.reconnectOverrides.set(chatId, { model: value, ...(keepEffort ? { effort: prior.effort } : {}) })
+      } else {
+        this.reconnectOverrides.set(chatId, { ...prior, effort: value })
+      }
     } catch (error) {
       this.report(error)
       throw error
@@ -881,6 +980,7 @@ export class AcpSessionPool {
         diagnostic: turn.diagnostic,
       }
     } finally {
+      this.recordBackendChoices(chatId, chat.conn.sessionChoices)
       chat.busy = false
       chat.busyPromise = undefined
       chat.jobText = undefined
@@ -941,6 +1041,7 @@ export class AcpSessionPool {
     this.registry.remove(chatId)
     this.roster.removeChat(chatId)
     this.consecutiveErrorTurns.delete(chatId)
+    this.reconnectOverrides.delete(chatId)
     this.turnLog.remove(chatId)
     // D29: once a session has no chat left, its workflow log has nothing to point to.
     if (owner !== undefined && owner !== '' && !this.registry.all().some(e => e.ownerSessionId === owner)) this.workflowLog.remove(owner)
@@ -1212,6 +1313,8 @@ export class AcpSessionPool {
     await Promise.allSettled([...this.starting.values()].map(window => this.abortWindow(window)))
     await Promise.allSettled([...this.live.keys()].map(id => this.close(id)))
     this.consecutiveErrorTurns.clear()
+    this.reconnectOverrides.clear()
+    this.backendChoicesCache.clear()
   }
 
   /** Abort an open window and wait for it to settle, at most {@link windowGraceMs}. */
@@ -1305,23 +1408,52 @@ export class AcpSessionPool {
     }
   }
 
-  /** Open the bound backend's wire protocol (D25). Only a new chat uses discovery results. */
+  /** Open the bound backend's wire protocol (D25), applying live `backendDefaults` over static config (D48). */
   private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined, source: 'start' | 'continuation'): Promise<AcpConnection> {
     const checkedCommand = source === 'start' ? this.opts.dispatch?.executable?.(backend.name) : undefined
     const base = { ...backend.specBase, cwd, command: checkedCommand ?? backend.specBase.command }
-    if (backend.protocol !== 'codex') return openAcpConnection(base, open, signal)
+    const liveDefault = this.opts.backendDefaults?.()[backend.name]
+    const hasLiveDefault = Boolean(liveDefault?.model?.trim() || liveDefault?.effort?.trim())
+    const effective = this.effectiveDefaultsFor(backend)
+    if (backend.protocol !== 'codex') {
+      if (!hasLiveDefault) return openAcpConnection(base, open, signal)
+      const cli = commandKind(backend.specBase.command)
+      const useSession = backend.modelSelect === 'session'
+        || backend.specBase.sessionModel !== undefined
+        || backend.specBase.sessionEffort !== undefined
+        || cli === 'agy'
+        || (cli === 'kiro-cli' && (backend.agentEngine ?? 'v3') === 'v3')
+      const args = backend.rawArgs !== undefined
+        ? buildChildArgs(backend.rawArgs, {
+            engine: backend.agentEngine ?? 'v3',
+            modelSelect: useSession ? 'session' : 'flag',
+            ...(effective.model === undefined ? {} : { model: effective.model }),
+            ...(effective.effort === undefined ? {} : { effort: effective.effort }),
+          })
+        : base.args
+      const acpSpec: AcpSessionSpec = {
+        ...base,
+        args,
+        ...(useSession ? {
+          ...(effective.model === undefined ? {} : { sessionModel: effective.model }),
+          ...(effective.effort === undefined ? {} : { sessionEffort: effective.effort }),
+          ...(effective.effort === undefined ? {} : { effortOptionId: cli === 'agy' ? 'thought_level' : 'effortLevel' }),
+        } : {}),
+      }
+      return openAcpConnection(acpSpec, open, signal)
+    }
     const codex = backend.codex
     if (codex === undefined) throw new Error(`acp-resume: missing settings for Codex backend ${backend.name}`)
     // Resume preserves the thread model unless explicitly overridden. If D6 replaces
     // a lost thread without an override, app-server uses its own model settings.
-    const model = codex.model ?? (source === 'start' ? this.opts.dispatch?.model?.(backend.name) : undefined)
+    const model = effective.model ?? (source === 'start' ? this.opts.dispatch?.model?.(backend.name) : undefined)
     if (source === 'start' && backend.automatic && model === undefined) throw new Error(`acp-resume: no usable default model for Codex backend ${backend.name}`)
     return openCodexConnection({
       ...base,
       ...(model === undefined ? {} : { codexModel: model }),
       ...(codex.sandbox === undefined ? {} : { sandbox: codex.sandbox }),
       ...(codex.approvalPolicy === undefined ? {} : { approvalPolicy: codex.approvalPolicy }),
-      ...(codex.effort === undefined ? {} : { codexEffort: codex.effort }),
+      ...(effective.effort === undefined ? {} : { codexEffort: effective.effort }),
     }, open, signal)
   }
 
@@ -1338,6 +1470,7 @@ export class AcpSessionPool {
   }
 
   private async release(chatId: string, chat: LiveChat): Promise<void> {
+    this.recordBackendChoices(chatId, chat.conn.sessionChoices)
     this.clearIdleTimer(chat)
     if (chat.busyPromise !== undefined) {
       chat.conn.notifyCancel()
@@ -1353,21 +1486,45 @@ export class AcpSessionPool {
     }
   }
 
+  /** Apply any per-chat reconnect override on top of configured defaults after openLoad/openNew (D44/D48). */
+  private async applyReconnectOverride(chatId: string, backend: BackendSpec, conn: AcpConnection, signal: AbortSignal | undefined): Promise<void> {
+    if (backend.protocol === 'codex' || !conn.setSelection) return
+    const override = this.reconnectOverrides.get(chatId)
+    if (!override) return
+    const defaults = this.effectiveDefaultsFor(backend)
+    if (override.model !== undefined && !signal?.aborted) {
+      const needsModel = defaults.model !== undefined || conn.sessionChoices?.model?.current !== override.model
+      if (needsModel) {
+        try { await conn.setSelection('model', override.model) } catch (error: unknown) { this.report(error) }
+      }
+    }
+    if (override.effort !== undefined && !signal?.aborted) {
+      const currentEffort = conn.sessionChoices?.effort && conn.sessionChoices.effort !== 'not-offered' ? conn.sessionChoices.effort.current : undefined
+      const needsEffort = defaults.effort !== undefined || override.model !== undefined || currentEffort !== override.effort
+      if (needsEffort) {
+        try { await conn.setSelection('effort', override.effort) } catch (error: unknown) { this.report(error) }
+      }
+    }
+  }
+
   /** Reconnect a saved remote session, or skip load after repeated failed turns (D6). */
   private async reopen(entry: RegistryEntry, signal: AbortSignal | undefined, forceFresh: boolean): Promise<{ conn: AcpConnection; freshSessionReason: FreshSessionReason | undefined; lost?: Error }> {
     const backend = this.backendFor(entry)
     if (forceFresh) {
       const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
+      await this.applyReconnectOverride(entry.chatId, backend, conn, signal)
       return { conn, freshSessionReason: 'repeated-errors' }
     }
     try {
       const conn = await this.connect(backend, entry.cwd, { mode: 'load', sessionId: entry.remoteSessionId }, signal, 'continuation')
+      await this.applyReconnectOverride(entry.chatId, backend, conn, signal)
       return { conn, freshSessionReason: undefined }
     } catch (error: unknown) {
       // Only a proven missing session is replaced; any other rejection keeps the binding (D6).
       if (!isLoadSessionMissing(error)) throw error
       this.assertLive()
       const conn = await this.connect(backend, entry.cwd, { mode: 'new' }, signal, 'continuation')
+      await this.applyReconnectOverride(entry.chatId, backend, conn, signal)
       return { conn, freshSessionReason: 'load-rejected', lost: error }
     }
   }
@@ -1413,6 +1570,7 @@ export class AcpSessionPool {
   private track(chatId: string, conn: AcpConnection): void {
     const chat: LiveChat = { chatId, conn, receiveText, idleTimer: undefined, busy: false, busyPromise: undefined, inFlight: undefined, closing: undefined }
     this.live.set(chatId, chat)
+    this.recordBackendChoices(chatId, conn.sessionChoices)
     this.armIdle(chat)
   }
 

@@ -21,6 +21,9 @@ function isSnapshot(value: unknown): value is BackendStatusSnapshot {
       && (row.range === undefined || typeof row.range === 'string')
       && (row.configuredModel === undefined || typeof row.configuredModel === 'string')
       && (row.configuredEffort === undefined || typeof row.configuredEffort === 'string')
+      && (row.staticModel === undefined || typeof row.staticModel === 'string')
+      && (row.staticEffort === undefined || typeof row.staticEffort === 'string')
+      && (row.effortKind === undefined || row.effortKind === 'kiro' || row.effortKind === 'agy' || row.effortKind === 'codex')
       && (row.sessionReporting === undefined || row.sessionReporting === true)
       && (row.report === undefined || (row.report !== null && typeof row.report === 'object'
         && (row.report.source === 'probe' || (row.report.source === 'session' && typeof row.report.chatId === 'string'

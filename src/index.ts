@@ -38,7 +38,7 @@ import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './eng
 import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
 import { BackendReadinessService, backendPathEnv, type BackendCandidate } from './backend-readiness.js'
-import { WORKFLOW_REQUIRES_ROLES } from './settings-rules.js'
+import { WORKFLOW_REQUIRES_ROLES, AGY_EFFORT_LEVELS, KIRO_EFFORT_LEVELS, commandKind, effortKindFor, resolveEffectiveBackendDefault, validateBackendDefaultEffort, type BackendDefault, type EffortKind } from './settings-rules.js'
 import { verifyBackend } from './backend-verification.js'
 
 // Cordis exposes an ambient const enum; pin its active value at compile time.
@@ -52,8 +52,7 @@ export const name = 'acp-resume'
  * without an error and keeps the old one, so the plugin rejects others at load.
  * Codex `effort` has its own set and is not checked against this one.
  */
-export const SESSION_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
-const AGY_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const
+export const SESSION_EFFORT_LEVELS = KIRO_EFFORT_LEVELS
 export const inject = ['subagents', 'subprocess']
 
 /** Per-chat ACP backend settings added by D24. */
@@ -194,9 +193,16 @@ export interface Config {
    * Requires `roles: true`: the workflow engine dispatches to roles.
    */
   workflow?: boolean
+  /**
+   * Live per-backend default model and reasoning effort overrides (D48).
+   * Keyed by backend id (`default`, named backend, or auto-discovered `agy`/`codex`/`kiro`).
+   * Takes precedence over static `model`/`effort` and `backends.<id>.model`/`effort`
+   * for new chats and subsequent reconnects without remounting the pool.
+   */
+  backendDefaults?: Record<string, BackendDefault>
 }
 
-type LiveField = 'idleTimeoutMs' | 'probeTimeoutMs' | 'defaultBackend' | 'allowUnverifiedBackends' | 'allowChatJobWait' | 'roles' | 'workflow'
+type LiveField = 'idleTimeoutMs' | 'probeTimeoutMs' | 'defaultBackend' | 'allowUnverifiedBackends' | 'allowChatJobWait' | 'roles' | 'workflow' | 'backendDefaults'
 type LiveConfig = Omit<Config, LiveField> & {
   [K in LiveField]-?: { get(): K extends 'probeTimeoutMs' | 'defaultBackend' ? Config[K] : NonNullable<Config[K]> }
 }
@@ -239,6 +245,7 @@ export const Config: z<Config, LiveConfig> = z.object({
   allowChatJobWait: z.boolean().default(false).volatile(),
   roles: z.boolean().default(true).volatile(),
   workflow: z.boolean().default(false).volatile(),
+  backendDefaults: z.dict(z.object({ model: z.string(), effort: z.string() })).default({}).volatile(),
 })
 
 /** A process grace must fit every Node timer that observes or terminates the child. */
@@ -324,10 +331,18 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
   const defaultBackend: BackendConfig = { command: config.command, args: config.args, agentEngine: config.agentEngine, permission: config.permission, env: {}, ...(config.model === undefined ? {} : { model: config.model }), ...(config.modelSelect === undefined ? {} : { modelSelect: config.modelSelect }), ...(config.effort === undefined ? {} : { effort: config.effort }) }
   const named = Object.entries(config.backends ?? {})
   if (named.some(([name]) => !/^[A-Za-z0-9_-]{1,32}$/.test(name) || name === DEFAULT_BACKEND)) throw new Error(`acp-resume: backend names must match [A-Za-z0-9_-]{1,32} and cannot be ${DEFAULT_BACKEND}`)
+  const staticMeta = (backend: BackendConfig) => ({
+    rawArgs: backend.args,
+    agentEngine: backend.agentEngine,
+    modelSelect: backend.modelSelect ?? 'flag' as const,
+    ...(backend.model === undefined ? {} : { staticModel: backend.model }),
+    ...(backend.effort === undefined ? {} : { staticEffort: backend.effort }),
+  })
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
     name,
     {
       name, description: value.description ?? `${name} (${value.command.split('/').at(-1) ?? value.command})`, specBase: base(value, name),
+      ...staticMeta(value),
       ...(value.protocol === 'codex' ? { protocol: 'codex' as const, codex: {
         ...(value.model?.trim() ? { model: value.model.trim() } : {}),
         ...(value.sandbox === undefined ? {} : { sandbox: value.sandbox }),
@@ -336,30 +351,33 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
       } } : {}),
     },
   ])
-  entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: defaultBackend.command.split('/').at(-1) ?? defaultBackend.command, specBase: base(defaultBackend) }])
+  entries.push([DEFAULT_BACKEND, { name: DEFAULT_BACKEND, description: defaultBackend.command.split('/').at(-1) ?? defaultBackend.command, specBase: base(defaultBackend), ...staticMeta(defaultBackend) }])
   if (config.discoverBackends && !entries.some(([name, backend]) => name === 'codex' || backend.protocol === 'codex' || commandKind(backend.specBase.command) === 'codex')) {
     const auto: BackendConfig = {
       command: 'codex', args: ['app-server'], protocol: 'codex', agentEngine: 'none', permission: 'reject', env: {},
     }
     // Discovery is not consent to reuse another backend's credentials or elevate permissions.
     entries.push(['codex', { name: 'codex', description: 'Codex (auto-discovered, read-only)', automatic: true,
+      ...staticMeta(auto),
       specBase: { ...base(auto), env: backendPathEnv(config.env) }, protocol: 'codex',
       codex: { sandbox: 'read-only', approvalPolicy: 'never' },
     }])
   }
   if (config.discoverBackends && !entries.some(([name, backend]) => name === 'agy' || commandKind(backend.specBase.command) === 'agy')) {
     const auto: BackendConfig = {
-      command: 'agy', args: ['acp'], agentEngine: 'none', permission: 'reject', env: {},
+      command: 'agy', args: ['acp'], agentEngine: 'none', modelSelect: 'session', permission: 'reject', env: {},
     }
     entries.push(['agy', { name: 'agy', description: 'Antigravity CLI (auto-discovered)', automatic: true,
+      ...staticMeta(auto),
       specBase: { ...base(auto), env: backendPathEnv(config.env) },
     }])
   }
   if (config.discoverBackends && !entries.some(([name, backend]) => name === 'kiro' || commandKind(backend.specBase.command) === 'kiro-cli')) {
     const auto: BackendConfig = {
-      command: 'kiro-cli', args: ['acp'], agentEngine: 'v3', permission: 'reject', env: {},
+      command: 'kiro-cli', args: ['acp'], agentEngine: 'v3', modelSelect: 'session', permission: 'reject', env: {},
     }
     entries.push(['kiro', { name: 'kiro', description: 'Kiro CLI (auto-discovered)', automatic: true,
+      ...staticMeta(auto),
       specBase: { ...base(auto), env: backendPathEnv(config.env) },
     }])
   }
@@ -378,9 +396,16 @@ function sessionEffortSettings(name: string, backend: BackendConfig): Pick<AcpSe
   return { sessionEffort: backend.effort, effortOptionId: agy ? 'thought_level' : 'effortLevel' }
 }
 
-function commandKind(command: string): 'kiro-cli' | 'agy' | 'codex' | undefined {
-  const base = command.split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.(?:exe|cmd|bat|com)$/, '')
-  return base === 'kiro-cli' || base === 'agy' || base === 'codex' ? base : undefined
+function validateBackendDefaults(candidate: ResolvedConfig, choices: ReadonlyMap<string, BackendSpec>): void {
+  const defaults = candidate.backendDefaults.get()
+  for (const [id, entry] of Object.entries(defaults)) {
+    const spec = choices.get(id)
+    const kind: EffortKind = spec !== undefined
+      ? effortKindFor({ protocol: spec.protocol, command: spec.specBase.command })
+      : id === 'codex' ? 'codex' : id === 'agy' ? 'agy' : 'kiro'
+    const error = validateBackendDefaultEffort(id, entry?.effort, kind)
+    if (error !== undefined) throw new Error(error)
+  }
 }
 
 function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config: ResolvedConfig): BackendCandidate[] {
@@ -391,6 +416,7 @@ function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config:
     const base = { id: backend.name, protocol: backend.protocol,
       ...(configured?.model && { configuredModel: configured.model }),
       ...(configured?.effort && { configuredEffort: configured.effort }),
+      effortKind: effortKindFor({ protocol: backend.protocol, command: spec.command }),
       ...(backend.protocol !== 'codex' && { sessionReporting: true as const }),
       label: cli === 'codex' ? 'Codex' : cli === 'agy' ? 'Antigravity CLI (agy)' : cli ?? 'Custom ACP', command: spec.command,
       env: spec.env ?? {}, configured: backend.automatic !== true, ...(backend.automatic === true ? { automatic: true as const } : {}),
@@ -467,6 +493,7 @@ export function apply(ctx: Context, config: LiveConfig): void {
     }
   }
   validateDefault(resolved, backends)
+  validateBackendDefaults(resolved, backends)
   // ConfigEditor validates before persisting. Ordinary edits can change the candidate backend set too.
   ctx.on('internal/config', (fiber, next) => {
     const candidate = next()
@@ -474,7 +501,9 @@ export function apply(ctx: Context, config: LiveConfig): void {
       const live = candidate as ResolvedConfig
       assertPositiveFinite('idleTimeoutMs', live.idleTimeoutMs.get())
       if (live.workflow.get() && !live.roles.get()) throw new Error(WORKFLOW_REQUIRES_ROLES)
-      validateDefault(live, backendSpecs(ctx, live))
+      const nextBackends = backendSpecs(ctx, live)
+      validateDefault(live, nextBackends)
+      validateBackendDefaults(live, nextBackends)
     }
     return candidate
   }, { prepend: true })
@@ -511,10 +540,14 @@ export function apply(ctx: Context, config: LiveConfig): void {
       candidates: readinessCandidates(backends, resolved), get preferred() { return preferred() },
       get allowUnverifiedBackends() { return resolved.allowUnverifiedBackends.get() }, host: diagnostics.subprocess,
       get timeoutMs() { return config.probeTimeoutMs.get() },
+      backendDefaults: () => resolved.backendDefaults.get(),
       onWarn: message => { ctx.logger.warn(message) },
       verify: (candidate, executable, signal) => {
         const spec = backends.get(candidate.id)!
-        return verifyBackend({ ...spec, specBase: { ...spec.specBase, command: executable } }, signal,
+        const codex = spec.protocol === 'codex' && spec.codex !== undefined
+          ? { ...spec.codex, ...resolveEffectiveBackendDefault(resolved.backendDefaults.get()[candidate.id], spec.codex.model, spec.codex.effort) }
+          : spec.codex
+        return verifyBackend({ ...spec, ...(codex === undefined ? {} : { codex }), specBase: { ...spec.specBase, command: executable } }, signal,
           (stage, category) => { ctx.logger.warn(`acp-resume: backend ${candidate.id} check failed (${stage}, ${category})`) })
       },
     })
@@ -526,6 +559,7 @@ export function apply(ctx: Context, config: LiveConfig): void {
         backends,
         registryPath,
         get idleTimeoutMs() { return resolved.idleTimeoutMs.get() },
+        backendDefaults: () => resolved.backendDefaults.get(),
         onWarn: message => { ctx.logger.warn(message) },
         dispatch: readiness,
       })

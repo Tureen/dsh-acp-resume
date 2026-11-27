@@ -282,6 +282,7 @@ function makeAgent() {
       }
       return {
         sessionId: params.sessionId,
+        ...(process.env.MOCK_CONFIG_OPTIONS && { configOptions: JSON.parse(process.env.MOCK_CONFIG_OPTIONS) }),
         ...(process.env.MOCK_LOAD_MODELS && { models: JSON.parse(process.env.MOCK_LOAD_MODELS) }),
         modes: { currentModeId: 'mock', availableModes: [] },
       }

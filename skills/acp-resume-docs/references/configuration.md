@@ -4,7 +4,7 @@
 
 在右侧栏 → ACP 会话 → 设置中可以修改这两个插件行的实时字段。开关与下拉选择后即存，数字与多行文本在离开输入框时保存，无需重启。首次保存会请你确认：DSH 配置编辑器会重建该行的 `config` 节点，可能移除行内注释、调整排版，其他字段的解析值保持原样。如需保留注释，请手工编辑 profile。
 
-下表是主行的 23 个字段。默认列取插件 schema。bundle 另行填写了 `command: kiro-cli`、`args: [acp]` 和 `permission: allow`。整块覆盖后省略某字段，得到的是 schema 默认值。
+下表是主行的 24 个字段。默认列取插件 schema。bundle 另行填写了 `command: kiro-cli`、`args: [acp]` 和 `permission: allow`。整块覆盖后省略某字段，得到的是 schema 默认值。
 
 | 字段 | 默认 | 用途、何时修改 |
 |---|---|---|
@@ -31,5 +31,6 @@
 | allowChatJobWait | false | 仅控制运行中 acp-chat 的 job_output wait:true：默认拦截，开启后不挂门。两种设置下均放行 wait_agent。（可在侧栏改） |
 | roles | true | 注册角色参数、团队列表和按主会话隔离的花名册。关闭后仍能按 chatId 派工。（可在侧栏改） |
 | workflow | false | 开启模板工具 acp_workflow，要求 roles 为 true；非法组合在插件加载时报错。（可在侧栏改） |
+| backendDefaults | 空对象 | 按后端 id（`default`、具名后端、自动发现的 `agy`/`codex`/`kiro`）覆盖缺省 `model` 与 `effort`，优先于静态 `model`/`effort` 与 `backends.<id>`。新建与下次重连生效，在途轮不动，无需重启。（可在侧栏改） |
 
 命名后端的键与协议差异见[后端](backends.md)。工具选择与提示词属于另一独立行，见[Dispatcher](dispatcher.md)。需要可复制的起点时，选择[配方](recipes.md)或[完整模板](../templates/profile-override.yml)。

@@ -1013,6 +1013,8 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
 
 修订（2026-11-27，0.7.4）：D44 的 A 档防串改校验用于面板写操作及其配套的选项查询 `chatOptions`。此前 D46 把该校验也用于只读 `watch`，导致同一详情页能看其他主会话创建的 chat 的历史，却不能看实时输出。现与 `turns` / `turn` 对齐，`watch` 仅按 chatId 检查记录存在；保留原 Remote 参数以兼容已安装的面板。
 
+修订（2026-11-27，D48，0.7.5）：取消「已释放会话须先发消息重连再改设置」与「释放重连后恢复为配置值」的限制。「仅此会话设置」的显式修改改为该 chat 的内存**重连覆盖**（不落注册表，随 `purge` 与池销毁清理）；已释放会话也可直接读取同后端活连接或内存缓存的选项清单并记录覆盖，下次重连（`openLoad` 或降级 `openNew`）先应用有效缺省配置，再叠加该会话的显式覆盖。详情见 D48。
+
 ## D45 侧栏设置通过官方表单写回 profile（2026-11-26，0.7.0）
 
 - 启用持久面板时，从右侧栏的设置按钮进入。分别用 `configForms.get('subagent-acp-resume')` 和 `configForms.get('acp-dispatcher-settings')` 获取生效值和 revision。每次提交单一路径；编辑文本时保留开始编辑的 revision。读取、写入队列、冲突检测、恢复读取和落盘由 DSH 管理。`plugins.bundle.config` 是插件管理页插槽，按 npm 包名定位，未用于右侧栏。
@@ -1096,5 +1098,35 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
   - **Step 7 已落地**（2026-11-26）：单轮全宽卡、粘性身份栏、展开正文选字与复制；沿用一次只展开一条。
   - **Step 8 已落地**（2026-11-26）：已加载历史超过四条时仅常显最近三条，更早记录按日分节，展开后可继续加载。
   - **Step 9 已落地**（2026-11-26）：设计稿 §5.4 的自动订阅由 D46 按需查看约束覆盖。工作区默认可见，流式视口默认折叠；上翻超过 24px 暂停跟随，可点回到底部。设计稿 §5.1 的“刷新必然读到”不成立：按 D18，日志追加可失败且 purge 后不补写。等待期间保留末帧，按 startedAt 匹配后在同一帧交接，仅当前主动展开的视口继承展开态；3 秒未匹配提示缺记录，绝不误开其他轮。
+
+## D48 后端缺省模型与强度热更新（`backendDefaults`）及已释放会话重连覆盖（2026-11-27，0.7.5）
+
+### 动机
+
+用户真机反馈暴露两处体验缺陷：
+
+1. **`released` 死循环**：此前 `pool.chatOptions()` 在进程未存活时返回 `canChange: false, reason: 'released'`，文案要求先发消息重连才能选模型——想改设置得先发一条消息，而那条消息仍按旧模型发出。
+2. **对象错位**：D44 提供的是单会话级覆盖，D45 设置区未提供各后端的缺省模型/强度入口；用户希望在侧栏统一改一次缺省配置，使所有新会话与重连的旧会话生效。
+
+### 为什么新增顶层字典 `backendDefaults` 标 `volatile`，而不是改原字段
+
+rc.5 探针与源码核实得出两条硬边界：
+
+1. **字典内部字段不能标 `volatile`**：对 `backends.*.model` / `effort` 标 `.volatile()` 被 schemastery 拒绝：`ValidationError: $.backends.*.model volatile fields require a fixed object path without an enclosing volatile field`。同时自动发现的 `agy`/`codex`/`kiro` 在 profile 中没有 `backends.<name>` 条目（`command` 为必填）。
+2. **`dsh-settings` 拒绝非 `volatile` 路径，而 `configEditor.edit` 写普通字段必触发重载**：`@deepseek-ai/dsh-settings` 的 `describe()` 只投影 `volatile` 字段、`mutate()` 对非 `volatile` 路径直接抛 `Config field "..." is not volatile`；绕过它调用 `@deepseek-ai/dsh-config-editor` 的 `edit()` 写盘后会无条件同步调用 `reconcileProfilePatches`，导致主插件重载、池重建、在途轮被中止（探针实测 `{"samePool":false,"disposals":1,"inFlightAfterSave":false,"turn":"aborted"}`）。
+
+而 `schemastery` 允许**固定顶层路径上的字典本身**标 `.volatile()`，`dsh-settings` 的 `isVolatilePath` 对 `['backendDefaults', '<id>', 'model' | 'effort']` 返回 `true`，写入时由 Loader 原位更新引用，不重建池、不中断在途轮。
+
+### 决策
+
+- **Config 字段**：主 Config 新增 `backendDefaults: z.dict(z.object({ model: z.string(), effort: z.string() })).default({}).volatile()`。键为后端 id（`default`、具名后端、自动发现的 `agy` / `codex` / `kiro`）。原 `model`、`effort` 及 `backends.<id>.model` / `effort` 静态字段保持原样、向后兼容。
+- **优先级与共存**：`resolveEffectiveBackendDefault` 按 `(live?.model?.trim() || undefined) ?? staticModel` 与 `(live?.effort?.trim() || undefined) ?? staticEffort` 解析生效默认值。新建会话与下次重连的旧会话在 `connect()` 读取最新值，在途轮不受影响，无需重启 DSH。对自动发现的 `agy`/`kiro` 及默认 v3 `kiro-cli`，覆盖通过会话 RPC（`session/set_model` / `session/set_config_option`）应用，不拼非法 CLI 旗标；Codex 经 `codexModel`/`codexEffort` 应用；其余 ACP `flag` 模式沿用 `--model`/`--effort`。清空或清除 `backendDefaults.<id>` 后回落到 profile 静态值（自动发现后端回落到后端自身默认）。
+- **保存前校验**：`src/settings-rules.ts` 共享后端强度家族判定（按协议与命令短名识别：kiro/通用 ACP 五档含 `max`，agy 四档，Codex 自由文本）。前端 `ProfileSettings` 与宿主 `internal/config` 钩子共用 `validateBackendDefaultEffort`，非法值在弹窗和持久化之前拦下。
+- **侧栏设置区**：`ProfileSettings` 为每个已配置或自动发现的后端展示一组直接编辑控件——模型文本框、思考强度下拉（Codex 为文本框）及「清除」按钮；自动发现后端标注「自动发现」，首次写回确认沿用 D45。`BackendStatus` 同步投影生效配置值、静态值与 `effortKind`。
+- **已释放会话可改与重连覆盖（修订 D44）**：
+  - `AcpSessionPool` 仅在内存中按后端缓存最近一次观察到的 `SessionChoices`（不落盘），并按 `chatId` 记录显式选择的重连覆盖（不进 `registry.json`，满足 D6；随 `remove` / `disposeAll` 清理）。
+  - `pool.chatOptions(chatId)` 对已释放会话返回 `supported: true, canChange: true, reason: 'released'`，选项清单依次取自同后端其他活连接、后端内存缓存；均无则返回 `{ backend, supported: true, canChange: true, choicesUnknown: true, reason: 'released' }`（面板显示「清单未知，将使用缺省值」，不报错）。
+  - `setChatModel` / `setChatEffort` 对已释放会话不启动进程、不改注册表，直接写入重连覆盖；下次 `openLoad`（或降级 `openNew`）先应用有效缺省配置，再依次叠加该会话的重连覆盖。
+  - 面板单会话提示拆清状态：运行中「进行中，结束后可改。」、已释放可改「下次重连时生效。」、已释放无清单「清单未知，将使用缺省值。」、活跃空闲「仅此会话。显式修改会在后续重连时保留；不改则沿用缺省配置。」、Codex「此后端暂不支持会话级切换。」。`TeamSection` 对已释放角色卡同样挂载 `ChatSettings`。
 
 

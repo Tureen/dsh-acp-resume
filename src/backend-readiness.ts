@@ -2,6 +2,7 @@
 import { homedir } from 'node:os'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { backendCompatibility, backendSupportRange, parseBackendVersion, type KnownBackendKind } from './backend-compatibility.js'
+import { resolveEffectiveBackendDefault, type BackendDefault, type EffortKind } from './settings-rules.js'
 
 import type { ReportedSettings, BackendStatus, BackendStatusReason, BackendStatusService, BackendStatusSnapshot } from './backend-status.js'
 
@@ -19,6 +20,7 @@ export interface BackendCandidate {
   readonly automatic?: true
   readonly configuredModel?: string
   readonly configuredEffort?: string
+  readonly effortKind?: EffortKind
   readonly sessionReporting?: true
   readonly configurationIssue?: 'model-required' | 'unsupported-mode'
 }
@@ -47,6 +49,8 @@ export interface BackendReadinessOptions {
   readonly host: ProbeHost
   readonly verify: (backend: BackendCandidate, executable: string, signal: AbortSignal) => Promise<Verification>
   readonly timeoutMs?: number
+  /** Live per-backend default overrides read dynamically for snapshot display (D48). */
+  readonly backendDefaults?: () => Readonly<Record<string, BackendDefault>>
 }
 
 const reasons: Readonly<Record<BackendStatusReason, string>> = {
@@ -85,8 +89,9 @@ export function describeBackendSnapshot(status: BackendStatusSnapshot): string {
 
 function initialRow(candidate: BackendCandidate): BackendStatus {
   return { id: candidate.id, label: candidate.label, configured: candidate.configured,
-    ...(candidate.configuredModel && { configuredModel: candidate.configuredModel }),
-    ...(candidate.configuredEffort && { configuredEffort: candidate.configuredEffort }),
+    ...(candidate.configuredModel && { configuredModel: candidate.configuredModel, staticModel: candidate.configuredModel }),
+    ...(candidate.configuredEffort && { configuredEffort: candidate.configuredEffort, staticEffort: candidate.configuredEffort }),
+    ...(candidate.effortKind && { effortKind: candidate.effortKind }),
     ...(candidate.sessionReporting && { sessionReporting: true }),
     ...(candidate.automatic === true ? { automatic: true } : {}),
     ...(candidate.kind == null ? {} : { range: backendSupportRange(candidate.kind) }), compatibility: 'unknown', readiness: 'unverified', reason: 'backend-unready' }
@@ -154,12 +159,19 @@ export class BackendReadinessService implements BackendStatusService {
     return { backends, ...(defaultBackend === undefined ? {} : { defaultBackend }), checking: this.active !== undefined, dispatchEnabled }
   }
 
-  /** Revoking the opt-in also gates cached successful out-of-range probes. */
+  /** Revoking the opt-in also gates cached successful out-of-range probes; overlay live backendDefaults (D48). */
   private admittedRow(row: BackendStatus): BackendStatus {
-    if (row.automatic && row.compatibility === 'unverified-version' && row.readiness === 'ready' && !this.options.allowUnverifiedBackends) {
-      return { ...row, readiness: 'unverified', reason: 'unsupported-version' }
+    const gated = row.automatic && row.compatibility === 'unverified-version' && row.readiness === 'ready' && !this.options.allowUnverifiedBackends
+      ? { ...row, readiness: 'unverified' as const, reason: 'unsupported-version' as const }
+      : row
+    const live = this.options.backendDefaults?.()[gated.id]
+    if (!live) return gated
+    const { model, effort } = resolveEffectiveBackendDefault(live, gated.staticModel ?? gated.configuredModel, gated.staticEffort ?? gated.configuredEffort)
+    return {
+      ...gated,
+      ...(model === undefined ? {} : { configuredModel: model }),
+      ...(effort === undefined ? {} : { configuredEffort: effort }),
     }
-    return row
   }
 
   check(): Promise<BackendStatusSnapshot> {

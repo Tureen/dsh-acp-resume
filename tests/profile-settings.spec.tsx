@@ -25,17 +25,39 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Menu: () => null,
   Pill: () => null,
   StateDot: () => null,
-  Tag: () => null,
+  Tag: ({ children }: { children?: ReactNode }) => <span data-tag="">{children}</span>,
   TextShimmer: () => null,
   extractMarkdownPlainText: (text: string) => text,
   useClipboardCopy: () => ({ copied: false, copy: () => {} }),
 }))
 
-import { ProfileSettings, type SettingsForm } from '../src/client/ProfileSettings.tsx'
-import { zh, en, type PanelCopyKey } from '../src/client/locales.ts'
+import { ProfileSettings, type ProfileBackendInfo, type SettingsForm } from '../src/client/ProfileSettings.tsx'
+import { zh, en, type PanelCopyKey, type PanelTranslate } from '../src/client/locales.ts'
 import { WORKFLOW_REQUIRES_ROLES } from '../src/settings-rules.ts'
+import { within } from '@testing-library/react'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); localStorage.clear() })
+
+function translator(copy: Record<PanelCopyKey, string>): PanelTranslate {
+  return (key, params) => {
+    let text = copy[key]
+    if (params) for (const [name, value] of Object.entries(params)) text = text.replaceAll(`{${name}}`, String(value))
+    return text
+  }
+}
+
+function setNested(obj: Record<string, unknown>, path: string[], value: unknown): Record<string, unknown> {
+  if (path.length === 1) {
+    const next = { ...obj }
+    if (value === undefined) delete next[path[0]!]
+    else next[path[0]!] = value
+    return next
+  }
+  const [head, ...rest] = path as [string, ...string[]]
+  const child = obj[head]
+  const base = child && typeof child === 'object' ? child as Record<string, unknown> : {}
+  return { ...obj, [head]: setNested(base, rest, value) }
+}
 
 function form(initial: Record<string, unknown>) {
   const listeners = new Set<() => void>()
@@ -45,8 +67,9 @@ function form(initial: Record<string, unknown>) {
     for (const listener of listeners) listener()
   }
   const mutate = vi.fn<SettingsForm['mutate']>(async ops => {
-    const op = ops[0]!
-    accepted({ ...snapshot.value, [op.path[0]!]: op.op === 'set' ? op.value : undefined })
+    let next = snapshot.value
+    for (const op of ops) next = setNested(next, op.path, op.op === 'set' ? op.value : undefined)
+    accepted(next)
     return true
   })
   return { mutate, accepted, getSnapshot: () => snapshot, subscribe(listener: () => void) {
@@ -55,20 +78,38 @@ function form(initial: Record<string, unknown>) {
   } }
 }
 
-function mount(copy: Record<PanelCopyKey, string>) {
-  const main = form({ roles: true, workflow: false, idleTimeoutMs: 600000 })
+function mount(
+  copy: Record<PanelCopyKey, string>,
+  backends: readonly (string | ProfileBackendInfo)[] = ['default', 'agy'],
+  initialMain: Record<string, unknown> = { roles: true, workflow: false, idleTimeoutMs: 600000, backendDefaults: {} },
+) {
+  const main = form(initialMain)
   const dispatcher = form({ dispatcherTools: { web: true }, dispatcherPrompt: { extraRules: '', overrideRules: false } })
   const onSaved = vi.fn()
-  render(<ProfileSettings forms={{ main, dispatcher }} backends={['default', 'agy']} t={key => copy[key]} onSaved={onSaved} />)
+  render(<ProfileSettings forms={{ main, dispatcher }} backends={backends} t={translator(copy)} onSaved={onSaved} />)
   return { main, dispatcher, onSaved }
 }
 
-it.each([zh, en])('renders the fifteen editable paths and four control types', copy => {
-  mount(copy)
+it.each([zh, en])('renders the editable paths, control types, and per-backend default controls', copy => {
+  mount(copy, [
+    { id: 'default', label: 'kiro-cli', effortKind: 'kiro', staticModel: 'claude-opus-5.5', staticEffort: 'high' },
+    { id: 'agy', label: 'Antigravity CLI (agy)', automatic: true, effortKind: 'agy' },
+    { id: 'codex', label: 'Codex', automatic: true, effortKind: 'codex' },
+  ])
   expect(screen.getAllByRole('switch')).toHaveLength(11)
   expect(screen.getByRole('combobox', { name: copy.pref_defaultBackend })).toBeTruthy()
   expect(screen.getAllByRole('spinbutton')).toHaveLength(2)
   expect(screen.getByRole('textbox', { name: copy.pref_extraRules }).tagName).toBe('TEXTAREA')
+  // Per-backend effort controls: Kiro has 5 levels (with max), agy has 4 levels (no max), Codex uses textbox.
+  const kiroEffort = screen.getByRole('combobox', { name: translator(copy)('profileBackendEffortLabel', { backend: 'default' }) })
+  expect(within(kiroEffort).getAllByRole('option').map(o => (o as HTMLOptionElement).value)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max'])
+  const agyEffort = screen.getByRole('combobox', { name: translator(copy)('profileBackendEffortLabel', { backend: 'agy' }) })
+  expect(within(agyEffort).getAllByRole('option').map(o => (o as HTMLOptionElement).value)).toEqual(['', 'low', 'medium', 'high', 'xhigh'])
+  expect(screen.getByRole('textbox', { name: translator(copy)('profileBackendEffortLabel', { backend: 'codex' }) })).toBeTruthy()
+  // Auto-discovered tag and fallback copy are shown.
+  expect(screen.getAllByText(copy.backendAutomatic)).toHaveLength(2)
+  expect(screen.getByText(copy.profileBackendClearFallback)).toBeTruthy()
+  expect(screen.getAllByText(copy.profileBackendAutoHint)).toHaveLength(2)
   for (const key of ['command', 'env', 'permission', 'sandbox', 'registryPath', 'model', 'toolPrefix']) expect(screen.queryByText(key)).toBeNull()
   for (const el of document.querySelectorAll('code')) expect(el.parentElement?.textContent?.split(' · ')[1]?.length).toBeGreaterThan(0)
 })
@@ -114,4 +155,40 @@ it('confirms before the first write, preserves the revision, and shows the refre
   expect(screen.getByText(zh.profileRefused)).toBeTruthy()
   expect(duration.value).toBe('8000')
   expect(onSaved).toHaveBeenCalledTimes(1)
+})
+
+it('edits backendDefaults model/effort via mutate, clears back to static fallback, and blocks invalid effort before writing (D48)', async () => {
+  localStorage.setItem('dsh-acp-resume/profile-write-confirmed', 'true')
+  const { main } = mount(zh, [
+    { id: 'default', label: 'kiro-cli', effortKind: 'kiro', staticModel: 'static-m' },
+    { id: 'agy', label: 'Antigravity CLI (agy)', automatic: true, effortKind: 'agy' },
+  ], { roles: true, workflow: false, idleTimeoutMs: 600000, backendDefaults: { agy: { effort: 'high' } } })
+
+  // Edit default model -> set backendDefaults.default.model
+  const modelInput = screen.getByRole('textbox', { name: 'default 缺省模型' }) as HTMLInputElement
+  fireEvent.change(modelInput, { target: { value: 'claude-opus-5.5' } })
+  await act(async () => fireEvent.blur(modelInput))
+  expect(main.mutate).toHaveBeenCalledWith([{ op: 'set', path: ['backendDefaults', 'default', 'model'], value: 'claude-opus-5.5' }], 7)
+  expect(screen.getByText(zh.profileSaved)).toBeTruthy()
+
+  // Edit default effort -> set backendDefaults.default.effort
+  const kiroEffort = screen.getByRole('combobox', { name: 'default 缺省思考强度' })
+  await act(async () => fireEvent.change(kiroEffort, { target: { value: 'max' } }))
+  expect(main.mutate).toHaveBeenLastCalledWith([{ op: 'set', path: ['backendDefaults', 'default', 'effort'], value: 'max' }], 8)
+
+  // Clear default -> unset backendDefaults.default and show fallback status
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: '清除 default 缺省覆盖' })))
+  expect(main.mutate).toHaveBeenLastCalledWith([{ op: 'unset', path: ['backendDefaults', 'default'] }], 9)
+  expect(screen.getByText(zh.profileBackendCleared)).toBeTruthy()
+
+  // Invalid effort on agy (e.g. max) is rejected before calling mutate
+  const callsBefore = main.mutate.mock.calls.length
+  const agyEffort = screen.getByRole('combobox', { name: 'agy 缺省思考强度' }) as HTMLSelectElement
+  const bogus = document.createElement('option')
+  bogus.value = 'max'
+  bogus.text = 'max'
+  agyEffort.appendChild(bogus)
+  fireEvent.change(agyEffort, { target: { value: 'max' } })
+  expect(screen.getByRole('status').textContent).toContain('is not a valid effort level for agy')
+  expect(main.mutate).toHaveBeenCalledTimes(callsBefore)
 })

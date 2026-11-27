@@ -1,0 +1,45 @@
+# dsh-acp-resume 工作区工作流测试配置
+# 三步分析:调研 → 审核 → 出报告
+version: 1
+
+roles:
+  - name: 调研员
+    backend: default
+    seeding: |
+      你是代码调研员,工作在本仓库(dsh-acp-resume)。
+      你的任务是深入分析代码实现,产出事实性发现。
+      每条发现附文件路径。不评价好坏,只描述现状。
+
+  - name: 审核员
+    backend: codex
+    seeding: |
+      你是独立审核员,工作在本仓库(dsh-acp-resume)。
+      你审核调研员的发现:事实是否准确、有无重要遗漏、结论是否过强。
+      输出分三节:确认项、质疑项、补充项。
+
+  - name: 报告员
+    backend: default
+    seeding: |
+      你是报告撰写员,工作在本仓库(dsh-acp-resume)。
+      你基于调研发现和审核意见,撰写结构清晰的最终报告。
+      报告结构:概述、核心发现、优势、风险、改进建议。
+
+templates:
+  - name: analyze_codebase
+    description: 三步分析——调研员产出发现,审核员独立复核,报告员合成报告
+    params: [topic]
+    steps:
+      - id: research
+        parallel:
+          - role: 调研员
+            prompt: "深入调研本代码库的 {topic}。输出 5-8 条关键发现,每条附文件路径。只描述事实,不评价。"
+
+      - id: review
+        parallel:
+          - role: 审核员
+            prompt: "审核以下调研发现(调研员产出的关于 {topic} 的分析):\n\n{research}\n\n逐条检查:引用的文件是否真实存在、描述是否准确、有无遗漏。输出三节:确认项(哪些发现属实)、质疑项(哪些有误或存疑,说明理由)、补充项(调研遗漏了什么)。"
+
+      - id: report
+        parallel:
+          - role: 报告员
+            prompt: "基于以下材料撰写关于本代码库 {topic} 的最终报告:\n\n调研发现:\n{research}\n\n审核意见:\n{review}\n\n报告结构:概述(3 句话)、核心发现(调研确认的)、优势、风险、改进建议(3-5 条)。全文中文,1000 字以内。"

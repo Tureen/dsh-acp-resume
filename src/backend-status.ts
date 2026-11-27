@@ -1,4 +1,6 @@
 /** Transport-safe backend readiness DTOs shared by Host and Client. @module acp-resume/backend-status */
+import type { EffortKind } from './settings-rules.js'
+
 export type BackendCompatibility = 'supported' | 'unverified-version' | 'unsupported' | 'unknown' | 'not-found' | 'custom'
 export type BackendReadiness = 'ready' | 'needs-configuration' | 'needs-login' | 'unverified' | 'unavailable'
 export type BackendStatusReason = 'missing-executable' | 'version-unreadable' | 'unsupported-version' | 'unsupported-mode'
@@ -20,6 +22,11 @@ export interface BackendStatus {
   /** Panel-only comparison and provenance; the D31 model tool retains its text contract. */
   readonly configuredModel?: string
   readonly configuredEffort?: string
+  /** Static profile values (model / backends.<id>.model) for sidebar fallback display (D48). */
+  readonly staticModel?: string
+  readonly staticEffort?: string
+  /** Effort value domain for the sidebar defaults editor (D48). */
+  readonly effortKind?: EffortKind
   readonly sessionReporting?: true
   readonly report?: BackendReport
   readonly id: string
