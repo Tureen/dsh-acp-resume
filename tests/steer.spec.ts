@@ -17,7 +17,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { AcpSteerUnsupportedError } from '../src/connection.ts'
+import { AcpSteerUnsupportedError, type AcpSteerMode } from '../src/connection.ts'
+import { agySupportsSteer } from '../src/backend-compatibility.ts'
 import { AcpSessionPool } from '../src/pool.ts'
 import { registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -41,7 +42,7 @@ afterEach(async () => {
 type Definition = Parameters<ToolsRegistryFace['register']>[0]
 
 /** Five tools over a real pool; no job registry, so send is the inline variant. */
-function mountTools(env: Record<string, string>) {
+function mountTools(env: Record<string, string>, steerMode?: AcpSteerMode) {
   const tools = new Map<string, Definition>()
   const registry: ToolsRegistryFace = {
     register(definition) {
@@ -58,6 +59,7 @@ function mountTools(env: Record<string, string>) {
       disposeEofGraceMs: 500,
       disposeGraceMs: 500,
       spawn: nodeSpawn,
+      ...(steerMode === undefined ? {} : { steerMode }),
     },
     registryPath: join(tempDir('acp-resume-steer-'), 'registry.json'),
     idleTimeoutMs: 600_000,
@@ -148,5 +150,61 @@ describe('acp_chat_steer', () => {
     await expect(pool.steer('chat-ghost', 'x')).rejects.toThrow(/unknown chat/)
     expect(existsSync(marker)).toBe(false)
     expect(pool.listChats()).toEqual([])
+  })
+
+  it('steers a running turn through prompt-handoff over a real mock subprocess without early settlement (D51)', async () => {
+    const dir = tempDir('acp-resume-steer-handoff-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { call, pool } = mountTools({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'before',
+      MOCK_FINAL_TEXT: '|after',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_FILE: steers,
+    }, 'prompt-handoff')
+    const { chatId } = await call('start', { cwd: process.cwd() })
+    const sending = call('send', { chatId, message: 'long task' })
+    const deadline = Date.now() + 5000
+    while (!existsSync(ready) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+    expect(existsSync(ready)).toBe(true)
+
+    expect(await call('steer', { chatId, message: 'pivot now' })).toMatchObject({ queued: true })
+    expect(await call('steer', { chatId, message: 'keep it brief' })).toMatchObject({ queued: true })
+    rmSync(hold, { force: true })
+
+    expect(await sending).toEqual({ text: 'before|steered:pivot now|steered:keep it brief|after' })
+    expect(pool.turnEntries(chatId as string)).toHaveLength(1)
+    expect(readFileSync(steers, 'utf8').trim().split('\n')).toHaveLength(2)
+  })
+
+  it('gates agy prompt-handoff steering on version >= 1.5.0 and refuses unsupported mode without RPC (D51)', async () => {
+    expect(agySupportsSteer('1.4.9')).toBe(false)
+    expect(agySupportsSteer('1.5.0')).toBe(true)
+    expect(agySupportsSteer('1.5.18')).toBe(true)
+    const dir = tempDir('acp-resume-steer-gate-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { call, pool } = mountTools({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'still fine',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_FILE: steers,
+    }, 'unsupported')
+    const { chatId } = await call('start', { cwd: process.cwd() })
+    const sending = call('send', { chatId, message: 'work' })
+    const deadline = Date.now() + 5000
+    while (!existsSync(ready) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+    await expect(call('steer', { chatId, message: 'x' })).rejects.toThrow(/^this backend does not support mid-turn steering; /)
+    await expect(pool.steer(chatId as string, 'x')).rejects.toBeInstanceOf(AcpSteerUnsupportedError)
+    expect(existsSync(steers)).toBe(false)
+    rmSync(hold, { force: true })
+    expect(await sending).toEqual({ text: 'still fine' })
   })
 })

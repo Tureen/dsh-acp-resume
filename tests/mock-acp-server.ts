@@ -158,6 +158,10 @@ const ECHO_CWD = process.env.MOCK_ECHO_CWD === '1'
 const ECHO_ARGV = process.env.MOCK_ECHO_ARGV === '1'
 const STEER_FILE = process.env.MOCK_STEER_FILE
 const NO_STEER = process.env.MOCK_NO_STEER === '1'
+const STEER_MODE = process.env.MOCK_STEER_MODE
+const STEER_ERROR = process.env.MOCK_STEER_ERROR
+const STEER_CRASH_AT = process.env.MOCK_STEER_CRASH_AT === undefined ? undefined : Number(process.env.MOCK_STEER_CRASH_AT)
+const FINAL_TEXT = process.env.MOCK_FINAL_TEXT
 const STOP = (process.env.MOCK_STOP ?? 'end_turn') as StopReason
 const HANG = process.env.MOCK_HANG === '1'
 const WANT_PERMISSION = process.env.MOCK_PERMISSION === '1'
@@ -209,6 +213,11 @@ function makeAgent() {
   // Pending cancel resolver for the HANG path: a `session/cancel` resolves the
   // prompt with `cancelled`.
   let resolveCancel: ((reason: StopReason) => void) | undefined
+  // Active prompt state for MOCK_STEER_MODE=prompt-handoff (simulates agy >= 1.5.0):
+  // a concurrent second session/prompt resolves the prior prompt immediately with
+  // `end_turn` and inherits completion/cancel ownership for the running turn.
+  let activeHandoff: { ordinal: number; resolve: (reply: PromptResponse) => void } | undefined
+  let handoffSteerCount = 0
   // The cwd the client announced in `session/new`, echoed under MOCK_ECHO_CWD.
   let sessionCwd: string | undefined
   // Per-process prompt ordinal (1-based) for the *_PROMPTS switches.
@@ -299,6 +308,70 @@ function makeAgent() {
         } })
       }
       const ordinal = promptCount
+      if (STEER_MODE === 'prompt-handoff') {
+        const entry = sessions.get(params.sessionId)
+        if (entry === undefined) throw new Error(`mock: prompt for unknown session: ${params.sessionId}`)
+        const msg = params.prompt.map(b => (b as { text?: string }).text ?? '').join('')
+        const emit = async (chunk: string): Promise<void> => {
+          await conn.notify(methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } },
+          })
+        }
+        // Concurrent second (or Nth) session/prompt while a turn is already in flight:
+        if (activeHandoff !== undefined) {
+          if (STEER_ERROR !== undefined) {
+            throw new RequestError(-32603, STEER_ERROR)
+          }
+          handoffSteerCount += 1
+          if (STEER_FILE !== undefined) appendFileSync(STEER_FILE, `steer ${params.sessionId} ${msg}\n`)
+          const prior = activeHandoff
+          const current = Promise.withResolvers<PromptResponse>()
+          activeHandoff = { ordinal, resolve: current.resolve }
+          // Immediately yield end_turn to the superseded prompt, matching real agy 1.5.18 behavior.
+          prior.resolve({ stopReason: 'end_turn' })
+          await emit(`|steered:${msg}`)
+          if (STEER_CRASH_AT !== undefined && handoffSteerCount === STEER_CRASH_AT) {
+            await new Promise<void>(r => setImmediate(r))
+            process.exit(17)
+          }
+          return current.promise
+        }
+        // Initial prompt of the turn (P1):
+        entry.prompts.push(msg)
+        saveTable(sessions)
+        handoffSteerCount = 0
+        await emit(TEXT)
+        if (READY_FILE !== undefined) writeFileSync(READY_FILE, 'ready')
+        const hold = process.env.MOCK_PROMPT_HOLD
+        if (hold !== undefined || HANG || HANG_PROMPTS.has(ordinal)) {
+          const initial = Promise.withResolvers<PromptResponse>()
+          activeHandoff = { ordinal, resolve: initial.resolve }
+          if (hold !== undefined) {
+            const released = Promise.withResolvers<undefined>()
+            const check = (): void => { if (!existsSync(hold)) released.resolve(undefined) }
+            const watcher = watch(dirname(hold), check)
+            watcher.on('error', released.reject)
+            const poll = setInterval(check, 20)
+            void released.promise.then(async () => {
+              clearInterval(poll)
+              watcher.close()
+              const latest = activeHandoff
+              if (latest === undefined) return
+              activeHandoff = undefined
+              if (FINAL_TEXT !== undefined) await emit(FINAL_TEXT)
+              latest.resolve({ stopReason: STOP })
+            }).catch(() => {
+              clearInterval(poll)
+              watcher.close()
+            })
+            check()
+          }
+          return initial.promise
+        }
+        if (FINAL_TEXT !== undefined) await emit(FINAL_TEXT)
+        return { stopReason: STOP }
+      }
       if (CRASH_ON_PROMPT || switchOn('MOCK_CRASH_ON_PROMPT_FILE') || CRASH_PROMPTS.has(ordinal)) process.exit(1)
       if (process.env.MOCK_PROMPT_ERROR !== undefined) throw new RequestError(-32603, process.env.MOCK_PROMPT_ERROR)
       const hold = process.env.MOCK_PROMPT_HOLD
@@ -413,6 +486,12 @@ function makeAgent() {
         // still kill the process — proving cancellation does not depend on the
         // child cooperating.
         return Promise.resolve()
+      }
+      if (activeHandoff !== undefined) {
+        const latest = activeHandoff
+        activeHandoff = undefined
+        if (CANCEL_FILE !== undefined) appendFileSync(CANCEL_FILE, `cancel-ordinal ${latest.ordinal}\n`)
+        latest.resolve({ stopReason: 'cancelled' })
       }
       resolveCancel?.('cancelled')
       resolveCancel = undefined

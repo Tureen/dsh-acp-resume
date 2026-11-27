@@ -303,6 +303,9 @@ export class BackendReadinessService implements BackendStatusService {
   /** Model selected by the Codex daemon, never exposed through the status DTO. */
   model(backend: string): string | undefined { return this.models.get(backend) }
 
+  /** CLI version observed by startup detection, when available (D51). */
+  version(backend: string): string | undefined { return this.rows.find(row => row.id === backend)?.version }
+
   failure(backend: string, reason: 'login-required'): void {
     if (this.life.signal.aborted) return
     this.rows = this.rows.map(row => row.id === backend

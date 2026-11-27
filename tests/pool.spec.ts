@@ -19,7 +19,7 @@ import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { AcpConnectionError } from '../src/connection.ts'
+import { AcpConnectionError, type AcpSteerMode } from '../src/connection.ts'
 import { AcpSessionPool, CONSECUTIVE_ERROR_FRESH_SESSION_THRESHOLD, freshSessionNotice, type BackendSpec, type PoolOptions } from '../src/pool.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
 
@@ -57,6 +57,7 @@ interface PoolSetup {
   sessionModel?: string
   sessionEffort?: string
   effortOptionId?: 'effortLevel' | 'thought_level'
+  steerMode?: AcpSteerMode
   backendDefaults?: PoolOptions['backendDefaults']
 }
 
@@ -72,6 +73,7 @@ function makePool(setup: PoolSetup = {}): { pool: AcpSessionPool; registryPath: 
       ...(setup.sessionModel === undefined ? {} : { sessionModel: setup.sessionModel }),
       ...(setup.sessionEffort === undefined ? {} : { sessionEffort: setup.sessionEffort }),
       ...(setup.effortOptionId === undefined ? {} : { effortOptionId: setup.effortOptionId }),
+      ...(setup.steerMode === undefined ? {} : { steerMode: setup.steerMode }),
       // 测试用短宽限:取消后连接作废会同步走一次销毁梯子,默认 6s EOF 窗口会超用例预算
       disposeEofGraceMs: setup.disposeEofGraceMs ?? 500,
       disposeGraceMs: setup.disposeGraceMs ?? 500,
@@ -903,7 +905,7 @@ describe('AcpSessionPool', () => {
     }))
     const warnings: string[] = []
     const second = makePool({ env, registryPath, onWarn: (m) => { warnings.push(m) } })
-    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), backend: 'default', backendDisplay: basename(process.execPath), backendCount: 1, active: false, lastActive: 1 }])
+    expect(second.pool.listChats()).toEqual([{ chatId: 'chat-legacy', remoteSessionId: created.remoteSessionId, cwd: process.cwd(), backend: 'default', backendDisplay: basename(process.execPath), backendCount: 1, active: false, lastActive: 1, steer: 'unknown' }])
     const after = await second.pool.send('chat-legacy', '  旧条目的第一轮  ')
     expect(after.stopReason).toBe('completed')
     expect(after.freshSession).toBe(false)
@@ -923,7 +925,7 @@ describe('AcpSessionPool', () => {
     })
     writeFileSync(registryPath, content)
     const { pool, spawns } = makePool({ registryPath })
-    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), backend: 'default', backendDisplay: basename(process.execPath), backendCount: 1, active: false, lastActive: 1 }])
+    expect(pool.listChats()).toEqual([{ chatId: 'chat-other', remoteSessionId: 'remote-x', cwd: process.cwd(), backend: 'default', backendDisplay: basename(process.execPath), backendCount: 1, active: false, lastActive: 1, steer: 'unknown' }])
     await expect(pool.send('chat-other', 'p')).rejects.toThrow(/belongs to another agent/)
     expect(spawns.children).toHaveLength(0)
     expect(readFileSync(registryPath, 'utf8')).toBe(content)
@@ -1856,5 +1858,66 @@ describe('D47 team-view memory projection', () => {
     expect(standaloneRow).toBeDefined()
     expect(standaloneRow).not.toHaveProperty('role')
     expect(standaloneRow).not.toHaveProperty('latestTurn')
+  })
+
+  it('keeps D6 single-flight, streams continuously into liveBuffer, logs 1 turn, and keeps registry unchanged across prompt-handoff steer (D51)', async () => {
+    const dir = tempDir('acp-pool-handoff-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    writeFileSync(hold, 'held')
+    const { pool, registryPath } = makePool({
+      env: {
+        MOCK_STEER_MODE: 'prompt-handoff',
+        MOCK_TEXT: 'head',
+        MOCK_FINAL_TEXT: '|tail',
+        MOCK_PROMPT_HOLD: hold,
+        MOCK_READY_FILE: ready,
+      },
+      steerMode: 'prompt-handoff',
+    })
+    const started = await pool.start(dir)
+    expect(started.steer).toBe('supported')
+    const sending = pool.send(started.chatId, 'work')
+    const deadline = Date.now() + 5000
+    while (!existsSync(ready) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+    expect(existsSync(ready)).toBe(true)
+
+    const liveSub = pool.subscribeLive(started.chatId)
+    const frames: { kind: string; text?: string }[] = []
+    const reader = (async () => {
+      try {
+        for await (const frame of liveSub.frames) frames.push(frame as { kind: string; text?: string })
+      } finally { liveSub.close() }
+    })()
+
+    // Single-flight on send() stays strictly enforced during prompt-handoff steer.
+    await expect(pool.send(started.chatId, 'concurrent-send')).rejects.toThrow(/already has a prompt in flight/)
+    expect(await pool.steer(started.chatId, 'mid-instruction')).toEqual({ queued: true })
+    await expect(pool.send(started.chatId, 'still-in-flight')).rejects.toThrow(/already has a prompt in flight/)
+
+    // Wait for the liveBuffer 150ms batch to publish the steered text mid-turn before releasing hold.
+    await until(() => frames.some(f => f.kind === 'snapshot' && f.text === 'head|steered:mid-instruction'), 'steered snapshot in liveBuffer')
+
+    rmSync(hold, { force: true })
+    const res = await sending
+    await reader
+    expect(res.stopReason).toBe('completed')
+    expect(res.output).toBe('head|steered:mid-instruction|tail')
+    expect(frames.some(f => f.kind === 'snapshot' && f.text === 'head|steered:mid-instruction')).toBe(true)
+    expect(frames.at(-1)?.kind).toBe('settled')
+    // Turn log holds exactly one turn (steer is not logged as a separate turn).
+    const entries = pool.turnEntries(started.chatId)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ kind: 'turn', message: 'work', output: 'head|steered:mid-instruction|tail', stopReason: 'completed' })
+
+    // Releasing keeps cached steer support in memory without persisting any steer field to registry.json.
+    await pool.close(started.chatId)
+    const beforeBytes = readFileSync(registryPath)
+    const listed = pool.listChats()
+    const afterBytes = readFileSync(registryPath)
+    expect(Buffer.compare(beforeBytes, afterBytes)).toBe(0)
+    expect(listed.find(c => c.chatId === started.chatId)?.steer).toBe('supported')
+    const rawRegistry = JSON.parse(afterBytes.toString('utf8')) as { sessions: Record<string, unknown>[] }
+    for (const row of rawRegistry.sessions) expect(row).not.toHaveProperty('steer')
   })
 })

@@ -89,7 +89,7 @@ function formatElapsed(then: number, now: number): string {
 /** Longest label accepted by the start tool. */
 const LABEL_MAX = 80
 
-type ListedChat = Pick<PooledChatInfo, 'chatId' | 'remoteSessionId' | 'cwd' | 'label' | 'backend' | 'active' | 'lastActive' | 'inFlight'>
+type ListedChat = Pick<PooledChatInfo, 'chatId' | 'remoteSessionId' | 'cwd' | 'label' | 'backend' | 'active' | 'lastActive' | 'inFlight' | 'steer'>
 
 /** `running (<since prompt start>)` while a turn is in flight, `idle (<since last turn>)` with a live process, else `released`. */
 function chatState(chat: ListedChat, now: number): string {
@@ -101,7 +101,7 @@ function chatState(chat: ListedChat, now: number): string {
 /** One list row, led by `role <name> | ` for a chat in the session's roster (D27). The owner is omitted: the list is already filtered to the calling session (D20). */
 function describeChat(chat: ListedChat, now: number, role?: string): string {
   const label = chat.label === undefined ? '' : ` | label ${JSON.stringify(chat.label)}`
-  return `${role === undefined ? '' : `role ${role} | `}${chat.chatId}${label} | backend ${chat.backend} | ${chatState(chat, now)} | remote ${chat.remoteSessionId} | last active ${new Date(chat.lastActive).toISOString()} | cwd ${chat.cwd}`
+  return `${role === undefined ? '' : `role ${role} | `}${chat.chatId}${label} | backend ${chat.backend} | ${chatState(chat, now)} | remote ${chat.remoteSessionId} | last active ${new Date(chat.lastActive).toISOString()} | cwd ${chat.cwd} | steer ${chat.steer}`
 }
 
 /** First line of the diagnostic, capped; empty when there is none. */
@@ -509,7 +509,7 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
     name: `${toolPrefix}list`,
     description: `List persistent ACP chats created by the current DSH session: ${roles === undefined ? '' : 'role (for chats set up for a workspace role), '}chatId, label (if any), backend, state `
       + '(running with elapsed time, idle with a live process, or released), remote session id, last activity, '
-      + `and working directory. Released chats reconnect on their next ${toolPrefix}send.`
+      + `working directory, and steer capability (supported, unsupported, or unknown). Released chats reconnect on their next ${toolPrefix}send.`
       + (roles === undefined ? '' : ` A last line names the workspace roles${roles.templates === false ? '' : ' and templates (with their params)'} defined in .agents/acp-team.yml, or the reason that file is invalid.`),
     parameters: {},
     output: {
@@ -590,7 +590,9 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       + `To stop the turn immediately use job_kill (when the send ran as a job) or ${toolPrefix}close instead. `
       + `Only works while a turn is in flight (after ${toolPrefix}send, before it finishes); otherwise use ${toolPrefix}send. `
       + 'Requires a backend that supports mid-turn steering (only some backends do); '
-      + 'if this backend does not, the tool fails with "does not support mid-turn steering" — do not probe to find out; let the turn finish (you will be notified) or stop it and send again.'
+      + `availability depends on the chat's backend — check the steer field returned by ${toolPrefix}list`
+      + `${roles === undefined ? '' : ` or ${teamListName(toolPrefix)}`}. `
+      + 'If this backend does not, the tool fails with "does not support mid-turn steering" — do not probe to find out; let the turn finish (you will be notified) or stop it and send again.'
       + (roles === undefined ? '' : ' Pass role instead of chatId to steer the running turn of a workspace role in this session.'),
     parameters: steerParameters(toolPrefix, roles),
     output: {
@@ -797,8 +799,9 @@ export function chatWorkflowTool(
 export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefix = 'acp_chat_'): ToolDefinitionOf {
   return defineTool({
     name: teamListName(toolPrefix),
-    description: 'List the workspace ACP team from .agents/acp-team.yml, read-only: one line per role with its summary and whether it can take work now '
-      + '(not provisioned: its chat is set up on first use; idle: send to it; running: it has a turn in flight, so steer it or wait for its completion notice). '
+    description: 'List the workspace ACP team from .agents/acp-team.yml, read-only: one line per role with its summary, whether it can take work now '
+      + '(not provisioned: its chat is set up on first use; idle: send to it; running: it has a turn in flight, so steer it or wait for its completion notice), '
+      + 'and the steer capability (supported, unsupported, or unknown) of provisioned roles. '
       + 'Use it before choosing a role. Workers do not talk to each other directly: when one needs another\'s result, put it in your dispatch message.',
     parameters: {},
     output: {
@@ -821,8 +824,10 @@ export function teamListTool(pool: AcpSessionPool, roles: RoleSupport, toolPrefi
         if (roster === undefined) return 'unknown'
         const entry = roster.find(e => e.role === role)
         if (entry === undefined) return 'not provisioned'
-        const inFlight = pool.chatInfo(entry.chatId)?.inFlight
-        return inFlight === undefined ? 'idle' : `running (${formatElapsed(inFlight.startedAt, now)})`
+        const info = pool.chatInfo(entry.chatId)
+        const inFlight = info?.inFlight
+        const liveState = inFlight === undefined ? 'idle' : `running (${formatElapsed(inFlight.startedAt, now)})`
+        return `${liveState} · steer ${info?.steer ?? 'unknown'}`
       }
       return answer(read.config.roles.map(r => `${r.name} · ${r.summary ?? '(no summary)'} · ${state(r.name)}`).join('\n'))
     },

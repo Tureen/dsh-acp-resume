@@ -10,7 +10,7 @@ import { readSessionChoices } from '../src/acp-reported-settings.ts'
  * @module dsh-acp-resume/tests/connection.spec
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,7 +19,7 @@ import type { AcpContentBlock } from '@agentclientprotocol/sdk'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { Context } from '@deepseek-ai/cordis'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
-import { AcpConnectionError, isLoadSessionMissing, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpSessionSpec } from '../src/connection.ts'
+import { AcpConnectionError, AcpSteerUnsupportedError, isLoadSessionMissing, normalizeInboundMessage, openAcpConnection, type AcpConnection, type AcpSessionSpec } from '../src/connection.ts'
 import { userQuestionPermissionResolver } from '../src/permission-request.ts'
 import { DEFAULT_DISPOSE_EOF_GRACE_MS, DEFAULT_DISPOSE_GRACE_MS } from '../src/run.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -131,6 +131,201 @@ describe('normalizeInboundMessage', () => {
     const content = [{ type: 'content', content: { type: 'text', text: 'a' } }]
     expect(normalizeInboundMessage({ method: 'session/update', params: { sessionId: 's', sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } }))
       .toEqual([{ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read', kind: 'read', status: 'pending', content } } }])
+  })
+})
+
+describe('prompt-handoff steer (D51)', () => {
+  it('happy path: hands off completion to the concurrent steer prompt, accumulates full turnText, and settles once', async () => {
+    const dir = tempDir('acp-handoff-happy-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'part1',
+      MOCK_FINAL_TEXT: '|done',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_FILE: steers,
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    const chunks: string[] = []
+    let settlements = 0
+    const turnPromise = conn.prompt(ask('initial'), live(), chunk => { chunks.push(chunk) }).then((res) => {
+      settlements += 1
+      return res
+    })
+    await until(() => existsSync(ready), 'initial prompt in flight')
+
+    const ack = await conn.steer('switch now')
+    expect(ack).toEqual({ queued: true })
+    // Must still be in flight: P1's immediate end_turn was ignored and turn has not settled yet.
+    await new Promise(r => setTimeout(r, 40))
+    expect(settlements).toBe(0)
+
+    rmSync(hold)
+    const result = await turnPromise
+    expect(settlements).toBe(1)
+    expect(result.stopReason).toBe('completed')
+    expect(text(result.output)).toBe('part1|steered:switch now|done')
+    expect(chunks.join('')).toBe('part1|steered:switch now|done')
+    expect(lines(steers)).toEqual([`steer ${conn.remoteSessionId} switch now`])
+  })
+
+  it('boundary (i): rejects steer after the turn already ended naturally without sending a concurrent prompt', async () => {
+    const dir = tempDir('acp-handoff-ended-')
+    const steers = join(dir, 'steers')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'finished',
+      MOCK_STEER_FILE: steers,
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    const result = await conn.prompt(ask('quick'), live())
+    expect(result.stopReason).toBe('completed')
+    expect(text(result.output)).toBe('finished')
+
+    await expect(conn.steer('too late')).rejects.toThrow(/no turn is in flight/)
+    expect(existsSync(steers)).toBe(false)
+  })
+
+  it('boundary (ii): propagates an immediate JSON-RPC error on the steer prompt without disrupting the running turn', async () => {
+    const dir = tempDir('acp-handoff-err-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'part1',
+      MOCK_FINAL_TEXT: '|still-ok',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_ERROR: 'mock steer rejected',
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    const turnPromise = conn.prompt(ask('initial'), live())
+    await until(() => existsSync(ready), 'initial prompt in flight')
+
+    await expect(conn.steer('bad')).rejects.toThrow(/mock steer rejected/)
+    // Original turn stays intact and completes normally once released.
+    rmSync(hold)
+    const result = await turnPromise
+    expect(result.stopReason).toBe('completed')
+    expect(text(result.output)).toBe('part1|still-ok')
+  })
+
+  it('boundary (iii): session/cancel after steer settles the latest generation as cancelled and aborts locally', async () => {
+    const dir = tempDir('acp-handoff-cancel-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const cancels = join(dir, 'cancels')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'part1',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_CANCEL_FILE: cancels,
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    const ac = new AbortController()
+    const turnPromise = conn.prompt(ask('initial'), ac.signal)
+    await until(() => existsSync(ready), 'initial prompt in flight')
+
+    expect(await conn.steer('mid-turn')).toEqual({ queued: true })
+    ac.abort()
+    const result = await turnPromise
+    expect(result.stopReason).toBe('aborted')
+    await until(() => lines(cancels).some(l => l.startsWith('cancel-ordinal ')), 'cancel recorded on latest generation')
+    // Ordinal 2 = the concurrent steer prompt, not ordinal 1 (which already yielded end_turn on handoff).
+    expect(lines(cancels)).toContain('cancel-ordinal 2')
+    expect(lines(cancels)).toContain(`cancel ${conn.remoteSessionId}`)
+  })
+
+  it('boundary (iv): chains consecutive steers across multiple generations and settles once on the final prompt', async () => {
+    const dir = tempDir('acp-handoff-chain-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'p0',
+      MOCK_FINAL_TEXT: '|end',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_FILE: steers,
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    let settlements = 0
+    const turnPromise = conn.prompt(ask('initial'), live()).then((res) => {
+      settlements += 1
+      return res
+    })
+    await until(() => existsSync(ready), 'initial prompt in flight')
+
+    expect(await conn.steer('first')).toEqual({ queued: true })
+    expect(await conn.steer('second')).toEqual({ queued: true })
+    expect(await conn.steer('third')).toEqual({ queued: true })
+    expect(settlements).toBe(0)
+
+    rmSync(hold)
+    const result = await turnPromise
+    expect(settlements).toBe(1)
+    expect(result.stopReason).toBe('completed')
+    expect(text(result.output)).toBe('p0|steered:first|steered:second|steered:third|end')
+    expect(lines(steers)).toEqual([
+      `steer ${conn.remoteSessionId} first`,
+      `steer ${conn.remoteSessionId} second`,
+      `steer ${conn.remoteSessionId} third`,
+    ])
+  })
+
+  it('boundary (v): settles error with process-exit diagnostic without hanging when the child dies mid-handoff', async () => {
+    const dir = tempDir('acp-handoff-crash-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'partial',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_CRASH_AT: '1',
+    }, dir, { steerMode: 'prompt-handoff' })
+    const conn = await open(spec)
+    const turnPromise = conn.prompt(ask('initial'), live())
+    await until(() => existsSync(ready), 'initial prompt in flight')
+
+    // steer may succeed right as P1 yields end_turn before exit(17), or reject if the pipe breaks first; either way prompt() must settle error without hanging.
+    await conn.steer('crash-now').catch(() => undefined)
+    const result = await turnPromise
+    expect(result.stopReason).toBe('error')
+    expect(result.diagnostic).toMatch(/exited|process|transport/i)
+    expect(text(result.output)).toContain('partial')
+  })
+
+  it('rejects steer with AcpSteerUnsupportedError when steerMode is unsupported without sending any RPC', async () => {
+    const dir = tempDir('acp-handoff-unsupported-')
+    const hold = join(dir, 'hold')
+    const ready = join(dir, 'ready')
+    const steers = join(dir, 'steers')
+    writeFileSync(hold, 'held')
+    const { spec } = makeSpec({
+      MOCK_STEER_MODE: 'prompt-handoff',
+      MOCK_TEXT: 'ok',
+      MOCK_PROMPT_HOLD: hold,
+      MOCK_READY_FILE: ready,
+      MOCK_STEER_FILE: steers,
+    }, dir, { steerMode: 'unsupported' })
+    const conn = await open(spec)
+    const turnPromise = conn.prompt(ask('initial'), live())
+    await until(() => existsSync(ready), 'initial prompt in flight')
+    await expect(conn.steer('nope')).rejects.toBeInstanceOf(AcpSteerUnsupportedError)
+    expect(existsSync(steers)).toBe(false)
+    rmSync(hold)
+    expect((await turnPromise).stopReason).toBe('completed')
   })
 })
 

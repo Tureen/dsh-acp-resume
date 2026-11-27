@@ -34,6 +34,9 @@ const PRERELEASE_PART = `(?:${NUMERIC}|[0-9]*[a-z-][0-9a-z-]*)`
 const BUILD_PART = '[0-9a-z-]+'
 const SEMVER = `${CORE}(?:-${PRERELEASE_PART}(?:\\.${PRERELEASE_PART})*)?(?:\\+${BUILD_PART}(?:\\.${BUILD_PART})*)?`
 const RELEASE = new RegExp(`^(?:v)?(${CORE})$`, 'i')
+const CORE_PREFIX = new RegExp(`^(?:v)?(${CORE})(?:[-+]|$)`, 'i')
+/** Minimum agy CLI version that supports mid-turn steering via concurrent `session/prompt` (D51). */
+export const AGY_STEER_MIN_VERSION = '1.5.0'
 const VERSION_LINE = new RegExp(
   `^(?:(?:kiro-cli|codex(?:-cli)?|agy|antigravity(?: cli| acp server)?)[ \\t]+(?:version[ \\t]+)?)?v?(${SEMVER})$`,
   'i',
@@ -69,4 +72,10 @@ export function backendCompatibility(kind: KnownBackendKind, version: string): {
     supported: release !== undefined && intervals.some(([min, max]) => compareReleases(release, min) >= 0 && compareReleases(release, max) < 0),
     range: backendSupportRange(kind),
   }
+}
+
+/** Whether an agy CLI version meets the 1.5.0 threshold for concurrent-prompt steering (D51). */
+export function agySupportsSteer(version: string): boolean {
+  const release = CORE_PREFIX.exec(version.trim())?.[1]
+  return release !== undefined && compareReleases(release, AGY_STEER_MIN_VERSION) >= 0
 }

@@ -23,7 +23,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import * as acp from '../src/index.ts'
 import { AcpSessionPool } from '../src/pool.ts'
-import { chatSendTool, type ChatJobsFace, chatStaticTools, registerChatTools, type ToolsRegistryFace } from '../src/tools.ts'
+import { chatSendTool, type ChatJobsFace, chatStaticTools, registerChatTools, teamListTool, type ToolsRegistryFace } from '../src/tools.ts'
 import { COMMAND_NOT_FOUND_GUIDANCE } from '../src/command-not-found.ts'
 import { startExternalActivation } from './helpers/external-activation-helpers.ts'
 import { nodeSpawn } from './helpers/node-spawn.ts'
@@ -987,5 +987,76 @@ exec "${process.execPath}" "${mockServer}"
   it('defaults a named backend to the acp protocol', () => {
     const cfg = acp.Config({ command: 'x', backends: { review: { command: 'agent' } } }) as { backends: Record<string, { protocol: string }> }
     expect(cfg.backends['review']?.protocol).toBe('acp')
+  })
+
+  it('reports steer supported / unsupported / unknown in acp_chat_list and acp_team_list without protocol or engine names in steer copy (D51)', async () => {
+    const dir = tempDir('acp-tools-steer-cap-')
+    mkdirSync(join(dir, '.agents'), { recursive: true })
+    writeFileSync(join(dir, '.agents', 'acp-team.yml'), [
+      'roles:',
+      '  - name: fast',
+      '    backend: agy-new',
+      '    cwd: .',
+      '  - name: old',
+      '    backend: agy-old',
+      '    cwd: .',
+      '  - name: plain',
+      '    cwd: .',
+    ].join('\n'))
+    const baseSpec = {
+      command: process.execPath,
+      args: [mockServer],
+      permission: 'reject' as const,
+      env: {},
+      disposeEofGraceMs: 500,
+      disposeGraceMs: 500,
+      spawn: nodeSpawn,
+    }
+    const backends = new Map([
+      ['default', { name: 'default', description: 'default', specBase: baseSpec }],
+      ['agy-new', { name: 'agy-new', description: 'agy new', specBase: { ...baseSpec, steerMode: 'prompt-handoff' as const } }],
+      ['agy-old', { name: 'agy-old', description: 'agy old', specBase: { ...baseSpec, steerMode: 'unsupported' as const } }],
+    ])
+    const pool = new AcpSessionPool({
+      specBase: baseSpec,
+      backends,
+      registryPath: join(dir, 'registry.json'),
+      idleTimeoutMs: 600_000,
+    })
+    cleanups.push(() => pool.disposeAll())
+
+    const tools = new Map<string, Definition>()
+    const roles = { workspaceDirFor: () => dir }
+    const [start, list, close, steer] = chatStaticTools(pool, 'acp_chat_', [...backends.values()], roles)
+    const teamList = teamListTool(pool, roles, 'acp_chat_')
+    for (const def of [start, list, close, steer, teamList]) tools.set(def.name, def)
+
+    // Steer copy points to list/team_list steer field and names no protocol method or engine.
+    expect(steer.description).toContain('Requires a backend that supports mid-turn steering')
+    expect(steer.description).toContain('acp_chat_list')
+    expect(steer.description).toContain('acp_team_list')
+    expect(steer.description).not.toMatch(/_session\/steer|kiro|agy|codex|engine/i)
+
+    const sessionExec = { signal: new AbortController().signal, agent: { id: 'owner-steer' } } as unknown as ToolRunContext
+    await pool.sendByRole('fast', 'hi', { ownerSessionId: 'owner-steer', workspaceDir: dir })
+    await pool.sendByRole('old', 'hi', { ownerSessionId: 'owner-steer', workspaceDir: dir })
+    await pool.sendByRole('plain', 'hi', { ownerSessionId: 'owner-steer', workspaceDir: dir })
+
+    const listText = ((await list.execute({}, sessionExec)) as { text: string }).text
+    expect(listText).toContain('| backend agy-new |')
+    expect(listText).toMatch(/backend agy-new .*\| steer supported/)
+    expect(listText).toMatch(/backend agy-old .*\| steer unsupported/)
+    expect(listText).toMatch(/backend default .*\| steer unknown/)
+
+    const teamText = ((await teamList.execute({}, sessionExec)) as { text: string }).text
+    expect(teamText).toMatch(/fast · .* · idle · steer supported/)
+    expect(teamText).toMatch(/old · .* · idle · steer unsupported/)
+    expect(teamText).toMatch(/plain · .* · idle · steer unknown/)
+
+    // Released chat still reads memory-cached backend steer support without waking a process.
+    const fastChat = pool.listChats().find(c => c.backend === 'agy-new')!
+    await pool.close(fastChat.chatId)
+    const releasedText = ((await list.execute({}, sessionExec)) as { text: string }).text
+    expect(releasedText).toMatch(/backend agy-new \| released .*\| steer supported/)
   })
 })

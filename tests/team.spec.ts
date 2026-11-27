@@ -320,12 +320,12 @@ describe('acp_team_list (D32)', () => {
     const running = pool.sendByRole('writer', 'long', { ownerSessionId: 'session-a', workspaceDir: root })
     const deadline = Date.now() + 5000
     while (!/writer · \(no summary\) · running/.test(await run(tool, 'session-a')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 20))
-    expect(await run(tool, 'session-a')).toMatch(/^scout · Maps the code\. · idle\nreviewer · Reviews diffs\. · not provisioned\nwriter · \(no summary\) · running \(\d+s\)$/)
+    expect(await run(tool, 'session-a')).toMatch(/^scout · Maps the code\. · idle · steer unknown\nreviewer · Reviews diffs\. · not provisioned\nwriter · \(no summary\) · running \(\d+s\) · steer unknown$/)
     // Rosters are per session: another session sees nothing provisioned.
     expect(await run(tool, 'session-b')).toContain('scout · Maps the code. · not provisioned')
     rmSync(hold)
     await running
-    expect(await run(tool, 'session-a')).toContain('writer · (no summary) · idle')
+    expect(await run(tool, 'session-a')).toContain('writer · (no summary) · idle · steer unknown')
   })
 
   it('reports unknown states without a calling session, and says when there is no or an invalid team file', async () => {

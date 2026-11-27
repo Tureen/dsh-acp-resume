@@ -33,7 +33,8 @@ import { backendStatusTool, chatSendTool, chatStaticTools, chatUsageTool, chatWo
 import { UsageService } from './usage.js'
 import { registerTeamPrompt } from './team-prompt.js'
 import { AcpResumeInfoService, AcpResumePanelService } from './panel.js'
-import type { AcpSessionSpec } from './connection.js'
+import type { AcpSessionSpec, AcpSteerMode } from './connection.js'
+import { agySupportsSteer } from './backend-compatibility.js'
 import { type AgentEngineSetting, buildChildArgs, type ModelSelect } from './engine.js'
 import { decideJobWait } from './job-wait-gate.js'
 import { userQuestionPermissionResolver, type PermissionRequestResolver } from './permission-request.js'
@@ -337,6 +338,7 @@ function backendSpecs(ctx: Context, config: ResolvedConfig): ReadonlyMap<string,
     modelSelect: backend.modelSelect ?? 'flag' as const,
     ...(backend.model === undefined ? {} : { staticModel: backend.model }),
     ...(backend.effort === undefined ? {} : { staticEffort: backend.effort }),
+    ...(backendSteerModeFor(backend) === undefined ? {} : { steerModeFor: backendSteerModeFor(backend) }),
   })
   const entries: [string, BackendSpec][] = named.map(([name, value]) => [
     name,
@@ -394,6 +396,15 @@ function sessionEffortSettings(name: string, backend: BackendConfig): Pick<AcpSe
     throw new Error(`acp-resume: ${where} ${JSON.stringify(backend.effort)} is not a session effort level${agy ? ' for agy' : ''}; with modelSelect: session it must be one of ${levels.join(', ')}`)
   }
   return { sessionEffort: backend.effort, effortOptionId: agy ? 'thought_level' : 'effortLevel' }
+}
+
+/** Resolve agy steer mode from the startup-probed CLI version (D51: >= 1.5.0 uses concurrent `session/prompt`). */
+function backendSteerModeFor(backend: BackendConfig): ((version: string | undefined) => AcpSteerMode | undefined) | undefined {
+  if (backend.protocol === 'codex' || commandKind(backend.command) !== 'agy') return undefined
+  return (version) => {
+    if (version === undefined) return undefined
+    return agySupportsSteer(version) ? 'prompt-handoff' : 'unsupported'
+  }
 }
 
 function validateBackendDefaults(candidate: ResolvedConfig, choices: ReadonlyMap<string, BackendSpec>): void {

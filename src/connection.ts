@@ -40,18 +40,23 @@ import { permissionWasAllowed, resolvePermissionRequest, type PermissionRequestR
 
 export type { PermissionPolicy }
 
+/** How `steer()` delivers a mid-turn instruction on an ACP connection (D51). */
+export type AcpSteerMode = 'ext' | 'prompt-handoff' | 'unsupported'
+
 /** Startup step that failed. */
 /**
  * {@link AcpRunSpec} plus the pool-only per-session settings applied after
  * `session/new` / `session/load`: `sessionModel` by `session/set_model` (on
  * -32601/-32603: `session/set_config_option(model)`), then `sessionEffort` by
- * the backend-specific config option (D34/D40).
+ * the backend-specific config option (D34/D40), and backend steer transport (D51).
  */
 export type AcpSessionSpec = AcpRunSpec & {
   sessionModel?: string
   sessionEffort?: string
   /** ACP config option for session effort; Kiro's effortLevel is the legacy default. */
   effortOptionId?: 'effortLevel' | 'thought_level'
+  /** Steer transport: `'ext'` (default `_session/steer`), `'prompt-handoff'` (agy >= 1.5.0), or `'unsupported'`. */
+  steerMode?: AcpSteerMode
 }
 
 export type AcpStartupStage = 'initialize' | 'new-session' | 'load-session'
@@ -84,12 +89,13 @@ export class AcpConnectionError extends Error {
 }
 
 /**
- * The agent does not implement the private `_session/steer` extension
- * (JSON-RPC `-32601 Method not found`). Recognizable by class, not by message.
+ * The agent does not support mid-turn steering (either `_session/steer`
+ * returned JSON-RPC `-32601 Method not found`, or this backend/version is
+ * configured as unsupported). Recognizable by class, not by message.
  */
 export class AcpSteerUnsupportedError extends Error {
   constructor(options?: { cause?: unknown }) {
-    super('acp-resume: the agent does not implement _session/steer (method not found)', options)
+    super('acp-resume: this backend does not support mid-turn steering', options)
     this.name = 'AcpSteerUnsupportedError'
   }
 }
@@ -161,6 +167,8 @@ export interface AcpConnection {
   setSelection?(field: 'model' | 'effort', value: string): Promise<void>
   /** Latest backend report on this live connection (D41). */
   readonly settingsReport?: ReportedSettings & { readonly at: number }
+  /** Configured steer transport for this live connection, when explicitly known (D51). */
+  readonly steerMode?: AcpSteerMode
   /**
    * Run one prompt turn to its terminal. Never rejects on a child-level
    * failure: a cancelled turn settles `aborted`, a remote failure settles
@@ -174,10 +182,10 @@ export interface AcpConnection {
    */
   prompt(blocks: readonly AcpContentBlock[], signal: AbortSignal, onText?: TextSink, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult>
   /**
-   * Queue a steering message into the running turn via the private
-   * `_session/steer` request (neither engine advertises it; ACP has no steer).
-   * Does not start or settle a turn.
-   * @throws {AcpSteerUnsupportedError} the agent answered `-32601 Method not found`.
+   * Queue a steering message into the running turn using the connection's
+   * steer mechanism (`_session/steer`, concurrent `session/prompt` handoff for
+   * agy >= 1.5.0, or Codex `turn/steer`). Does not start or settle a turn.
+   * @throws {AcpSteerUnsupportedError} the backend does not support steering.
    */
   steer(message: string): Promise<AcpSteerResult>
   /**
@@ -694,10 +702,23 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
   signal?.removeEventListener('abort', onAbort)
   if (remoteSessionId === undefined) throw new Error('unreachable: ACP startup fulfilled without a session id')
   const sessionId = remoteSessionId
+  const STEER_ACCEPT_WINDOW_MS = 150
+  type PromptReply = { stopReason: StopReason }
+  interface ActiveTurn {
+    generation: number
+    settled: boolean
+    pendingSteers: number
+    activeRequest: Promise<PromptReply>
+    steerChain: Promise<void>
+    readonly cancelled: Promise<void>
+    wake: () => void
+  }
+  let activeTurn: ActiveTurn | undefined
 
   return {
     id,
     remoteSessionId: sessionId,
+    ...(spec.steerMode === undefined ? {} : { steerMode: spec.steerMode }),
     get sessionChoices() { return sessionChoices },
     async setSelection(field, value) {
       const previous = sessionChoices
@@ -742,6 +763,68 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
     notifyCancel: requestCancel,
     dispose,
     async steer(message: string): Promise<AcpSteerResult> {
+      if (spec.steerMode === 'unsupported') {
+        throw new AcpSteerUnsupportedError()
+      }
+      if (spec.steerMode === 'prompt-handoff') {
+        const turn = activeTurn
+        if (turn === undefined || turn.settled) {
+          throw new Error('acp-resume: no turn is in flight to steer')
+        }
+        const runHandoff = async (): Promise<AcpSteerResult> => {
+          if (turn.settled || activeTurn !== turn) {
+            throw new Error('acp-resume: no turn is in flight to steer')
+          }
+          const prevReq = turn.activeRequest
+          turn.pendingSteers += 1
+          let acceptTimer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const nextReq = agent.request(methods.agent.session.prompt, {
+              sessionId,
+              prompt: [{ type: 'text', text: message }],
+            }) as Promise<PromptReply>
+            // Swallow late rejection if this request is later abandoned on cancel or error.
+            nextReq.catch(() => {})
+            let nextError: unknown
+            const nextFailed = nextReq.then(
+              () => 'resolved' as const,
+              (error: unknown) => { nextError = error; return 'rejected' as const },
+            )
+            const prevSettled = prevReq.then(
+              () => 'handoff' as const,
+              () => 'prev-failed' as const,
+            )
+            const windowElapsed = new Promise<'window'>((resolve) => {
+              acceptTimer = setTimeout(() => resolve('window'), STEER_ACCEPT_WINDOW_MS)
+              acceptTimer.unref?.()
+            })
+            const race = await Promise.race([
+              nextFailed,
+              prevSettled,
+              windowElapsed,
+              turn.cancelled.then(() => 'cancelled' as const),
+            ])
+            if (race === 'rejected') {
+              // The agent rejected the concurrent steer prompt without taking over the running turn:
+              // leave turn.generation and turn.activeRequest untouched and propagate to steer() caller.
+              throw nextError
+            }
+            if (race === 'prev-failed' || race === 'cancelled') {
+              throw new Error('acp-resume: turn ended before the steering message was accepted')
+            }
+            turn.generation += 1
+            turn.activeRequest = nextReq
+            return { queued: true }
+          } finally {
+            clearTimeout(acceptTimer)
+            turn.pendingSteers -= 1
+            turn.wake()
+          }
+        }
+        const chained = turn.steerChain.then(runHandoff, runHandoff)
+        turn.steerChain = chained.then(() => undefined, () => undefined)
+        return chained
+      }
       let reply: unknown
       try {
         reply = await agent.request('_session/steer', { sessionId, message })
@@ -760,6 +843,9 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
       }
     },
     async prompt(blocks: readonly AcpContentBlock[], promptSignal: AbortSignal, onText?: TextSink, permissionResolver?: PermissionRequestResolver): Promise<AcpTurnResult> {
+      if (activeTurn !== undefined && !activeTurn.settled) {
+        throw new Error('acp-resume: a prompt is already in flight on this connection')
+      }
       // Per-turn state: a notifyCancel between turns or a previous turn's
       // permission decision must not leak into this turn.
       flags.cancelled = false
@@ -779,24 +865,79 @@ export async function openAcpConnection(spec: AcpSessionSpec, open: AcpOpenMode,
       }
       promptSignal.addEventListener('abort', onTurnAbort, { once: true })
       if (promptSignal.aborted) onTurnAbort()
+      let turn: ActiveTurn | undefined
       const settleTurn = (): void => {
         acceptingUpdates = false
         turnTextObserver = undefined
         activePermissionResolver = undefined
         activePermissionSignal = undefined
+        if (turn !== undefined) {
+          turn.settled = true
+          turn.wake()
+          if (activeTurn === turn) activeTurn = undefined
+        }
       }
       const turnOutput = (): readonly ContentBlock[] => turnText === '' ? [] : [{ type: 'text', text: turnText }]
       let diagnostic: string | undefined
       try {
         // An already-aborted turn never reaches the agent.
         if (turnCancelled) throw new Error('subagent cancelled before the ACP prompt was sent')
-        const promptResult = (await Promise.race([
-          agent.request(methods.agent.session.prompt, {
-            sessionId,
-            prompt: [...blocks],
-          }),
-          turnCancel.then((): never => { throw new Error('subagent cancelled while the ACP prompt was running') }),
-        ])) as { stopReason: StopReason }
+        const initialRequest = agent.request(methods.agent.session.prompt, {
+          sessionId,
+          prompt: [...blocks],
+        }) as Promise<PromptReply>
+        initialRequest.catch(() => {})
+        let wakeSignal = Promise.withResolvers<void>()
+        turn = {
+          generation: 0,
+          settled: false,
+          pendingSteers: 0,
+          activeRequest: initialRequest,
+          steerChain: Promise.resolve(),
+          cancelled: turnCancel,
+          wake: () => {
+            const current = wakeSignal
+            wakeSignal = Promise.withResolvers<void>()
+            current.resolve()
+          },
+        }
+        activeTurn = turn
+        let promptResult: PromptReply
+        while (true) {
+          const gen = turn.generation
+          const req = turn.activeRequest
+          const handedOff = wakeSignal.promise
+          const outcome = await Promise.race([
+            req.then(
+              (reply) => ({ kind: 'reply' as const, gen, reply }),
+              (error: unknown) => ({ kind: 'error' as const, gen, error }),
+            ),
+            handedOff.then(() => ({ kind: 'handoff' as const })),
+            turnCancel.then(() => ({ kind: 'cancel' as const })),
+          ])
+          if (outcome.kind === 'cancel') {
+            throw new Error('subagent cancelled while the ACP prompt was running')
+          }
+          if (outcome.kind === 'handoff') {
+            req.catch(() => {})
+            continue
+          }
+          if (outcome.kind === 'reply') {
+            while (turn.pendingSteers > 0 && outcome.gen === turn.generation && !turnCancelled) {
+              await Promise.race([wakeSignal.promise, turnCancel])
+            }
+            if (turnCancelled) throw new Error('subagent cancelled while the ACP prompt was running')
+          }
+          if (outcome.gen !== turn.generation) {
+            // Stale generation (e.g. agy immediately replied `end_turn` to P1 on receiving P2) — ignore.
+            continue
+          }
+          if (outcome.kind === 'error') {
+            throw outcome.error
+          }
+          promptResult = outcome.reply
+          break
+        }
         settleTurn()
         const stopReason = acpStopReason(promptResult.stopReason)
         diagnostic = terminalDiagnostic(promptResult.stopReason, latestPermission)

@@ -45,7 +45,7 @@ import { basename, dirname, join } from 'node:path'
 import type { BackendReport } from './backend-status.js'
 import { LiveBuffer, type LiveSubscription } from './live-buffer.js'
 import type { ChatOptions, SessionChoices } from './chat-options.js'
-import type { AcpConnection, AcpSessionSpec, AcpSteerResult, OpenAcpMode } from './connection.js'
+import type { AcpConnection, AcpSessionSpec, AcpSteerMode, AcpSteerResult, OpenAcpMode } from './connection.js'
 import { AcpConnectionError, isLoadSessionMissing, openAcpConnection } from './connection.js'
 import { openCodexConnection } from './connection-codex.js'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
@@ -144,7 +144,12 @@ export interface PooledChatInfo {
    * another backend (D31): the fixed notice to show. Never persisted.
    */
   readonly fallbackNotice?: string
+  /** Known mid-turn steer capability derived from connection config / memory cache, never persisted (D51). */
+  readonly steer: SteerSupport
 }
+
+/** Mid-turn steer availability reported by list tools (D51). */
+export type SteerSupport = 'supported' | 'unsupported' | 'unknown'
 
 /**
  * Panel attention derived from the chat's newest turn-log entry: `error` for a
@@ -221,6 +226,8 @@ export interface BackendSpec {
   readonly modelSelect?: ModelSelect
   readonly staticModel?: string
   readonly staticEffort?: string
+  /** Version-gated steer transport resolver (D51: e.g. agy >= 1.5.0 -> `'prompt-handoff'`). */
+  readonly steerModeFor?: (version: string | undefined) => AcpSteerMode | undefined
   /** Codex thread parameters; model may be resolved by the readiness probe. */
   readonly codex?: {
     readonly model?: string
@@ -250,6 +257,8 @@ export interface PoolOptions {
     route?(backend?: string, signal?: AbortSignal): DispatchRoute | Promise<DispatchRoute>
     executable?(backend: string): string | undefined
     model?(backend: string): string | undefined
+    /** CLI version observed by startup detection, when available (D51). */
+    version?(backend: string): string | undefined
     failure?(backend: string, reason: 'login-required'): void
   }
 }
@@ -532,6 +541,8 @@ export class AcpSessionPool {
   private readonly runningWorkflows = new Map<string, Map<string, TrackedRun>>()
   /** Per-backend latest reported SessionChoices cache for released chats; memory only (D48). */
   private readonly backendChoicesCache = new Map<string, SessionChoices>()
+  /** Per-backend latest known steer transport for released chats; memory only, never persisted (D51). */
+  private readonly backendSteerModeCache = new Map<string, AcpSteerMode>()
   /** Per-chat session-level overrides applied after config defaults on reconnect; memory only, never persisted (D44/D48). */
   private readonly reconnectOverrides = new Map<string, { readonly model?: string; readonly effort?: string }>()
   private disposed = false
@@ -550,22 +561,42 @@ export class AcpSessionPool {
 
   /** Registry rows (durable chats, live or released). */
   listChats(): readonly PooledChatInfo[] {
-    return this.registry.all().map(e => this.withAttention(e.chatId, {
-      chatId: e.chatId,
-      remoteSessionId: e.remoteSessionId,
-      cwd: e.cwd,
-      ...(typeof e.label === 'string' && e.label !== '' ? { label: e.label } : {}),
-      ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
-      ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
-      ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
-      backend: this.backendName(e),
-      backendDisplay: this.displayBackend(this.backendName(e)),
-      backendCount: this.backends.size,
-      ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
-      ...this.rowSettings(e.chatId),
-      active: this.live.has(e.chatId),
-      lastActive: e.lastActive,
-    }))
+    return this.registry.all().map(e => {
+      const backend = this.backendName(e)
+      return this.withAttention(e.chatId, {
+        chatId: e.chatId,
+        remoteSessionId: e.remoteSessionId,
+        cwd: e.cwd,
+        ...(typeof e.label === 'string' && e.label !== '' ? { label: e.label } : {}),
+        ...(typeof e.title === 'string' && e.title !== '' ? { title: e.title } : {}),
+        ...(typeof e.turnCount === 'number' ? { turnCount: e.turnCount } : {}),
+        ...(typeof e.ownerSessionId === 'string' && e.ownerSessionId !== '' ? { ownerSessionId: e.ownerSessionId } : {}),
+        backend,
+        backendDisplay: this.displayBackend(backend),
+        backendCount: this.backends.size,
+        ...(this.live.get(e.chatId)?.inFlight === undefined ? {} : { inFlight: this.live.get(e.chatId)?.inFlight }),
+        ...this.rowSettings(e.chatId),
+        active: this.live.has(e.chatId),
+        lastActive: e.lastActive,
+        steer: this.steerSupportFor(e.chatId, backend),
+      })
+    })
+  }
+
+  private resolveSteerMode(backend: BackendSpec | undefined): AcpSteerMode | undefined {
+    if (backend === undefined) return undefined
+    if (backend.specBase.steerMode !== undefined) return backend.specBase.steerMode
+    return backend.steerModeFor?.(this.opts.dispatch?.version?.(backend.name))
+  }
+
+  private steerSupportFor(chatId: string, backend: string): SteerSupport {
+    const spec = this.backends.get(backend)
+    const chat = this.live.get(chatId)
+    const liveMode = chat && !chat.closing && !chat.conn.processSettled ? chat.conn.steerMode : undefined
+    const mode = liveMode ?? this.resolveSteerMode(spec) ?? this.backendSteerModeCache.get(backend)
+    if (mode === 'prompt-handoff' || mode === 'ext') return 'supported'
+    if (mode === 'unsupported') return 'unsupported'
+    return 'unknown'
   }
 
   private rowSettings(chatId: string) {
@@ -828,7 +859,7 @@ export class AcpSessionPool {
     }
     this.assertLive()
     const fallbackNotice = route.fallbackFrom === undefined ? undefined : this.fallbackNotice(route.fallbackFrom, backend)
-    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendDisplay: this.displayBackend(backend), backendCount: this.backends.size, active: true, lastActive: now, ...(fallbackNotice === undefined ? {} : { fallbackNotice }) }
+    return { chatId, remoteSessionId: conn.remoteSessionId, cwd, ...(label === '' ? {} : { label }), ...(ownerSessionId === '' ? {} : { ownerSessionId }), backend, backendDisplay: this.displayBackend(backend), backendCount: this.backends.size, active: true, lastActive: now, steer: this.steerSupportFor(chatId, backend), ...(fallbackNotice === undefined ? {} : { fallbackNotice }) }
   }
 
   /**
@@ -1020,11 +1051,12 @@ export class AcpSessionPool {
 
   /**
    * Queue a steering message into the chat's in-flight turn. Needs a live
-   * connection with a turn in flight; it neither claims the chat nor touches
-   * the turn, so several steers may be sent while a turn runs (the agent
-   * queues them in order).
+   * connection with a turn in flight; it neither claims the chat nor relaxes
+   * D6 single-flight on `send()`, delegating to the connection's steer
+   * transport (`_session/steer`, agy concurrent `session/prompt` handoff, or
+   * Codex `turn/steer`). Several steers may be sent while a turn runs.
    * @throws when the pool is disposed, the chat is unknown, or no turn is in
-   *   flight; {@link AcpSteerUnsupportedError} when the agent lacks `_session/steer`.
+   *   flight; {@link AcpSteerUnsupportedError} when the backend does not support steering.
    */
   async steer(chatId: string, message: string): Promise<AcpSteerResult> {
     this.assertLive()
@@ -1420,7 +1452,14 @@ export class AcpSessionPool {
   /** Open the bound backend's wire protocol (D25), applying live `backendDefaults` over static config (D48). */
   private connect(backend: BackendSpec, cwd: string, open: OpenAcpMode, signal: AbortSignal | undefined, source: 'start' | 'continuation'): Promise<AcpConnection> {
     const checkedCommand = source === 'start' ? this.opts.dispatch?.executable?.(backend.name) : undefined
-    const base = { ...backend.specBase, cwd, command: checkedCommand ?? backend.specBase.command }
+    const resolvedSteerMode = this.resolveSteerMode(backend)
+    if (resolvedSteerMode !== undefined) this.backendSteerModeCache.set(backend.name, resolvedSteerMode)
+    const base = {
+      ...backend.specBase,
+      cwd,
+      command: checkedCommand ?? backend.specBase.command,
+      ...(resolvedSteerMode === undefined ? {} : { steerMode: resolvedSteerMode }),
+    }
     const liveDefault = this.opts.backendDefaults?.()[backend.name]
     const hasLiveDefault = Boolean(liveDefault?.model?.trim() || liveDefault?.effort?.trim())
     const effective = this.effectiveDefaultsFor(backend)

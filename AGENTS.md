@@ -22,7 +22,7 @@ src/
   failure-class.ts D50:宿主侧额度耗尽分类(纯函数;Codex usageLimitExceeded 已实发验证,通用正则待 agy/kiro 样本校准;不回显原文)
   permission-request.ts `permission: ask` 的 ACP→宿主用户确认映射与 fail-closed 取消
   run.ts         官方 one-shot 驱动(D11 窄例外:ask 权限决策器与 ENOENT 指引;勿重构)
-  connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(私有 `_session/steer`)/ dispose;
+  connection.ts  连接原语:openNew / openLoad({sessionId, cwd, mcpServers:[]})/ prompt / steer(默认 `_session/steer`、agy>=1.5.0 走 `prompt-handoff` 代次接力、`<1.5.0` 为 `unsupported`,D51)/ dispose;
                  `modelSelect: session` 时开会话后应用 sessionModel(set_model,回退 set_config_option(model))
                  与 sessionEffort：Kiro effortLevel 核对并有限重试(D34)，agy thought_level 新建/重连各设一次并核对(D40)
   codex-approval.ts Codex 审批策略与 ask 桥(D25;复用 userQuestionPermissionResolver,fail-closed 回 cancel)
@@ -102,7 +102,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 766 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 40 + `pool.spec.ts` 98 + `tools.spec.ts` 59 + `jobs.spec.ts` 12 + `panel.spec.ts` 31 + `client.spec.tsx` 154 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 17 + `profile-settings.spec.tsx` 5 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5 + `failure-class.spec.ts` 4;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 778 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 59 + `connection-codex.spec.ts` 40 + `pool.spec.ts` 99 + `tools.spec.ts` 60 + `jobs.spec.ts` 12 + `panel.spec.ts` 31 + `client.spec.tsx` 152 + `steer.spec.ts` 7 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 17 + `profile-settings.spec.tsx` 5 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `live-gateway-consumer.spec.ts` 3 + `team-view.spec.ts` 5 + `failure-class.spec.ts` 4;新套件落地时在此登记。
 
 
 

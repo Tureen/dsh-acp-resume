@@ -68,6 +68,8 @@
 
 | 0.7.7 | D50 后端额度耗尽宿主侧识别与面板独立标注 | `src/failure-class.ts`（Codex `usageLimitExceeded` 已实发验证 + 通用推断正则待 agy/kiro 样本校准，不回显原文）；`TurnRecord` 可选 `failureKind?: 'quota'`（注册表字节不变）；`acp_chat_send` 固定换后端指引；详情页与 `TeamSection` 橙色竖条 + 橙色「额度耗尽」/「quota used up」Tag，折叠历史计入「需留意」而非「出错」 | `typecheck:client` 与 `build` 通过；`failure-class` 4/4、`connection-codex` 40/40、`pool` 98/98、`tools` 59/59 均绿；`client.spec.tsx` 与其余 D18/D22/D28/D31 套件因本机 1 分钟负载升至 35.87（> 20）按约束暂停，待低负载或 CI 补跑 | ◐ |
 
+| 0.7.9 | D51 agy 中途插话（`prompt-handoff`）与列表 steer 能力标注 | `src/connection.ts` 新增 `steerMode`（`'ext'` / `'prompt-handoff'` / `'unsupported'`）与 `prompt()` 代次接力（忽略旧代次 `end_turn`、150ms 受理窗口、5 类边界）；`src/backend-compatibility.ts` + `src/backend-readiness.ts` + `src/index.ts` 复用启动检测版本做 `agy >= 1.5.0` 门禁（零新增探针）；`src/pool.ts` 内存投影三态 `steer`（不落注册表）；`src/tools.ts` 列表输出 `steer` 字段与中性化 steer 说明；更新 D6/D19/D51、`docs/LESSONS.md` 与随包文档 | `tsc` + `check:compatibility` 通过；`connection.spec.ts` 59/59（含禁用旧代次忽略的 4 红→59 绿变异对照）、`steer.spec.ts` 7/7、`tools.spec.ts` 60/60、`team.spec.ts` 25/25、`backend-compatibility.spec.ts` 29/29、`skill-docs.spec.ts` 5/5；`pool.spec.ts` 首跑 96/99（2 处旧 `toEqual` 缺 `steer: 'unknown'` + 1 处 `liveBuffer` 150ms 合帧等待时机，已修正待 CI 复跑）；真机 `agy 1.5.18` 经 `AcpSessionPool` 实测通过（5 步 `sleep` 在 `COUNT_1` 边界改口「收到插话，当前数到 1」、仅结算 1 次、轮日志 1 条、零残留子进程） | ☑ |
+
 | 待办 | Codex 会话级切换 | 读取并缓存完整模型目录及逐模型强度清单，再接入每轮覆盖 | 当前显示暂不支持；版本待定 | ☐ |
 
 ## 冒烟剧本(第 6 步固定内容)

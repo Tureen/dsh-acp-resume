@@ -7,10 +7,10 @@
 | acp_backend_status | 无 | 各后端版本、兼容范围、就绪情况、新建默认项与行动建议。读缓存不会启动 CLI。模型与强度的报告及配置对比见面板「后端状态」，不在该工具回执中。 |
 | acp_chat_start | cwd 必填绝对工作目录；可选 label（最多 80 个字符）。有 backend 参数的变体才传后端名。 | chatId 与 remoteSessionId；多后端变体还给实际 backend、cwd，发生改派时给 fallbackNotice。 |
 | acp_chat_send | chatId 或 role，另加 message | 有 jobs 时立即返回 jobId 和回执，回答流入 job；同步时返回最终回答，非 completed 转工具错误并附可用的部分输出。 |
-| acp_chat_list | 无 | 当前主会话的活跃和已释放 chat、后端、状态和角色；团队文件的问题也可能在末行报告。无调用会话时才退回全局列表。 |
-| acp_chat_steer | chatId 或 role，另加 message | 将补充指令加入正在执行的轮次，返回 queued 与可选 messageId。未入队或后端不支持时会明确说明。 |
+| acp_chat_list | 无 | 当前主会话的活跃和已释放 chat、后端、状态、steer 能力（supported / unsupported / unknown）和角色；团队文件的问题也可能在末行报告。无调用会话时才退回全局列表。 |
+| acp_chat_steer | chatId 或 role，另加 message | 将补充指令加入正在执行的轮次，返回 queued 与可选 messageId；不打断当前步，在下一个工具或消息边界生效。是否支持先看列表工具的 steer 字段，未入队或后端不支持时会明确说明。 |
 | acp_chat_close | chatId 或 role，可选 purge（默认 false） | 释放进程并报告保留或删除记录。在途轮先取消；按 role 关闭还会解除本主会话的绑定。 |
-| acp_team_list | 无；要求 roles 开启 | 工作区角色、summary、未建/空闲/运行中状态。没有调用会话时状态为 unknown，并提示角色需要调用会话。 |
+| acp_team_list | 无；要求 roles 开启 | 工作区角色、summary、未建/空闲/运行中状态，以及已供给角色的 steer 能力（supported / unsupported / unknown）。没有调用会话时状态为 unknown，并提示角色需要调用会话。 |
 | acp_workflow | template 与按模板声明填写的 params；要求 workflow 和 roles 均开启 | 同步返回运行 JSON 或带部分 JSON 的失败；有 jobs 时返回 jobId，完成后从 job_output 读 JSON。 |
 | acp_backend_usage | 可选 backend、refresh（默认 false）；须有显式配置的 Codex 后端才注册 | 额度结构的 JSON 文本，含套餐、最紧窗口的已用比例和重置时间；ACP 后端为 unsupported。成功缓存 5 分钟，失败缓存 1 分钟。 |
 

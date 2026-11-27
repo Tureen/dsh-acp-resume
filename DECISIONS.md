@@ -60,6 +60,8 @@
 
 修订(2026-11-25,与 D31 的关系):D31 的就绪检查与改派只作用于新建会话(`acp_chat_start`)和角色的首次供给。已有 chat 的 send、空闲释放后的重连(`session/load` / `thread/resume`)、steer 都不经过就绪检查，按注册表里记录的后端与本条的降级规则处理;检测结果变化(例如 Kiro 后来装上了)不会把已有 chat 换到别的后端。D6 降级(协议级会话不存在，或连续 3 条 `error`)为 Codex 后端新建线程时，只使用该后端配置里显式写的 `model`;自动发现的 Codex 没有显式模型，因此不传模型，沿用 app-server 的默认，与 D31「重连自动发现的线程不传新默认模型」一致。就绪服务通过检测得到的默认模型只用于 `acp_chat_start` 的新建。
 
+修订(2026-11-27,与 D51 的关系):池层单飞约束仍严格作用于 `send()`——同一会话已有在途轮时新 `send` 一律拒绝、不排队。`agy >= 1.5.0` 的并发 `session/prompt` 仅是连接层内部用于 `steer()` 的传输细节(`steerMode: 'prompt-handoff'`),对池、注册表与按轮日志完全透明;一轮含多次插话仍只记 1 条 `turn`,注册表结构与字节不变。
+
 ## D7 session/load 参数形状(2026-11-03 实测)
 
 kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测可用;`session/list` v2 无(v3 才有)。重连必须回放原 cwd。
@@ -213,6 +215,15 @@ kiro-cli 2.29(v2 引擎):`session/load {sessionId, cwd, mcpServers:[]}` 实测�
 - 指纹一致性:重连指纹比较仍用 `stripVolatileFlags` 剔除 `--agent-engine` 及其值,不区分该旗标是追加的还是用户写的。关闭态下注册表记录的 args 不含旗标,与此前记录(含追加的旗标)或之后改回 `v3` 的配置比较时,剔除后都相等,不会因切换 `agentEngine` 而拒绝旧会话。
 - 测试:engine.spec 增 3 例(helper 的 `none` 一例、池路径 `none` 的实际 argv 一例、one-shot 路径 `none` 的实际 argv 一例)。
 - 未验证:没有在真实的非 kiro ACP agent 上实测过关闭态;只验证了不追加旗标。
+
+修订(2026-11-27,D51,agy `prompt-handoff` 插话与四组真机实测):
+- 此前用 kiro 私有方法 `_session/steer` 试探 `agy`,收到 `-32601` 遂误判为「agy 不支持插话」。查阅 Antigravity 官方 changelog 1.5.0/1.5.13 原文确认:`agy acp` 通过「在途轮中再发一个 `session/prompt`」实现中途插话(`steering a running turn by sending another prompt`)。
+- 四组真机探针(`agy acp 1.5.18`,每组独立新会话):
+  1. **基线纯文本(`exp1`,+6s 发 P2)**:P2 发出后约 4ms(0ms 级)P1 即刻返回 `stopReason: end_turn`,无并发拒绝;单步生成不被中途截断(输出 1..25 与「第一轮结束」),随后 P2 接手回复「收到插话,当前数到 25」并返回 `end_turn`。
+  2. **早期时序(`exp2`,+0.8s 发 P2)**:与 `exp1` 行为一致,不因极早并发返回 JSON-RPC 错误。
+  3. **取消交互(`exp3`,+1s 发 P2,+50ms 发 `session/cancel`)**:P1 已在收到 P2 时立即返回 `end_turn`;`session/cancel` 由最新代次 P2 携带 `stopReason: cancelled` 返回,零输出。
+  4. **多步工具任务(`exp1b`,5 次 `sleep 2 && echo COUNT_N`,+4.5s 发 P2)**:P1 收到 P2 后 0ms 让出回复权;当前步 `COUNT_1` 跑完后**在下一个工具边界直接吸收插话**,跳过 `COUNT_2..5`,输出「收到插话,当前数到 1」,P2 返回 `end_turn`。
+- 由此确立 `prompt-handoff` 连接层代次接力机制(详见 D51),并废止「列表不标 steer 能力、全靠试探」的旧注记:列表现按后端配置/版本输出三态 `steer` 字段(`supported` / `unsupported` / `unknown`),内存缓存不落盘。
 
 ## D18 按轮日志 + 会话详情页签(2026-11-04)
 
@@ -1177,6 +1188,32 @@ rc.5 探针与源码核实得出两条硬边界：
 ### 诚实边界
 
 - **Codex 已实发验证**（`codexErrorInfo === 'usageLimitExceeded'`）；**agy / kiro 既无查额度接口（D28），目前也无真实额度耗尽报错样本**，暂靠上述通用正则兜底，**待真实样本校准**。未编造任何 agy / kiro 专属错误格式写入识别表。
+
+## D51 agy 中途插话（`prompt-handoff`）与列表 steer 能力标注（2026-11-27，0.7.9）
+
+### 动机与真机证据
+
+Antigravity 1.5.0 起支持在 `agy acp` 会话在途轮期间通过并发发送第二个 `session/prompt` 实现中途插话。四组真机探针（`agy acp 1.5.18`，详情见 D19 2026-11-27 修订）证实了三个关键协议行为：
+1. P2 到达时，P1 会在同毫秒以 `{ stopReason: "end_turn" }` 提前返回，将整轮完成权与后续 `session/cancel` 归属移交给 P2；
+2. agy 不打断当前正在执行的单步，在下一个工具或消息边界吸收插话并改向（5 步 `sleep` 工具链在完成 `COUNT_1` 后即刻停下并输出「收到插话，当前数到 1」）；
+3. ACP v1 的 `session/update` 通知不携带 prompt id，整轮流式文本沿同一通知流连续到达。
+
+### 决策与细则
+
+- **按后端策略分流（`steerMode`）**：`AcpSessionSpec` 与 `AcpConnection` 新增只读字段 `steerMode?: 'ext' | 'prompt-handoff' | 'unsupported'`（`AcpSteerMode`）：
+  - 默认（缺省或 `'ext'`）：保持既有 `_session/steer`（`-32601` 映射 `AcpSteerUnsupportedError`）；
+  - `'unsupported'`：不发任何 RPC，直接抛 `AcpSteerUnsupportedError`；
+  - `'prompt-handoff'`：`steer(message)` 在同一 `sessionId` 上并发发 `session/prompt`，不阻塞等待整轮，确认未被立即拒绝后立即返回 `{ queued: true }`。
+- **连接层代次接力（`src/connection.ts`）**：
+  - `prompt()` 维护 `generation`（初值 0，每次成功接力递增）、`activeRequest` 与串行化的 `steerChain`。
+  - `steer()` 在发出 P2 后进入短暂受理窗口（等待 P1 让出、P2 报错、取消或 150ms 窗口），若 P2 在窗口内返回 JSON-RPC 错误则保留原代次并把错误抛给 `steer()` 调用方，不破坏在途轮；否则递增 `generation` 并切换 `activeRequest = P2`。
+  - `prompt()` 等待循环忽略所有 `outcome.gen !== turn.generation` 的旧代次回复（不关 `acceptingUpdates`、不结算），直到最新代次返回、收到取消或进程异常才一次性结算整轮，返回累计的 `turnText` 与 `stopReason`。
+  - 五个边界全部覆盖：(i) 轮已自然结束时拒接且不发并发 prompt；(ii) P2 立即 JSON-RPC 报错只回给 `steer()`、不破坏在途轮；(iii) 插话后 `session/cancel` 由最新代次承载、本地立即 `aborted` 并作废连接；(iv) 连续多次插话链式递增代次；(v) 接力中途子进程死亡走既有销毁与诊断梯子，不挂起。
+- **版本门禁（复用启动检测，零新增探针）**：`src/backend-compatibility.ts` 定义 `AGY_STEER_MIN_VERSION = '1.5.0'` 与 `agySupportsSteer(version)`；`BackendReadinessService` 新增只读 `version(backend)`；`src/index.ts` 对识别为 `agy` 的后端延迟按启动检测版本决定策略——`>= 1.5.0` 用 `'prompt-handoff'`、`< 1.5.0` 用 `'unsupported'`、版本未知时不盲猜并发 `session/prompt`（回退默认并报告 `unknown`）。
+- **池层边界与列表能力三态（`src/pool.ts` / `src/tools.ts`）**：
+  - D6 单飞、D18 按轮日志（含插话整轮仅 1 条 `turn`）、注册表字段与字节均零改动；D46 `liveBuffer` 在接力期间连续接收并推送流式文本。
+  - `PooledChatInfo` 新增内存投影字段 `steer: 'supported' | 'unsupported' | 'unknown'`：Codex 连接与 `prompt-handoff` 报告 `supported`，`'unsupported'` 报告 `unsupported`，其余 ACP 后端（含未确认版本的 agy 或未经探测的 `_session/steer` 后端）报告 `unknown`。池在内存中按后端缓存最近一次活连接/已解析的 steer 策略，使已释放会话无需唤醒进程即可读回；缓存不落 `registry.json`。
+  - `acp_chat_list` 每行末尾增加 `| steer <状态>`，`acp_team_list` 已供给角色增加 `· steer <状态>`；`acp_chat_steer` 描述指引模型查阅列表的 `steer` 字段，不提协议方法名与引擎/后端名。
 
 
 

@@ -50,6 +50,12 @@
    - **现在靠什么防**:宿主侧 `src/failure-class.ts` 统一检查 `codexErrorInfo` / `message` / `data` / `details` 并只输出固定枚举 `failureKind?: 'quota'`;轮日志、面板和工具只消费该固定标签与固定指引(`backend quota exhausted; wait for the reset or switch backend`),原文只留在宿主内部 `onError` 诊断链路;由 `tests/failure-class.spec.ts`、`tests/connection-codex.spec.ts`、`tests/pool.spec.ts`、`tests/tools.spec.ts` 共同断言原文不泄露。
    - **证据**:D31、D50、`src/failure-class.ts`、`tests/tools.spec.ts`、`tests/pool.spec.ts`。
 
+8. **同一能力在不同后端的实现可以完全不同——探针要先查官方文档/changelog,不要只探自己熟悉的方法名**。
+   - **违反会怎样**:用 kiro 的私有扩展方法 `_session/steer` 试探 `agy`,收到 `-32601 Method not found` 便得出「agy 不支持中途插话」的错误结论,把原本 1.5.0 就已支持的能力挡在池的单飞门之外。
+   - **根因**:ACP v1 规范未定义标准 steer 方法,各家 CLI 各自实现——kiro 用私有 `_session/steer`,Codex 用 `turn/steer`,而 `agy acp` 1.5.0+ 采用在途并发 `session/prompt` 接力(`prompt-handoff`)。只探一家方法名得到的 `-32601` 只能说明「没有那个方法」,不能证明「没有该能力」。
+   - **现在靠什么防**:调研后端能力前先查上游官方 changelog/文档,再围绕文档机制设计对照探针(如四组 `agy 1.5.18` 实测);运行时按后端与启动检测版本分派 `steerMode` 并在列表显式暴露三态 `steer` 能力(D51)。
+   - **证据**:D19(2026-11-27 修订)、D51、`src/connection.ts`、`src/backend-compatibility.ts`、`tests/connection.spec.ts`。
+
 ---
 
 ## 二、官方组件:以类型声明为准
@@ -352,3 +358,4 @@
 - **2026-11-27｜详情页单滚动容器触发约 7.8 Hz GPU 瓦片闪白与顶缝漏字**:录屏逐帧抓出跨秒同像素行水平半字裁切,0.7.6 拆分隔离滚动区、离屏停动画并稳定在途快照,待真机复核(D49、提交 `45b0faf`)。
 - **2026-11-27｜后端额度耗尽与通用故障混标为红「出错」**:Codex `usageLimitExceeded` 实发后暴露调度模型与面板无法区分「换后端/等重置」与代码故障,0.7.7 新增宿主侧 `failure-class.ts` 分类与橙色「额度耗尽」标注、原文不回显,agy/kiro 通用正则待样本校准(D50)。
 - **2026-11-27｜根治 `remote.acpResume` `without inject` 与手抄测试缺口**:确认 `remote.<namespace>` 须在 `inject(['remote.acpResume'])` 作用域内现场读取,并查出初版 `live-gateway-consumer.spec.ts` 手抄修法未加载 `src/client/index.ts`;改为真实 `Gateway` + `ClientGateway` 加载真实入口并做红/绿变异对照,同步补齐 `$mount` disposer 顺序释放与 abort 感知(`src/client/index.ts`、`tests/live-gateway-consumer.spec.ts`)。
+- **2026-11-27｜误用 kiro 的 `_session/steer` 探针误判 agy 不支持插话**:只探私有方法收到 `-32601` 遂断定 agy 无插话能力;查阅 1.5.0 changelog 并经四组 `agy 1.5.18` 真机实测确认其采用在途并发 `session/prompt` 代次接力,0.7.9 落地 `prompt-handoff`、版本门禁(`>= 1.5.0`)与列表三态 `steer` 能力标注(D19 修订、D51)。
