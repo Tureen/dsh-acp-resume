@@ -979,7 +979,7 @@ describe('ChatsPanel', () => {
       workflowsFor: () => ({ getSnapshot: () => wfSnapshot, subscribe: () => () => {} }),
     })} />)
     const sectionOrder = [...container.querySelectorAll('[data-section]')].map(el => el.getAttribute('data-section'))
-    expect(sectionOrder).toEqual(['header', 'workflows', 'active-chats', 'backend', 'released-chats'])
+    expect(sectionOrder).toEqual(['header', 'team', 'workflows', 'active-chats', 'backend', 'released-chats'])
     // Without team roles, active section heading reads "活跃会话" (zh) / "Active chats" (en).
     const activeSection = container.querySelector('[data-section="active-chats"]') as HTMLElement
     expect(within(activeSection).getByRole('heading', { level: 3 }).textContent).toBe(zh.activeChatsHeading)
@@ -1054,7 +1054,11 @@ describe('display helpers', () => {
 
 /** Mock carrier: answers `acpResume/list` from `rows`, records every call. */
 /** A fake carrier. Usage calls (D28) are kept apart in `usageCalls` so the list/command call log stays exact. */
-function mockRpc(rows: () => unknown = () => [], usage: () => PanelRpcResult = () => ({ ok: true, value: [] })): PanelRpc & { calls: [string, string, unknown][]; usageCalls: number } {
+function mockRpc(
+  rows: () => unknown = () => [],
+  usage: () => PanelRpcResult = () => ({ ok: true, value: [] }),
+  teamRoles: () => readonly string[] = () => [],
+): PanelRpc & { calls: [string, string, unknown][]; usageCalls: number } {
   const calls: [string, string, unknown][] = []
   const rpc = {
     calls,
@@ -1067,6 +1071,7 @@ function mockRpc(rows: () => unknown = () => [], usage: () => PanelRpcResult = (
       }
       calls.push([channel, endpoint, payload])
       if (endpoint === 'acpResume/backends') return { ok: true, value: backendFixture }
+      if (endpoint === 'acpResume/teamRoles') return { ok: true, value: teamRoles() }
       return endpoint === 'acpResume/list' ? { ok: true, value: rows() } : { ok: true, value: null }
     }),
   }
@@ -3000,9 +3005,9 @@ describe('TeamSection & mutual exclusion (D47 Step 5)', () => {
     }),
   ]
 
-  it('hides TeamSection when no chat has a role, and renders five urgency-ordered states in zh and en', () => {
+  it('shows unconfigured hint when no roles exist, and renders five urgency-ordered states in zh and en', () => {
     const { container, rerender } = render(<ChatsPanel {...props(ready([chat()]))} />)
-    expect(container.querySelector('[data-section="team"]')).toBeNull()
+    expect(container.querySelector('[data-section="team"]')?.getAttribute('data-team-mode')).toBe('unconfigured')
     expect(within(container.querySelector('[data-section="active-chats"]') as HTMLElement).getByRole('heading', { level: 3 }).textContent).toBe(zh.activeChatsHeading)
 
     rerender(<ChatsPanel {...props(ready(fiveStates()))} />)
@@ -3146,5 +3151,132 @@ describe('TeamSection & mutual exclusion (D47 Step 5)', () => {
     const enTag = within(enCard).getByText(en.stopQuota).closest('[data-tag]') as HTMLElement
     expect(enTag.textContent).toBe('quota used up')
     expect(enTag.getAttribute('data-tone')).toBe('warning')
+  })
+
+  it('renders three discoverable TeamSection states in zh and en: defined idle cards, unconfigured hint with <code>, and hidden when roles is off (0.7.8)', () => {
+    const info = tabInfo()
+
+    // State 1a: Workspace defines roles, zero chats yet -> renders TeamSection with non-clickable, menu-less idle cards.
+    const unprovisionedSnapshot: ChatsSnapshot = { ...ready([]), teamRoles: ['coder', 'reviewer'] }
+    const { container, rerender } = render(<ChatsPanel {...props(unprovisionedSnapshot, { useTabInfo: info.hook })} />)
+    const teamZh = container.querySelector('[data-section="team"]') as HTMLElement
+    expect(teamZh).toBeTruthy()
+    expect(teamZh.getAttribute('data-team-mode')).toBe('roles')
+    expect(within(teamZh).getByRole('heading', { level: 3 }).textContent).toBe('团队派工')
+    expect(teamZh.textContent).toContain('2 角色')
+    const idleCardsZh = [...teamZh.querySelectorAll('[data-team-role]')] as HTMLElement[]
+    expect(idleCardsZh.map(c => c.getAttribute('data-team-role'))).toEqual(['coder', 'reviewer'])
+    for (const card of idleCardsZh) {
+      expect(card.getAttribute('data-team-state')).toBe('idle')
+      expect(card.hasAttribute('data-chat-id')).toBe(false)
+      expect(card.querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('idle')
+      expect(card.querySelector('[data-state-dot]')?.getAttribute('data-state')).toBe('idle')
+      expect(card.querySelector('[data-team-hint]')?.textContent).toBe('空闲 · 等待派工')
+      expect(within(card).queryByRole('button', { name: zh.moreActions })).toBeNull()
+      expect(within(card).queryByText(zh.releaseProcess)).toBeNull()
+      expect(within(card).queryByText(zh.deleteRecord)).toBeNull()
+      fireEvent.click(card)
+    }
+    expect(info.openResource).not.toHaveBeenCalled()
+
+    // State 1a in en.
+    rerender(<ChatsPanel {...props(unprovisionedSnapshot, { useTabInfo: info.hook, t: translator(en) })} />)
+    const teamEn = container.querySelector('[data-section="team"]') as HTMLElement
+    expect(within(teamEn).getByRole('heading', { level: 3 }).textContent).toBe('Team dispatch')
+    expect(teamEn.textContent).toContain('2 roles')
+    expect(teamEn.querySelector('[data-team-role="coder"] [data-team-hint]')?.textContent).toBe('Idle · awaiting task')
+
+    // State 1b: Mixed dispatched + unprovisioned defined roles (no duplicates; dispatched clickable, idle not).
+    const mixedSnapshot: ChatsSnapshot = {
+      ...ready([chat({ chatId: 'chat-role-coder', role: 'coder', active: true })]),
+      teamRoles: ['coder', 'reviewer'],
+    }
+    rerender(<ChatsPanel {...props(mixedSnapshot, { useTabInfo: info.hook })} />)
+    const mixedCards = [...container.querySelectorAll('[data-team-role]')] as HTMLElement[]
+    expect(mixedCards.map(c => [c.getAttribute('data-team-role'), c.getAttribute('data-chat-id')])).toEqual([
+      ['coder', 'chat-role-coder'],
+      ['reviewer', null],
+    ])
+    expect(within(mixedCards[0]!).getByRole('button', { name: zh.moreActions })).toBeTruthy()
+    expect(within(mixedCards[1]!).queryByRole('button', { name: zh.moreActions })).toBeNull()
+    fireEvent.click(mixedCards[1]!)
+    expect(info.openResource).not.toHaveBeenCalled()
+    fireEvent.click(mixedCards[0]!)
+    expect(info.openResource).toHaveBeenCalledExactlyOnceWith(chatAddress('chat-role-coder'))
+
+    // State 2: Workspace defines no roles -> renders one-line gray hint with <code>.agents/acp-team.yml</code> in zh and en.
+    const unconfiguredSnapshot: ChatsSnapshot = { ...ready([]), teamRoles: [] }
+    rerender(<ChatsPanel {...props(unconfiguredSnapshot, { useTabInfo: info.hook })} />)
+    const emptyZh = container.querySelector('[data-section="team"]') as HTMLElement
+    expect(emptyZh).toBeTruthy()
+    expect(emptyZh.getAttribute('data-team-mode')).toBe('unconfigured')
+    expect(emptyZh.querySelector('[data-team-empty]')?.textContent).toBe('此工作区未定义角色。创建 .agents/acp-team.yml 后可按角色派工。')
+    expect(emptyZh.querySelector('[data-team-empty] code')?.textContent).toBe('.agents/acp-team.yml')
+
+    rerender(<ChatsPanel {...props(unconfiguredSnapshot, { useTabInfo: info.hook, t: translator(en) })} />)
+    const emptyEn = container.querySelector('[data-section="team"]') as HTMLElement
+    expect(emptyEn.querySelector('[data-team-empty]')?.textContent).toBe('No roles are defined for this workspace. Add .agents/acp-team.yml to dispatch by role.')
+    expect(emptyEn.querySelector('[data-team-empty] code')?.textContent).toBe('.agents/acp-team.yml')
+
+    // State 3: Connection-level roles switch is off (D33) -> hides TeamSection completely.
+    const rolesOffView = {
+      status: 'ready' as const,
+      features: { chatToolsEnabled: true, rolesEnabled: false, workflowEnabled: false, startToolName: 'acp_chat_start' },
+    }
+    const rolesOffStore = { getSnapshot: () => rolesOffView, subscribe: () => () => {}, refresh: async () => {} }
+    rerender(<ChatsPanel {...props(unprovisionedSnapshot, { features: rolesOffStore, useTabInfo: info.hook })} />)
+    expect(container.querySelector('[data-section="team"]')).toBeNull()
+    rerender(<ChatsPanel {...props(unconfiguredSnapshot, { features: rolesOffStore, useTabInfo: info.hook })} />)
+    expect(container.querySelector('[data-section="team"]')).toBeNull()
+  })
+
+  it('polls acpResume/teamRoles on the exact same cadence as acpResume/list without adding a timer (0.7.8)', async () => {
+    vi.useFakeTimers()
+    let defined: readonly string[] = ['coder', 'reviewer']
+    const rpc = mockRpc(() => [chat()], () => ({ ok: true, value: [] }), () => defined)
+    const teamRolesCalls = () => rpc.calls.filter(c => c[1] === 'acpResume/teamRoles').length
+    const source = new ChatsSource(rpc, () => NOW, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    const view = source.forSession(TEST_SESSION)
+    const notified: number[] = []
+    const stop = view.subscribe(() => { notified.push(1) })
+
+    // Initial fetch: 1 list + 1 teamRoles with sessionId.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(listCalls(rpc)).toBe(1)
+    expect(teamRolesCalls()).toBe(1)
+    expect(rpc.calls).toContainEqual(['/api', 'acpResume/teamRoles', { args: { sessionId: TEST_SESSION } }])
+    const first = view.getSnapshot()
+    expect(first.teamRoles).toEqual(['coder', 'reviewer'])
+    expect(notified).toHaveLength(1)
+
+    // Unchanged fast polls through backoff: teamRoles call count stays identical to list, snapshot reference stable.
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF; i += 1) {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    }
+    expect(teamRolesCalls()).toBe(listCalls(rpc))
+    expect(view.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+
+    // Backed off to idle interval: a fast tick triggers neither; idle interval triggers one of each.
+    const beforeIdle = listCalls(rpc)
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(beforeIdle)
+    expect(teamRolesCalls()).toBe(beforeIdle)
+
+    defined = ['coder', 'reviewer', 'tester']
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS - POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(beforeIdle + 1)
+    expect(teamRolesCalls()).toBe(beforeIdle + 1)
+    expect(view.getSnapshot()).not.toBe(first)
+    expect(view.getSnapshot().teamRoles).toEqual(['coder', 'reviewer', 'tester'])
+    expect(notified).toHaveLength(2)
+
+    // Unsubscribe stops both completely.
+    stop()
+    const afterStop = listCalls(rpc)
+    await vi.advanceTimersByTimeAsync(2 * IDLE_POLL_INTERVAL_MS)
+    expect(listCalls(rpc)).toBe(afterStop)
+    expect(teamRolesCalls()).toBe(afterStop)
+    source.dispose()
   })
 })

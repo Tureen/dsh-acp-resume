@@ -792,6 +792,21 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
       : (backendView.status === 'ready' && backendView.data?.dispatchEnabled === false)
         ? 'no-dispatch'
         : undefined
+  const rolesEnabled = config?.rolesEnabled !== false && currentSessionId !== undefined
+  const teamSection = (
+    <TeamSection
+      chats={teamChats}
+      definedRoles={snapshot.teamRoles}
+      rolesEnabled={rolesEnabled}
+      settings={settings}
+      now={now}
+      pending={pending}
+      onOpen={openChat}
+      onRelease={releaseChat}
+      onDelete={deleteChat}
+      t={t}
+    />
+  )
   const backendSection = backendStatus === undefined || backendView === undefined
     ? <UsageLines usage={snapshot.usage} now={now} t={t} />
     : <BackendStatusSection source={backendStatus} view={backendView} visibleChats={visible} usage={snapshot.usage} now={now} expanded={backendExpanded} onToggle={toggleBackend} t={t} />
@@ -827,7 +842,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
         ...(b.staticModel ? { staticModel: b.staticModel } : {}),
         ...(b.staticEffort ? { staticEffort: b.staticEffort } : {}),
       }))}
-        t={t} onSaved={path => { if (path === 'workflow') void features.refresh() }} />}
+        t={t} onSaved={path => { if (path === 'workflow' || path === 'roles') void features.refresh() }} />}
       {backendAlert === undefined ? null : (
         <button
           type="button"
@@ -853,6 +868,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
         : visible.length === 0
           ? (
             <>
+              {teamSection}
               {backendSection}
               <div style={styles.empty} data-empty="session">
                 <p style={styles.heading}>{snapshot.chats.length === 0 ? t('emptyTitle') : t('countMine', { count: 0, total: snapshot.chats.length })}</p>
@@ -865,8 +881,7 @@ function ChatsPanelView({ useChats, useTabInfo, currentSessionId, settings, prof
           )
           : (
             <>
-              <TeamSection chats={teamChats} settings={settings} now={now} pending={pending}
-                onOpen={openChat} onRelease={releaseChat} onDelete={deleteChat} t={t} />
+              {teamSection}
               <WorkflowsSection source={workflowsFor?.(config?.workflowEnabled ?? true) ?? NO_WORKFLOWS} onOpenChat={(chatId) => { tab.actions.openResource(chatAddress(chatId)) }} t={t} />
               {activeChats.length === 0 ? null : (
                 <section style={styles.section} data-section="active-chats">

@@ -1,10 +1,11 @@
 /**
  * Pure team dispatch projection and view helpers (D47): derives memory-only
  * `role` and `latestTurn` fields from existing roster and cached turn-log data
- * (zero new storage, zero extra disk reads, zero new Remote methods), classifies
- * team cards into five urgency states, sorts them, and mutually partitions
- * owner-scoped chats between the team view and standalone chat lists so a
- * `chatId` never appears twice.
+ * (zero new storage, zero extra disk reads), classifies team cards into five
+ * urgency states, sorts them, builds the three-state team section view
+ * (defined roles + unprovisioned idle cards / unconfigured hint / hidden when
+ * `roles` is disabled), and mutually partitions owner-scoped chats between the
+ * team view and standalone chat lists so a `chatId` never appears twice.
  * @module dsh-acp-resume/team-view
  */
 
@@ -205,4 +206,70 @@ export function partitionOwnerChats<T extends TeamChatLike>(
   activeStandalone.sort(compareStandaloneActive)
   releasedStandalone.sort(compareByLastActive)
   return { visible, team, activeStandalone, releasedStandalone }
+}
+
+/**
+ * Extract deduplicated, non-empty role names in configuration order from parsed
+ * role blueprints (node-free so both host and browser can reuse it).
+ * @param roles - parsed blueprint list, or undefined when unavailable.
+ */
+export function definedRoleNames(roles: readonly { readonly name: string }[] | undefined): readonly string[] {
+  if (roles === undefined || roles.length === 0) return []
+  const seen = new Set<string>()
+  const names: string[] = []
+  for (const role of roles) {
+    const name = role.name.trim()
+    if (name === '' || seen.has(name)) continue
+    seen.add(name)
+    names.push(name)
+  }
+  return names
+}
+
+/** One entry rendered in TeamSection: either a roster-bound chat or an unprovisioned defined role (D47). */
+export type TeamSectionEntry<T extends TeamChatLike = TeamChatLike> =
+  | { readonly kind: 'chat'; readonly role: string; readonly state: TeamCardState; readonly chat: T }
+  | { readonly kind: 'unprovisioned'; readonly role: string; readonly state: 'idle' }
+
+/** Three-state view model for TeamSection (D47 2026-11-27 revision). */
+export type TeamSectionView<T extends TeamChatLike = TeamChatLike> =
+  | { readonly mode: 'hidden'; readonly entries: readonly [] }
+  | { readonly mode: 'unconfigured'; readonly entries: readonly [] }
+  | { readonly mode: 'roles'; readonly entries: readonly TeamSectionEntry<T>[] }
+
+/**
+ * Build the three-state team section view (D47 2026-11-27 revision):
+ * - `rolesEnabled === false` -> `hidden` (D33: feature switch off).
+ * - Otherwise, when the workspace defines roles or the session already has
+ *   roster-bound role chats -> `roles`, placing urgency-sorted roster chats
+ *   first and appending any defined-but-unprovisioned roles as memory-only
+ *   `idle` entries (no chatId, never written to disk).
+ * - Otherwise (no defined roles and no roster chats) -> `unconfigured` so the
+ *   panel renders a one-line setup hint instead of hiding the feature.
+ * @param teamChats - owner-scoped role chats, already sorted by {@link compareTeamChats}.
+ * @param definedRoles - role names read from the workspace's `.agents/acp-team.yml`.
+ * @param rolesEnabled - connection-level `roles` switch (defaults to true).
+ */
+export function buildTeamSectionView<T extends TeamChatLike>(
+  teamChats: readonly T[],
+  definedRoles: readonly string[] | undefined,
+  rolesEnabled = true,
+): TeamSectionView<T> {
+  if (!rolesEnabled) return { mode: 'hidden', entries: [] }
+  const provisioned = new Set<string>()
+  const entries: TeamSectionEntry<T>[] = []
+  for (const chat of teamChats) {
+    const role = chat.role?.trim() ?? ''
+    if (role !== '') provisioned.add(role)
+    entries.push({ kind: 'chat', role: role || chat.chatId, state: teamCardState(chat), chat })
+  }
+  const seenDefined = new Set<string>()
+  for (const raw of definedRoles ?? []) {
+    const role = raw.trim()
+    if (role === '' || provisioned.has(role) || seenDefined.has(role)) continue
+    seenDefined.add(role)
+    entries.push({ kind: 'unprovisioned', role, state: 'idle' })
+  }
+  if (entries.length === 0) return { mode: 'unconfigured', entries: [] }
+  return { mode: 'roles', entries }
 }

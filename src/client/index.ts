@@ -105,7 +105,7 @@ export function apply(ctx: Context): void {
     }
     const injectedFor = (sessionId: string | undefined): ChatsPanelInjected => ({
       features,
-      hooks: { chats: source },
+      hooks: { chats: source.forSession(sessionId) },
       backendStatus,
       ...(sessionId === undefined ? {} : { workflowsFor: (poll: boolean) => workflowsFor(sessionId, poll) }),
       // The seat is session-scoped: `inject(sessionId)` names the on-screen

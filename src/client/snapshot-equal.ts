@@ -83,7 +83,18 @@ function entriesEqual(a: readonly (TurnItem | EventItem | RunningItem)[], b: rea
  * only the relative-time reference and must not, on its own, force a re-render).
  */
 export function listSnapshotEqual(a: ChatsSnapshot, b: ChatsSnapshot): boolean {
-  return a.status === b.status && a.error === b.error && chatsEqual(a.chats, b.chats) && usageEqual(a.usage, b.usage)
+  return a.status === b.status
+    && a.error === b.error
+    && chatsEqual(a.chats, b.chats)
+    && usageEqual(a.usage, b.usage)
+    && stringListEqual(a.teamRoles, b.teamRoles)
+}
+
+/** Two optional string lists hold the same values in the same order. */
+function stringListEqual(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === b) return true
+  if (a === undefined || b === undefined || a.length !== b.length) return false
+  return a.every((item, i) => item === b[i])
 }
 
 /** Two usage lists carry the same facts; their entries are flat, so comparing the JSON suffices. */

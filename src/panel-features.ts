@@ -4,6 +4,8 @@
 export interface PanelFeatures {
   /** Whether the host configuration enables persistent chat tools. */
   readonly chatToolsEnabled: boolean
+  /** Whether the host configuration enables workspace roles (D33); omitted by older hosts (treated as true). */
+  readonly rolesEnabled?: boolean
   /** Whether the host configuration enables workflow execution. */
   readonly workflowEnabled: boolean
   /** Model-facing name of the persistent chat creation tool. */

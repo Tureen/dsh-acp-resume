@@ -1,15 +1,19 @@
 /**
- * Team dispatch overview section (D47): renders one three-layer card per
- * role-bound chat in the current DSH session's roster, ordered by urgency
- * (`running > error > cancelled > completed > idle`). Clicking a card opens
- * its detail tab via `onOpen`; release and delete live in the `⋯` menu.
- * Returns `null` when the session has no role-bound chats.
+ * Team dispatch overview section (D47, revised 2026-11-27 for discoverability):
+ * renders three states instead of hiding on zero roster entries:
+ * 1. Workspace defines roles (or the session already has roster-bound chats):
+ *    shows urgency-ordered five-state cards (`running > error > cancelled >
+ *    completed > idle`) plus non-clickable, menu-less "idle · awaiting task"
+ *    cards for defined roles not yet dispatched (no chatId, never persisted).
+ * 2. Workspace defines no roles (and `roles` is enabled): shows a one-line gray
+ *    setup hint naming `.agents/acp-team.yml` in `<code>`.
+ * 3. Connection-level `roles` switch is off (D33): returns `null`.
  * @module dsh-acp-resume/client/TeamSection
  */
 
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
 import type { FailureKind } from '../failure-class.ts'
-import { teamCardState, type TeamCardState } from '../team-view.ts'
+import { buildTeamSectionView, teamCardState, type TeamCardState } from '../team-view.ts'
 import { ChatSettings } from './ChatSettings.tsx'
 import type { ChatsPanelInjected, PanelChat } from './face.ts'
 import type { PanelCopyKey, PanelTranslate } from './locales.ts'
@@ -30,9 +34,16 @@ import {
 } from './panel-chrome.tsx'
 import { formatHybridTime, formatTurnTime, formatTurnTimeTitle } from './panel-time.ts'
 
+/** Displayed path for the workspace team file inside the unconfigured hint. */
+const TEAM_CONFIG_DISPLAY_PATH = '.agents/acp-team.yml'
+
 export interface TeamSectionProps {
   /** Role-bound chats for the current owner session, already sorted by urgency. */
   readonly chats: readonly PanelChat[]
+  /** Defined role names from the viewing session's workspace `.agents/acp-team.yml`. */
+  readonly definedRoles?: readonly string[]
+  /** Connection-level `roles` switch (D33); false hides the section. */
+  readonly rolesEnabled?: boolean
   readonly settings?: ChatsPanelInjected['settings']
   readonly now: number
   readonly pending: ReadonlySet<string>
@@ -47,6 +58,7 @@ const styles = {
   list: { display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 0, listStyle: 'none' },
   item: { listStyle: 'none' },
   card: { cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' },
+  unprovisionedCard: { cursor: 'default', display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px' },
   head: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
   dot: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, flex: 'none' },
   nameButton: { flex: 1, minWidth: 0, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' },
@@ -63,6 +75,15 @@ const styles = {
     overflowWrap: 'anywhere',
   },
   hintLine: { fontSize: 11, lineHeight: 1.4, color: 'var(--dsw-alias-label-tertiary)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  unconfigured: { margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
+  codePath: {
+    fontFamily: 'var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+    fontSize: 11,
+    padding: '1px 4px',
+    borderRadius: 4,
+    background: 'var(--dsw-alias-bg-subtle, rgba(127, 127, 127, 0.12))',
+    color: 'var(--dsw-alias-label-secondary)',
+  },
 } satisfies Record<string, CSSProperties>
 
 function shortId(chatId: string): string {
@@ -212,28 +233,74 @@ function TeamRoleCard({ chat, settings, now, pending, onOpen, onRelease, onDelet
   )
 }
 
-/**
- * Render the session's team dispatch section (D47). Hidden when no chat in the
- * current session is bound to a roster role.
- */
-export function TeamSection({ chats, settings, now, pending, onOpen, onRelease, onDelete, t }: TeamSectionProps): ReactNode {
-  if (chats.length === 0) return null
+/** Memory-only idle card for a defined workspace role that has not been dispatched yet (D47 2026-11-27). */
+function UnprovisionedRoleCard({ role, t }: { readonly role: string; readonly t: PanelTranslate }): ReactNode {
+  const hint = t('teamUnprovisionedHint')
   return (
-    <section style={styles.section} data-section="team" data-team="">
-      <SectionHeading title={t('teamHeading')} aside={t('teamRoleCount', { count: chats.length })} />
+    <li style={styles.item} data-team-role={role} data-team-state="idle" data-team-unprovisioned="" title={`${role}\n${hint}`}>
+      <PanelCard rail="none" style={styles.unprovisionedCard}>
+        <div style={styles.head}>
+          <span data-dot="idle" style={styles.dot}>
+            <StateDot state="idle" />
+          </span>
+          <span style={styles.name} data-name="">{role}</span>
+        </div>
+        <div style={styles.hintLine} data-team-hint="">{hint}</div>
+      </PanelCard>
+    </li>
+  )
+}
+
+/**
+ * Render the session's team dispatch section (D47, revised 2026-11-27):
+ * hidden only when `roles` is disabled; shows defined roles (dispatched +
+ * unprovisioned idle cards) or a one-line setup hint when no roles are defined.
+ */
+export function TeamSection({
+  chats,
+  definedRoles,
+  rolesEnabled = true,
+  settings,
+  now,
+  pending,
+  onOpen,
+  onRelease,
+  onDelete,
+  t,
+}: TeamSectionProps): ReactNode {
+  const view = buildTeamSectionView(chats, definedRoles, rolesEnabled)
+  if (view.mode === 'hidden') return null
+  if (view.mode === 'unconfigured') {
+    const [before, after = ''] = t('teamUnconfiguredHint', { path: '\0' }).split('\0')
+    return (
+      <section style={styles.section} data-section="team" data-team="" data-team-mode="unconfigured">
+        <SectionHeading title={t('teamHeading')} />
+        <p style={styles.unconfigured} data-team-empty="">
+          {before}<code style={styles.codePath}>{TEAM_CONFIG_DISPLAY_PATH}</code>{after}
+        </p>
+      </section>
+    )
+  }
+  return (
+    <section style={styles.section} data-section="team" data-team="" data-team-mode="roles">
+      <SectionHeading title={t('teamHeading')} aside={t('teamRoleCount', { count: view.entries.length })} />
       <ul style={styles.list}>
-        {chats.map(chat => (
-          <TeamRoleCard
-            key={chat.chatId}
-            chat={chat}
-            settings={settings}
-            now={now}
-            pending={pending.has(chat.chatId)}
-            onOpen={onOpen}
-            onRelease={onRelease}
-            onDelete={onDelete}
-            t={t}
-          />
+        {view.entries.map(entry => (
+          entry.kind === 'chat' ? (
+            <TeamRoleCard
+              key={entry.chat.chatId}
+              chat={entry.chat}
+              settings={settings}
+              now={now}
+              pending={pending.has(entry.chat.chatId)}
+              onOpen={onOpen}
+              onRelease={onRelease}
+              onDelete={onDelete}
+              t={t}
+            />
+          ) : (
+            <UnprovisionedRoleCard key={`role:${entry.role}`} role={entry.role} t={t} />
+          )
         ))}
       </ul>
     </section>

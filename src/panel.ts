@@ -24,6 +24,8 @@ import type { LiveFrame } from './live-buffer.js'
 import type { ChatOptions } from './chat-options.js'
 import type { AcpSessionPool, PooledChatInfo, SessionWorkflows } from './pool.js'
 import type { PanelFeatures } from './panel-features.js'
+import { readTeamConfig } from './team-config.js'
+import { definedRoleNames } from './team-view.js'
 import type { LogEntry } from './turn-log.js'
 import type { BackendUsage, UsageService } from './usage.js'
 
@@ -154,6 +156,8 @@ export class AcpResumePanelService extends TypertRemoteService {
     private readonly pool: AcpSessionPool,
     private readonly usageService?: UsageService,
     private readonly backendStatus?: BackendStatusService,
+    private readonly workspaceDirFor?: (sessionId: string) => Promise<string | undefined> | string | undefined,
+    private readonly rolesEnabled: () => boolean = () => true,
   ) {
     super(ctx, PANEL_SERVICE_KEY)
   }
@@ -208,6 +212,28 @@ export class AcpResumePanelService extends TypertRemoteService {
   @Remote
   list(): readonly PooledChatInfo[] {
     return this.pool.listChats()
+  }
+
+  /**
+   * Defined workspace role names for the viewing DSH session (D47 2026-11-27,
+   * read-only). Validates `sessionId` at D44 tier A, reads the session's
+   * workspace `.agents/acp-team.yml` via `team-config`, and returns `[]` when
+   * roles are disabled or no usable team file exists (D27).
+   * @param sessionId - the DSH session viewing the panel.
+   */
+  @Remote
+  async teamRoles(sessionId: string): Promise<readonly string[]> {
+    const owner = this.requireSessionId(sessionId)
+    if (!this.rolesEnabled()) return []
+    let dir: string | undefined
+    try {
+      dir = await this.workspaceDirFor?.(owner)
+    } catch {
+      return []
+    }
+    if (typeof dir !== 'string' || dir.trim() === '') return []
+    const read = readTeamConfig(dir)
+    return definedRoleNames(read.kind === 'ok' ? read.config.roles : undefined)
   }
 
   /** Release the chat's process; its record stays and the next send reconnects. */
@@ -306,12 +332,17 @@ export class AcpResumePanelService extends TypertRemoteService {
     }
   }
 
-  private ownedChat(chatId: unknown, sessionId: unknown): string {
-    const id = this.knownChat(chatId)
+  private requireSessionId(sessionId: unknown): string {
     if (typeof sessionId !== 'string' || !sessionId.trim()) {
       throw new RemoteError('gateway/bad-request', 'current DSH sessionId is required; upgrade the ACP Resume plugin and reopen the panel', {})
     }
-    if (this.pool.chatOwner(id) !== sessionId) throw new RemoteError('gateway/bad-request', `chat ${id} belongs to another DSH session`, {})
+    return sessionId
+  }
+
+  private ownedChat(chatId: unknown, sessionId: unknown): string {
+    const id = this.knownChat(chatId)
+    const owner = this.requireSessionId(sessionId)
+    if (this.pool.chatOwner(id) !== owner) throw new RemoteError('gateway/bad-request', `chat ${id} belongs to another DSH session`, {})
     return id
   }
 

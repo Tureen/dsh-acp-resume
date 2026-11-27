@@ -78,6 +78,8 @@ export interface ChatsSnapshot {
   readonly fetchedAt?: number
   /** Backend quotas (D28), fetched apart from the rows; absent until the first answer or with an older host. */
   readonly usage?: readonly PanelUsage[]
+  /** Defined workspace role names for the viewing session (D47 2026-11-27); absent until fetched or with an older host. */
+  readonly teamRoles?: readonly string[]
 }
 
 /** Structural twin of the official `ObservableSnapshot`. */

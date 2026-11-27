@@ -31,7 +31,7 @@ export interface PanelRpc {
 }
 
 /** Host method names under the `acpResume` namespace (wire `purge`, not `remove`; §3.6.0 #2). */
-export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage' | 'workflows' | 'chatOptions' | 'setChatModel' | 'setChatEffort'
+export type PanelMethod = 'list' | 'close' | 'purge' | 'turns' | 'turn' | 'usage' | 'workflows' | 'chatOptions' | 'setChatModel' | 'setChatEffort' | 'teamRoles'
 
 /** The updated panel can only use owner-aware methods on a reloaded host. */
 class HostReloadRequired extends Error {}
@@ -50,7 +50,9 @@ export function panelActionError(error: unknown, t: PanelTranslate): string {
 export async function callPanel(rpc: PanelRpc, method: PanelMethod, args: Readonly<Record<string, unknown>>): Promise<unknown> {
   const setting = method === 'chatOptions' || method === 'setChatModel' || method === 'setChatEffort'
   const owned = setting || method === 'close' || method === 'purge'
-  if (owned && (typeof args.sessionId !== 'string' || !args.sessionId.trim())) throw new Error('current DSH sessionId is required')
+  if ((owned || method === 'teamRoles') && (typeof args.sessionId !== 'string' || !args.sessionId.trim())) {
+    throw new Error('current DSH sessionId is required')
+  }
   const result = await rpc.call('/api', `acpResume/${method}`, { args })
   if (!result.ok) {
     const { code, message } = result.error
@@ -126,19 +128,93 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
   private usage: readonly PanelUsage[] | undefined
   /** A usage request is in flight; another refresh does not start a second one. */
   private usagePending = false
+  /** Active per-session subscribers so `teamRoles` refreshes on the same poll tick as `list` without extra timers (D47). */
+  private readonly activeSessions = new Map<string, number>()
+  /** Last defined workspace roles per session id; kept across list refreshes. */
+  private readonly teamRoles = new Map<string, readonly string[]>()
+  /** Cached session-scoped observables sharing this source's single polling timer. */
+  private readonly sessionViews = new Map<string, Observable<ChatsSnapshot>>()
 
-  /** Fetch the list now and publish it, and the backend usage beside it. Never rejects; a list failure is published as `error`. */
+  /**
+   * Session-scoped view over this source (D47 2026-11-27). Piggybacks
+   * `acpResume/teamRoles(sessionId)` onto the exact same refresh round and
+   * single timer as `acpResume/list`, returning a stable snapshot reference
+   * until chats, usage, or that session's role list changes.
+   */
+  forSession(sessionId: string | undefined): Observable<ChatsSnapshot> {
+    if (sessionId === undefined || !sessionId.trim()) return this
+    const existing = this.sessionViews.get(sessionId)
+    if (existing !== undefined) return existing
+    let cachedBase: ChatsSnapshot | undefined
+    let cachedRoles: readonly string[] | undefined
+    let cachedSnapshot: ChatsSnapshot | undefined
+    const view: Observable<ChatsSnapshot> = {
+      getSnapshot: () => {
+        const base = this.snapshot
+        const roles = this.teamRoles.get(sessionId)
+        if (cachedSnapshot !== undefined && base === cachedBase && roles === cachedRoles) {
+          return cachedSnapshot
+        }
+        cachedBase = base
+        cachedRoles = roles
+        cachedSnapshot = roles === undefined ? base : { ...base, teamRoles: roles }
+        return cachedSnapshot
+      },
+      subscribe: (listener) => {
+        const hadListeners = this.listeners.size > 0
+        this.activeSessions.set(sessionId, (this.activeSessions.get(sessionId) ?? 0) + 1)
+        const unsub = this.subscribe(listener)
+        if (hadListeners && !this.disposed && !this.teamRoles.has(sessionId)) {
+          void this.refresh()
+        }
+        return () => {
+          const count = (this.activeSessions.get(sessionId) ?? 0) - 1
+          if (count <= 0) this.activeSessions.delete(sessionId)
+          else this.activeSessions.set(sessionId, count)
+          unsub()
+        }
+      },
+    }
+    this.sessionViews.set(sessionId, view)
+    return view
+  }
+
+  /** Fetch the list now and publish it, plus active sessions' team roles and backend usage beside it. Never rejects; a list failure is published as `error`. */
   async refresh(): Promise<void> {
     if (this.disposed) return
     // Usage never holds up the rows: it is fetched on its own and merged when it lands.
     void this.refreshUsage()
     const id = ++this.latest
+    const sessionIds = [...this.activeSessions.keys()]
     try {
-      const value = await callPanel(this.rpc, 'list', {})
+      const [value, rolesResults] = await Promise.all([
+        callPanel(this.rpc, 'list', {}),
+        Promise.all(sessionIds.map(async (sessionId): Promise<[string, readonly string[] | undefined]> => {
+          try {
+            const res = await callPanel(this.rpc, 'teamRoles', { sessionId })
+            if (Array.isArray(res) && res.every((item): item is string => typeof item === 'string')) {
+              return [sessionId, res]
+            }
+            return [sessionId, undefined]
+          } catch {
+            // Optional on older hosts; keep the last known roles and never fail the list.
+            return [sessionId, undefined]
+          }
+        })),
+      ])
       if (!Array.isArray(value)) throw new Error('acpResume/list returned no list')
       if (this.stale(id)) return
+      let rolesChanged = false
+      for (const [sessionId, roles] of rolesResults) {
+        if (roles === undefined) continue
+        const prev = this.teamRoles.get(sessionId)
+        if (prev === undefined || prev.length !== roles.length || !prev.every((name, i) => name === roles[i])) {
+          this.teamRoles.set(sessionId, roles)
+          rolesChanged = true
+        }
+      }
       const chats = [...value as PanelChat[]].sort((a, b) => b.lastActive - a.lastActive)
-      this.publish({ status: 'ready', chats, fetchedAt: this.now(), ...this.usageField() })
+      this.publish({ status: 'ready', chats, fetchedAt: this.now(), ...this.usageField() }, rolesChanged)
     } catch (error: unknown) {
       if (this.stale(id)) return
       const { chats, fetchedAt } = this.snapshot
@@ -183,6 +259,8 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     this.disposed = true
     this.stopPolling()
     this.listeners.clear()
+    this.activeSessions.clear()
+    this.sessionViews.clear()
   }
 
   private async command(method: 'close' | 'purge', chatId: string, sessionId: string | undefined): Promise<void> {
@@ -205,9 +283,9 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
    * keep the fast poll cadence without publishing duplicate snapshots
    * (`LiveElapsed` ticks locally every second).
    */
-  private publish(next: ChatsSnapshot): void {
+  private publish(next: ChatsSnapshot, forceNotify = false): void {
     const hasInFlight = next.chats.some(chat => chat.inFlight !== undefined)
-    if (listSnapshotEqual(this.snapshot, next)) {
+    if (!forceNotify && listSnapshotEqual(this.snapshot, next)) {
       if (hasInFlight) {
         this.quietPolls = 0
         if (this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)

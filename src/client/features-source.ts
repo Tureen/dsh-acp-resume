@@ -9,6 +9,7 @@ function isFeatures(value: unknown): value is PanelFeatures {
   if (typeof value !== 'object' || value === null) return false
   const fields: Partial<PanelFeatures> = value
   return typeof fields.chatToolsEnabled === 'boolean' && typeof fields.workflowEnabled === 'boolean'
+    && (fields.rolesEnabled === undefined || typeof fields.rolesEnabled === 'boolean')
     && typeof fields.startToolName === 'string'
 }
 
@@ -87,7 +88,9 @@ export class FeaturesSource implements FeatureStore {
       if (next.status === 'legacy' || next.status === 'loading') return
       if (next.status === 'ready' && this.view.status === 'ready') {
         const old = this.view.features
-        if (old.chatToolsEnabled === next.features.chatToolsEnabled && old.workflowEnabled === next.features.workflowEnabled
+        if (old.chatToolsEnabled === next.features.chatToolsEnabled
+          && old.rolesEnabled === next.features.rolesEnabled
+          && old.workflowEnabled === next.features.workflowEnabled
           && old.startToolName === next.features.startToolName) return
       }
       if (next.status === 'error' && this.view.status === 'error' && next.message === this.view.message) return

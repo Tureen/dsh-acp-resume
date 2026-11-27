@@ -467,6 +467,10 @@ function readinessCandidates(backends: ReadonlyMap<string, BackendSpec>, config:
 
 /** Minimal face of the host `workingDirectory` service (optional; not injected). */
 interface WorkingDirectoryFace { get(session: Agent['session']): string }
+/** Minimal face of the host `sessions` store (optional; not injected). */
+interface SessionStoreFace { get(id: string): Agent['session'] | undefined }
+/** Minimal face of the host `sessionQuery` service (optional; not injected). */
+interface SessionQueryFace { inspectSession<T>(sessionId: string, read: (session: Agent['session']) => T): Promise<T> }
 
 /** The session's current working directory: the host service when composed, else the session header's cwd, else the host process cwd. */
 function sessionWorkingDirectory(ctx: Context, agent: Agent): string {
@@ -475,6 +479,32 @@ function sessionWorkingDirectory(ctx: Context, agent: Agent): string {
     if (service !== undefined) return service.get(agent.session)
   } catch { /* fall back to the header */ }
   return agent.session?.header?.cwd ?? process.cwd()
+}
+
+/**
+ * Read-only workspace directory lookup for one DSH session id (D47 2026-11-27).
+ * Prefers live `ctx.sessions`, falls back to cold `ctx.sessionQuery.inspectSession`,
+ * and returns `undefined` when the session is unknown (never falling back to
+ * `process.cwd()`, which could leak another workspace's `.agents/acp-team.yml`).
+ */
+async function sessionWorkingDirectoryById(ctx: Context, sessionId: string): Promise<string | undefined> {
+  const wd = ctx.get('workingDirectory') as WorkingDirectoryFace | undefined
+  const dirOf = (session: Agent['session']): string | undefined => {
+    try {
+      if (wd !== undefined) return wd.get(session)
+    } catch { /* fall back to the header */ }
+    return session?.header?.cwd
+  }
+  const sessions = ctx.get('sessions') as SessionStoreFace | undefined
+  const live = sessions?.get(sessionId)
+  if (live !== undefined) return dirOf(live)
+  const query = ctx.get('sessionQuery') as SessionQueryFace | undefined
+  if (query !== undefined) {
+    try {
+      return await query.inspectSession(sessionId, dirOf)
+    } catch { /* unknown or unreadable cold session */ }
+  }
+  return undefined
 }
 
 export function apply(ctx: Context, config: LiveConfig): void {
@@ -521,6 +551,7 @@ export function apply(ctx: Context, config: LiveConfig): void {
   ctx.subagents.registerProvider(new AcpProvider(resolved.providerName, ctx, resolved, permissionResolverFor))
   new AcpResumeInfoService(ctx, {
     chatToolsEnabled: resolved.enableChatTools,
+    get rolesEnabled() { return resolved.roles.get() },
     get workflowEnabled() { return resolved.workflow.get() },
     startToolName: `${resolved.toolPrefix}start`,
   })
@@ -621,7 +652,14 @@ export function apply(ctx: Context, config: LiveConfig): void {
         refreshTools = () => toolsFiber.restart()
         return () => { refreshTools = undefined }
       })
-      new AcpResumePanelService(scope, pool, usage, readiness)
+      new AcpResumePanelService(
+        scope,
+        pool,
+        usage,
+        readiness,
+        sessionId => sessionWorkingDirectoryById(ctx, sessionId),
+        () => resolved.roles.get(),
+      )
       if (!checkedAtStartup) {
         checkedAtStartup = true
         void readiness.check().catch(() => { ctx.logger.warn('acp-resume: backend detection did not complete') })

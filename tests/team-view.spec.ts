@@ -9,7 +9,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   LATEST_TURN_PREVIEW_CHARS,
+  buildTeamSectionView,
   compareTeamChats,
+  definedRoleNames,
   firstNonEmptyLinePreview,
   latestTurnOf,
   partitionOwnerChats,
@@ -167,5 +169,43 @@ describe('team-view (D47)', () => {
     ]
     expect(new Set(allBucketIds).size).toBe(allBucketIds.length)
     expect(allBucketIds.sort()).toEqual(parts.visible.map(c => c.chatId).sort())
+  })
+
+  it('builds the three-state TeamSection view: defined+dispatched, defined+unprovisioned, unconfigured, and roles disabled (D47 2026-11-27)', () => {
+    expect(definedRoleNames([{ name: ' coder ' }, { name: '' }, { name: 'reviewer' }, { name: 'coder' }])).toEqual(['coder', 'reviewer'])
+    expect(definedRoleNames(undefined)).toEqual([])
+
+    const runningCoder = chat({
+      chatId: 'chat-coder',
+      role: 'coder',
+      inFlight: { chatId: 'chat-coder', message: 'fix bug', startedAt: NOW - 5_000 },
+    })
+
+    // 1. Defined roles + partially dispatched: dispatched chat first, unprovisioned defined roles appended as idle (no duplicates).
+    const mixed = buildTeamSectionView([runningCoder], ['coder', 'reviewer', 'tester'], true)
+    expect(mixed.mode).toBe('roles')
+    expect(mixed.entries).toEqual([
+      { kind: 'chat', role: 'coder', state: 'running', chat: runningCoder },
+      { kind: 'unprovisioned', role: 'reviewer', state: 'idle' },
+      { kind: 'unprovisioned', role: 'tester', state: 'idle' },
+    ])
+
+    // 2. Defined roles + zero dispatched: all render as unprovisioned idle entries in config order.
+    const unprovisionedOnly = buildTeamSectionView([], ['reviewer', 'coder'], true)
+    expect(unprovisionedOnly).toEqual({
+      mode: 'roles',
+      entries: [
+        { kind: 'unprovisioned', role: 'reviewer', state: 'idle' },
+        { kind: 'unprovisioned', role: 'coder', state: 'idle' },
+      ],
+    })
+
+    // 3. No defined roles and no roster chats: unconfigured (empty entries + mode marker).
+    expect(buildTeamSectionView([], [], true)).toEqual({ mode: 'unconfigured', entries: [] })
+    expect(buildTeamSectionView([], undefined, true)).toEqual({ mode: 'unconfigured', entries: [] })
+
+    // 4. Connection-level roles switch off (D33): hidden regardless of defined roles or chats.
+    expect(buildTeamSectionView([runningCoder], ['coder', 'reviewer'], false)).toEqual({ mode: 'hidden', entries: [] })
+    expect(buildTeamSectionView([], [], false)).toEqual({ mode: 'hidden', entries: [] })
   })
 })

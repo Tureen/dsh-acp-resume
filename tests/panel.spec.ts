@@ -11,13 +11,14 @@
  * @module dsh-acp-resume/tests/panel.spec
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
+import { SessionStore } from '@deepseek-ai/dsh-session'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
@@ -70,9 +71,17 @@ function makePool(env: Record<string, string> = {}, backends?: ReadonlyMap<strin
 }
 
 /** Mount the service under a bare cordis root and return it as the Gateway would resolve it. */
-async function mountPanel(pool: AcpSessionPool, backendStatus?: BackendStatusService): Promise<{ ctx: Context; panel: AcpResumePanelService }> {
+async function mountPanel(
+  pool: AcpSessionPool,
+  backendStatus?: BackendStatusService,
+  workspaceDirFor?: (sessionId: string) => Promise<string | undefined> | string | undefined,
+  rolesEnabled?: () => boolean,
+): Promise<{ ctx: Context; panel: AcpResumePanelService }> {
   const ctx = new Context()
-  const fiber = await ctx.plugin({ name: 'panel-under-test', apply: (c: Context) => { new AcpResumePanelService(c, pool, undefined, backendStatus) } })
+  const fiber = await ctx.plugin({
+    name: 'panel-under-test',
+    apply: (c: Context) => { new AcpResumePanelService(c, pool, undefined, backendStatus, workspaceDirFor, rolesEnabled) },
+  })
   cleanups.push(() => fiber.dispose())
   return { ctx, panel: ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService }
 }
@@ -94,7 +103,7 @@ describe('AcpResumePanelService', () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     expect(panel.typertRemote.namespace).toBe('acpResume')
-    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'chatOptions', 'checkBackends', 'close', 'list', 'purge', 'setChatEffort', 'setChatModel', 'turn', 'turns', 'usage', 'watch', 'workflows'])
+    expect(remoteMethods(panel).map(m => m.exportName ?? m.method).sort()).toEqual(['backends', 'chatOptions', 'checkBackends', 'close', 'list', 'purge', 'setChatEffort', 'setChatModel', 'teamRoles', 'turn', 'turns', 'usage', 'watch', 'workflows'])
   })
 
   it('reads readiness with no chats and calls the probe only for the explicit check', async () => {
@@ -357,6 +366,59 @@ describe('AcpResumePanelService', () => {
     expect(panel.list()).toHaveLength(1)
     expect(panel.list()[0]?.active).toBe(true)
   })
+
+  it('teamRoles validates sessionId at D44 tier A, isolates workspaces per owner, handles missing/invalid config, and never mutates the registry', async () => {
+    const wsWithRoles = tempDir('acp-team-ws-roles-')
+    mkdirSync(join(wsWithRoles, '.agents'), { recursive: true })
+    writeFileSync(join(wsWithRoles, '.agents', 'acp-team.yml'), [
+      'version: 1',
+      'roles:',
+      '  - name: coder',
+      '    summary: Writes code',
+      '  - name: reviewer',
+      '    summary: Reviews code',
+    ].join('\n'))
+    const wsWithoutRoles = tempDir('acp-team-ws-empty-')
+    const wsInvalid = tempDir('acp-team-ws-invalid-')
+    mkdirSync(join(wsInvalid, '.agents'), { recursive: true })
+    writeFileSync(join(wsInvalid, '.agents', 'acp-team.yml'), 'version: 99\nroles: not-a-list\n')
+
+    const dirsBySession: Record<string, string> = {
+      'owner-A': wsWithRoles,
+      'owner-B': wsWithoutRoles,
+      'owner-bad': wsInvalid,
+    }
+    let rolesOn = true
+    const { pool, registryPath } = makePool()
+    const { panel } = await mountPanel(pool, undefined, id => dirsBySession[id], () => rolesOn)
+
+    // D44 tier A validation on missing/empty/malformed sessionId.
+    const invoke = panel as unknown as { teamRoles: (sessionId: unknown) => Promise<readonly string[]> }
+    for (const bad of [undefined, '', '   ', 42, null, {}]) {
+      expect(await rejectionCode(invoke.teamRoles(bad))).toBe('gateway/bad-request')
+    }
+    await expect(invoke.teamRoles('')).rejects.toThrow(/sessionId is required; upgrade the ACP Resume plugin/)
+
+    // Owner-scoped resolution: owner-A sees its defined roles; owner-B/invalid/unknown see [].
+    expect(await panel.teamRoles('owner-A')).toEqual(['coder', 'reviewer'])
+    expect(await panel.teamRoles('owner-B')).toEqual([])
+    expect(await panel.teamRoles('owner-bad')).toEqual([])
+    expect(await panel.teamRoles('owner-unknown')).toEqual([])
+    // Unprovisioned roles never create or touch the registry file.
+    expect(existsSync(registryPath)).toBe(false)
+
+    // Even with an existing registry file, reading teamRoles + list leaves the registry byte-for-byte identical.
+    await pool.start(wsWithRoles, undefined, { ownerSessionId: 'owner-A' })
+    const beforeBytes = readFileSync(registryPath)
+    expect(await panel.teamRoles('owner-A')).toEqual(['coder', 'reviewer'])
+    expect(panel.list()).toHaveLength(1)
+    const afterBytes = readFileSync(registryPath)
+    expect(Buffer.compare(beforeBytes, afterBytes)).toBe(0)
+
+    // When roles feature switch is off, teamRoles returns [].
+    rolesOn = false
+    expect(await panel.teamRoles('owner-A')).toEqual([])
+  })
 })
 
 /** Source-mode invocation of the detail reads with arbitrary (possibly malformed) arguments. */
@@ -604,7 +666,7 @@ describe('apply (panel wiring)', () => {
     })
     cleanups.push(() => fiber.dispose())
     const info = ctx.get('acpResumeInfo') as unknown as AcpResumeInfoService
-    expect(info.features()).toEqual({ chatToolsEnabled: true, workflowEnabled: false, startToolName: 'acp_chat_start' })
+    expect(info.features()).toEqual({ chatToolsEnabled: true, rolesEnabled: true, workflowEnabled: false, startToolName: 'acp_chat_start' })
     const panel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
     expect(panel.workflows('owner')).toEqual({
       running: [], recent: [{ runId: 'r', template: 'review', startedAt: 1, endedAt: 2, status: 'completed', steps: [] }],
@@ -623,7 +685,7 @@ describe('apply (panel wiring)', () => {
     const info = ctx.get('acpResumeInfo') as unknown as AcpResumeInfoService
     expect(info.typertRemote.namespace).toBe('acpResumeInfo')
     expect(remoteMethods(info).map(m => m.exportName ?? m.method)).toEqual(['features'])
-    expect(info.features()).toEqual({ chatToolsEnabled: false, workflowEnabled: false, startToolName: 'worker_start' })
+    expect(info.features()).toEqual({ chatToolsEnabled: false, rolesEnabled: true, workflowEnabled: false, startToolName: 'worker_start' })
     expect(ctx.subagents.getProvider('acp-resume')).toBeDefined()
     await ctx.plugin(StubTools)
     expect(ctx.get(PANEL_SERVICE_KEY)).toBeUndefined()
@@ -632,5 +694,38 @@ describe('apply (panel wiring)', () => {
     await fiber.dispose()
     expect(ctx.get('acpResumeInfo')).toBeUndefined()
     check.mockRestore()
+  })
+
+  it('wires teamRoles through ctx.sessions + workingDirectory and reflects rolesEnabled on features', async () => {
+    const ctx = await host()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(StubTools)
+    const wsA = tempDir('acp-apply-ws-a-')
+    mkdirSync(join(wsA, '.agents'), { recursive: true })
+    writeFileSync(join(wsA, '.agents', 'acp-team.yml'), 'version: 1\nroles:\n  - name: architect\n  - name: tester\n')
+    const wsB = tempDir('acp-apply-ws-b-')
+    const sessionA = ctx.sessions.create('session-a', { meta: { cwd: wsA } })
+    const sessionB = ctx.sessions.create('session-b', { meta: { cwd: wsB } })
+    const registryPath = join(tempDir('acp-apply-team-roles-'), 'registry.json')
+    const fiber = await ctx.plugin(acp, {
+      command: 'fixture-acp', discoverBackends: false, registryPath, roles: true,
+    })
+    cleanups.push(() => fiber.dispose())
+    const panel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
+    expect(await panel.teamRoles(sessionA.id)).toEqual(['architect', 'tester'])
+    expect(await panel.teamRoles(sessionB.id)).toEqual([])
+    expect(await panel.teamRoles('session-missing')).toEqual([])
+    expect(existsSync(registryPath)).toBe(false)
+
+    // With roles: false, features exposes rolesEnabled: false and teamRoles returns [].
+    await fiber.dispose()
+    const disabledFiber = await ctx.plugin(acp, {
+      command: 'fixture-acp', discoverBackends: false, registryPath, roles: false,
+    })
+    cleanups.push(() => disabledFiber.dispose())
+    const info = ctx.get('acpResumeInfo') as unknown as AcpResumeInfoService
+    expect(info.features().rolesEnabled).toBe(false)
+    const disabledPanel = ctx.get(PANEL_SERVICE_KEY) as unknown as AcpResumePanelService
+    expect(await disabledPanel.teamRoles(sessionA.id)).toEqual([])
   })
 })

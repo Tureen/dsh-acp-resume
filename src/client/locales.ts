@@ -290,6 +290,8 @@ export const zh = {
   teamHeading: '团队派工',
   teamRoleCount: '{count} 角色',
   teamIdleHint: '等待派工',
+  teamUnprovisionedHint: '空闲 · 等待派工',
+  teamUnconfiguredHint: '此工作区未定义角色。创建 {path} 后可按角色派工。',
   teamRunningHint: '正在运行 · 点击查看实时输出',
   teamRoleReleased: '已释放',
 } satisfies Record<string, string>
@@ -580,6 +582,8 @@ export const en: Record<PanelCopyKey, string> = {
   teamHeading: 'Team dispatch',
   teamRoleCount: '{count} roles',
   teamIdleHint: 'Idle · awaiting task',
+  teamUnprovisionedHint: 'Idle · awaiting task',
+  teamUnconfiguredHint: 'No roles are defined for this workspace. Add {path} to dispatch by role.',
   teamRunningHint: 'Running · open for live output',
   teamRoleReleased: 'released',
 }
