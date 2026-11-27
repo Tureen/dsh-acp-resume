@@ -589,7 +589,8 @@ export function chatStaticTools(pool: AcpSessionPool, toolPrefix: string, backen
       + 'The agent takes the queued message in at its next tool or message boundary; it does not interrupt the current step. '
       + `To stop the turn immediately use job_kill (when the send ran as a job) or ${toolPrefix}close instead. `
       + `Only works while a turn is in flight (after ${toolPrefix}send, before it finishes); otherwise use ${toolPrefix}send. `
-      + 'Requires a backend that supports mid-turn steering; if this backend does not, the tool fails and says so.'
+      + 'Requires a backend that supports mid-turn steering (only some backends do); '
+      + 'if this backend does not, the tool fails with "does not support mid-turn steering" — do not probe to find out; let the turn finish (you will be notified) or stop it and send again.'
       + (roles === undefined ? '' : ' Pass role instead of chatId to steer the running turn of a workspace role in this session.'),
     parameters: steerParameters(toolPrefix, roles),
     output: {

@@ -13,9 +13,6 @@
 
 import { useSyncExternalStore, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configOptions, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
@@ -25,7 +22,7 @@ import { callPanel, panelActionError } from '../src/client/chats-source.ts'
 import type { BackendStatusSnapshot } from '../src/backend-status.ts'
 import * as client from '../src/client/index.ts'
 import type { LiveFrame } from '../src/live-buffer.ts'
-import { LiveSource, type FollowTurn } from '../src/client/live-source.ts'
+import { LiveSource, type FollowTurn, type WatchRemote } from '../src/client/live-source.ts'
 import { FeaturesSource } from '../src/client/features-source.ts'
 import { BackendStatusSource } from '../src/client/backend-status-source.ts'
 import { ChatsPanel, formatDuration, relativeTime, resetChatsPanelViewState, shortChatId, type ChatsPanelProps } from '../src/client/ChatsPanel.tsx'
@@ -1243,6 +1240,27 @@ describe('ChatsSource', () => {
 })
 
 /** Stub services for `apply`, recording what registers. */
+type RemoteStub = {
+  readonly $mount: (contribution: unknown) => Promise<() => void | Promise<void>>
+  readonly acpResume?: WatchRemote['acpResume']
+}
+
+/** Minimal `remote` for wiring tests: the plugin now injects it at the top level to mount the
+ * stream descriptor. The real access guard is covered in tests/live-gateway-consumer.spec.ts. */
+const REMOTE_STUB: RemoteStub = { $mount: async () => () => {} }
+
+function provideRemote(ctx: Context, remote: RemoteStub = REMOTE_STUB): void {
+  const mounted: RemoteStub = remote.acpResume === undefined ? remote : {
+    ...remote,
+    $mount: async (contribution) => {
+      const unmount = await remote.$mount(contribution)
+      const withdraw = ctx.provide('remote.acpResume', remote.acpResume)
+      return async () => { withdraw(); await unmount() }
+    },
+  }
+  ctx.provide('remote', mounted as unknown as WatchRemote)
+}
+
 function stubServices() {
   const tabs: Record<string, unknown>[] = []
   const bodies: { options: { name: string; key: string; locale?: string; inject: (sessionId?: string) => unknown }; component: unknown }[] = []
@@ -1285,13 +1303,14 @@ function renderBody(injected: ChatsPanelInjected): void {
 }
 
 /** Mount the actual browser plugin with one session seat and a controlled transport. */
-async function panelConnection(rpc: PanelRpc) {
+async function panelConnection(rpc: PanelRpc, remote: RemoteStub = REMOTE_STUB) {
   const ctx = new Context()
   const services = stubServices()
   ctx.provide('slots', services.slots)
   ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
   ctx.provide('locale', services.locale)
   ctx.provide('connection', { rpc })
+  provideRemote(ctx, remote)
   await ctx.plugin(client)
   const list = (services.bodies[0]!.options.inject as (session: string) => ChatsPanelInjected)(TEST_SESSION)
   const detail = services.bodies[1]!.options.inject() as ChatDetailInjected
@@ -1440,7 +1459,7 @@ describe('D35 capability boundaries', () => {
 describe('apply (client wiring)', () => {
   it('exports only apply and inject', () => {
     expect(Object.keys(client).sort()).toEqual(['apply', 'inject'])
-    expect(client.inject).toEqual(['slots', 'locale', 'sidebarRightTabs'])
+    expect(client.inject).toEqual(['slots', 'locale', 'sidebarRightTabs', 'remote'])
   })
 
   it('registers the tab type, guide entry, copy, and body; the bound body fetches and acts over rpc', async () => {
@@ -1452,6 +1471,7 @@ describe('apply (client wiring)', () => {
     let rows: PanelChat[] = [chat({ title: '记住暗号P', turnCount: 1 })]
     const rpc = mockRpc(() => rows)
     ctx.provide('connection', { rpc })
+    provideRemote(ctx)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const fiber = await ctx.plugin(client)
     expect(warn).not.toHaveBeenCalled()
@@ -1508,6 +1528,7 @@ describe('apply (client wiring)', () => {
     ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
     ctx.provide('locale', services.locale)
     ctx.provide('connection', { rpc: mockRpc() })
+    provideRemote(ctx)
     const fiber = await ctx.plugin(client)
     const detail = services.tabs[1] as { id: string; kind: string; patterns: string[]; canOpen: (a: string) => boolean; title: (a: string) => string; multiple?: unknown; guide?: unknown; priority?: unknown }
     expect(detail).toMatchObject({ id: 'dsh-acp-resume/chat', kind: 'acp-resume.chat', patterns: [CHAT_ADDRESS_PATTERN] })
@@ -1527,63 +1548,13 @@ describe('apply (client wiring)', () => {
     expect(services.tabs).toHaveLength(0)
   })
 
-  it('mounts the stream descriptor through the injected remote and opens a live stream via followTurn (D46)', async () => {
-    // Covers the inject → $mount → LiveSource chain end to end. It does NOT reproduce the DSH
-    // client's "cannot get property without inject" guard (bare Cordis lets the parent scope read a
-    // provided service); that regression is pinned structurally in the test below.
-    const ctx = new Context()
-    const services = stubServices()
-    ctx.provide('slots', services.slots)
-    ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
-    ctx.provide('locale', services.locale)
-    ctx.provide('connection', { rpc: mockRpc(() => []) })
-    let mounted = 0
-    const opened: string[] = []
-    const remote = {
-      $mount: async () => { mounted++ },
-      // Stand in for the stream carrier: one snapshot frame, then settled.
-      // A mounted stream handle is an AsyncIterable that also carries `dispose()`, like the real carrier's.
-      acpResume: { watch: (chatId: string) => {
-        opened.push(chatId)
-        const frames = (async function* () { yield { kind: 'snapshot', seq: 1, text: '实时文本', truncated: false }; yield { kind: 'settled', seq: 2 } })()
-        return Object.assign(frames, { dispose: () => { frames.return(undefined) } })
-      } },
-    }
-    // Reading `remote` from a scope that did not inject it must fail, as it does in the DSH client.
-    Object.defineProperty(remote, Symbol.for('dsh.test.guard'), { value: true })
-    const guarded = new Proxy(remote, { get(target, key, receiver) { return Reflect.get(target, key, receiver) } })
-    ctx.provide('remote', guarded)
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const fiber = await ctx.plugin(client)
-    expect(mounted).toBe(1)
-    const detail = services.bodies[1] as (typeof services.bodies)[number]
-    const face = detail.options.inject!(TEST_SESSION) as ChatDetailInjected
-    expect(face.followTurn).toBeTypeOf('function')
-    const follow = face.followTurn!
-    const frames: unknown[] = []
-    const stop = follow('chat-live', NOW - 500, frame => { frames.push(frame); if (frame.kind === 'settled') stop() })
-    await vi.waitFor(() => expect(frames.map(f => (f as { kind: string }).kind)).toEqual(['snapshot', 'settled']))
-    expect(opened).toEqual(['chat-live'])
-    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('live output stream failed'), expect.anything())
-    await fiber.dispose()
-  })
-
-  it('the live opener reads `remote` only from the value captured inside its inject scope (pins the DSH "without inject" fix)', () => {
-    // The DSH client refuses `ctx.get('remote')` on a scope that did not inject it; bare Cordis does not,
-    // so the regression cannot be reproduced here. Pin the shape instead: the opener must use the
-    // captured `watchRemote`, never `scope.get('remote')`.
-    // jsdom gives `import.meta.url` a non-file scheme; resolve from the test file's directory instead.
-    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts'), 'utf8')
-    const opener = source.slice(source.indexOf('new LiveSource('), source.indexOf('}, chatId =>'))
-    expect(opener).toContain('const remote = watchRemote')
-    expect(opener.includes("scope.get('remote')") || opener.includes('scope.get("remote")')).toBe(false)
-  })
   it('without a connection service registers nothing and warns once; a later connection brings the panel in', async () => {
     const ctx = new Context()
     const services = stubServices()
     ctx.provide('slots', services.slots)
     ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
     ctx.provide('locale', services.locale)
+    provideRemote(ctx)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const fiber = await ctx.plugin(client)
     expect(warn).toHaveBeenCalledTimes(1)
@@ -1597,6 +1568,31 @@ describe('apply (client wiring)', () => {
     expect(warn).toHaveBeenCalledTimes(1)
     await fiber.dispose()
     expect(services.tabs).toHaveLength(0)
+  })
+
+  it('aborts a pending live subscription cleanly when $mount hangs, and unmounts late $mount after early dispose', async () => {
+    const mountGate = Promise.withResolvers<() => void>()
+    const unmount = vi.fn()
+    const ctx = new Context()
+    const services = stubServices()
+    ctx.provide('slots', services.slots)
+    ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
+    ctx.provide('locale', services.locale)
+    ctx.provide('connection', { rpc: mockRpc() })
+    provideRemote(ctx, { $mount: () => mountGate.promise })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fiber = await ctx.plugin(client)
+    const detail = services.bodies[1]!.options.inject(TEST_SESSION) as ChatDetailInjected
+    const views: unknown[] = []
+    const stop = detail.followTurn!('chat-hang', NOW, view => { views.push(view) })
+    // Unsubscribing while $mount is hung must exit via abort without emitting an error or warning.
+    stop()
+    // Disposing before $mount resolves must run the late unmount disposer and not throw INACTIVE_EFFECT.
+    await fiber.dispose()
+    mountGate.resolve(unmount)
+    await vi.waitFor(() => { expect(unmount).toHaveBeenCalledTimes(1) })
+    expect(views).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
   })
 })
 
@@ -2696,6 +2692,7 @@ describe('D44 per-chat controls', () => {
     ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
     ctx.provide('locale', services.locale)
     ctx.provide('connection', { rpc: { call } })
+    provideRemote(ctx)
     try {
       await ctx.plugin(client)
       const view = services.bodies[1]!.options.inject(TEST_SESSION) as ChatDetailInjected
@@ -2857,15 +2854,14 @@ describe('live detail body (D46)', () => {
   })
 
   it('does not open watch for the list or a restored chip title', async () => {
-    const watch = vi.fn()
+    const watch = vi.fn<WatchRemote['acpResume']['watch']>()
     const { list, title, ctx } = await panelConnection({ call: async (_, endpoint) => {
       if (endpoint.endsWith('/features')) return { ok: true, value: defaultFeatureView.features }
       if (endpoint.endsWith('/turns')) return { ok: true, value: detailSnapshot({ entries: [running] }) }
       if (endpoint.endsWith('/backends')) return { ok: true, value: backendFixture }
       if (!endpoint.endsWith('/list')) return { ok: true, value: [] }
       return { ok: true, value: [chat({ inFlight: { chatId: 'chat', message: running.message, startedAt: NOW } })] }
-    } })
-    ctx.provide('remote', { $mount: async () => () => {}, acpResume: { watch } } as never)
+    } }, { $mount: async () => () => {}, acpResume: { watch } })
     try {
       renderBody(list)
       render(<ChatDetailTitle {...title} useTabInfo={tabInfo(chatAddress('chat-' + UUID_A)).hook} />)

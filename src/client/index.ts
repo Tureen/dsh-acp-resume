@@ -60,11 +60,17 @@ declare module '@deepseek-ai/cordis' {
       inject(name: string, register: () => Disposer): Disposer
       register(options: object, component: unknown): Disposer
     }
+    /** Client Remote service carrying the mounted stream namespace. */
+    remote: WatchRemote
   }
 }
 
 /** Required Cordis services; `connection` is taken reactively inside `apply`. */
-export const inject = ['slots', 'locale', 'sidebarRightTabs']
+// `remote` is injected at the top level so child scopes (`scope` and `faceScope`) can resolve
+// `.remote` via the ancestor fiber chain (`scope.remote.$mount(...)` and `faceScope.remote.acpResume`).
+// Access to `remote.acpResume` itself is checked on the accessing scope, so it is only read from
+// a child scope that explicitly injected `remote.acpResume`.
+export const inject = ['slots', 'locale', 'sidebarRightTabs', 'remote']
 
 /**
  * Register the panel while the `connection` service is present.
@@ -136,21 +142,64 @@ export function apply(ctx: Context): void {
       for (const detail of details.values()) detail.dispose()
       details.clear()
     }, 'dsh-acp-resume.detail-sources')
-    // The `remote` service may only be read on a scope that injected it: `scope` itself
-    // did not, so the mounted face is captured inside the child scope and handed out here.
-    let watchRemote: WatchRemote | undefined
-    const binding = scope.inject(['remote'], async remoteScope => {
-      const remote = remoteScope.get('remote') as WatchRemote
-      await remote.$mount({ package: 'dsh-acp-resume', descriptors: [watchDescriptor] })
-      watchRemote = remote
-      return () => { watchRemote = undefined }
-    })
+    // `scope` inherits top-level `remote` via its parent fiber, so it mounts the stream descriptor
+    // directly and saves the unmount disposer. Reading `remote.acpResume`, however, is checked by
+    // Cordis on the accessing scope (`remote.<namespace>` is a separate service), so the watch face
+    // is read only from a child scope that injected `remote.acpResume` — never lifted from `remote`.
+    let disposed = false
+    let watchScope: Context | undefined
+    let watchFiber: { dispose(): Promise<void> } | undefined
+    let unmountRemote: (() => void | Promise<void>) | undefined
+    const mounted: Promise<void> = (async () => {
+      const unmount = await scope.remote.$mount({ package: 'dsh-acp-resume', descriptors: [watchDescriptor] })
+      if (disposed || scope.fiber.uid === null) {
+        await unmount?.()
+        return
+      }
+      unmountRemote = unmount
+      const fiber = scope.inject(['remote.acpResume'], (faceScope) => {
+        watchScope = faceScope
+        return () => { watchScope = undefined }
+      })
+      watchFiber = fiber
+      try {
+        await fiber.await()
+      } catch (error) {
+        watchFiber = undefined
+        await fiber.dispose()
+        unmountRemote = undefined
+        await unmount?.()
+        throw error
+      }
+    })()
+    mounted.catch(() => {})
+    scope.effect(() => async () => {
+      disposed = true
+      const fiber = watchFiber
+      watchFiber = undefined
+      const unmount = unmountRemote
+      unmountRemote = undefined
+      if (fiber) await fiber.dispose()
+      if (unmount) await unmount()
+    }, 'dsh-acp-resume.remote-stream')
     const live = new LiveSource(async function* (chatId, owner, signal) {
-      await binding.await()
       if (signal.aborted) return
-      const remote = watchRemote
-      if (!remote) throw new Error('Remote stream service unavailable')
-      const handle = remote.acpResume.watch(chatId, owner, signal)
+      let onAbort: (() => void) | undefined
+      try {
+        await Promise.race([
+          mounted,
+          new Promise<void>(resolve => {
+            onAbort = resolve
+            signal.addEventListener('abort', onAbort, { once: true })
+          }),
+        ])
+      } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort)
+      }
+      if (signal.aborted) return
+      const injected = watchScope
+      if (!injected) throw new Error('Remote stream service unavailable')
+      const handle = injected.remote.acpResume.watch(chatId, owner, signal)
       const cancel = () => handle.dispose()
       signal.addEventListener('abort', cancel, { once: true })
       try { yield* handle } finally { signal.removeEventListener('abort', cancel); cancel() }

@@ -32,11 +32,11 @@
    - **现在靠什么防**:`src/panel.ts` 显式写 `@Remote({ mode: 'stream' })`;`tests/panel.spec.ts` 反射断言 `remoteMethods(panel)` 中 `watch.mode === 'stream'`;`tests/live-gateway.spec.ts` 起真实 rc.5 Gateway + WebSocket 端到端验证双帧消费与取消清理。
    - **证据**:D46、`src/panel.ts:267`、`tests/panel.spec.ts:291`、`tests/live-gateway.spec.ts:19-94`。
 
-5. **Cordis 服务只能在 `inject` 过该服务的子作用域上读取,不能从父作用域 `scope.get()`**。
-   - **违反会怎样**:在 `scope.inject(['remote'], ...)` 之外从父 `scope.get('remote')` 打开流,DSH 客户端运行期直接抛 `cannot get property "remote.acpResume" without inject`,详情页实时输出区始终显示「实时输出不可用」(0.7.2–0.7.4 实发事故)。
-   - **根因**:DSH 客户端对 Cordis 上下文加了严格的注入守卫,只允许已声明注入该服务的作用域访问其属性。
-   - **现在靠什么防**:在 `scope.inject(['remote'], async remoteScope => ...)` 内完成 `$mount` 后把 `remote` 引用捕获到闭包变量 `watchRemote`,注销时置 `undefined`,打开流时只读 `watchRemote`;因裸 Cordis 单测无法复现该守卫,用结构性单测锁住源码不得出现 `scope.get('remote')`。
-   - **证据**:提交 `a9232eb`、`src/client/index.ts:139-151`、`tests/client.spec.tsx` 中 `the live opener reads \`remote\` only from the value captured inside its inject scope (pins the DSH "without inject" fix)`。
+5. **Cordis 的 `remote.<namespace>` 是独立服务,只能在显式 `inject(['remote.<namespace>'])` 的作用域上读取,绝不能从 `remote` 服务对象上提前拎出**。
+   - **违反会怎样**:在 `inject(['remote'])` 里 `$mount` 后把整个 `remote` 对象拎出来、再在外部访问 `remote.acpResume.watch`,DSH 客户端运行期直接抛 `cannot get property "remote.acpResume" without inject`,详情页实时输出区始终显示「实时输出不可用」(0.7.2–0.7.7 连续六版实发事故;0.7.5 误诊为 `scope.get('remote')` 问题,改错了行并留了无效的源码字符串断言)。
+   - **根因**:`ClientRemoteService` 继承 Cordis `Service`(带 `tracker.associate = 'remote'`),`$mount` 会在 Cordis 里把命名空间注册成独立服务 `'remote.acpResume'`(`RemoteNamespaceService`)。读 `remote.acpResume` 时 traceable proxy 会把它重定向为对该 `remote` 绑定作用域的 `Reflect.get(ctx, 'remote.acpResume')`;只有顶层/祖先注入了 `'remote'` **且**访问作用域本身注入了 `'remote.acpResume'` 才能通过守卫。
+   - **现在靠什么防**:`src/client/index.ts` 顶层 `inject` 含 `'remote'`(让子作用域沿父链解析 `.remote`),`scope.remote.$mount(...)` 直接挂载并保存 `unmount` disposer,`remote.acpResume` 只在 `scope.inject(['remote.acpResume'], faceScope => ...)` 捕获的 `faceScope` 上现场读取;卸载时先释放消费方再 `unmount`;`await mounted` 感知 `AbortSignal`;由 `tests/live-gateway-consumer.spec.ts` 在真实 `Gateway` + `ClientGateway` 上直接加载 `src/client/index.ts` 端到端守住。
+   - **证据**:`src/client/index.ts:67-75,143-206`、`tests/live-gateway-consumer.spec.ts`、`node_modules/@deepseek-ai/cordis/src/utils.ts:183-185`、`node_modules/@deepseek-ai/dsh-api-gateway/lib/client.node.js:1777,1890-1892`。
 
 6. **插件入口只用命名导出,禁止 `export default`**。
    - **违反会怎样**:Cordis loader 读取不到插件的 `name`、`Config`、`inject` 等静态元数据,导致插件无法按预期配置或激活。
@@ -145,11 +145,11 @@
 
 > **术语速览**:**jsdom** 是 Node 里的纯 JS DOM 模拟环境,Vitest 用它跑 React 组件单测,没有真实浏览器的布局引擎、GPU 合成器与 DSH 客户端外壳。
 
-1. **回归用例必须做对照实验:临时把 bug 还原回去,新用例必须变红;单测复现不出来的,改结构性断言并说实话**。
-   - **违反会怎样**:写一条「看着测到了」的测试却从没见过它红,实际上是在裸测试环境里自说自话,真机一升级同名 bug 立刻回归。
-   - **根因**:单元测试是宿主的替身——至少有三类真实故障在单测里天然复现不出来:① 裸 Cordis 允许父作用域 `get('remote')`,复现不了 DSH 客户端的 `without inject` 守卫;② jsdom 没有真实 Chromium/Electron 的 Metal/Skia 光栅化管线,复现不了 GPU 瓦片闪白;③ mock `dsh-client-ui-primitives` 时,假组件不会暴露真实组件的 DOM 角色或 CSS 冲突。
-   - **现在靠什么防**:能复现的必做红/绿对照;复现不出来的(如 `without inject` 与 D49 分层)在源码或样式层面加结构性断言,并在 `it(...)` 用例名和注释里诚实标明「复现不了什么、锁的是什么结构」。
-   - **证据**:提交 `a9232eb`、`45b0faf`、D49、`tests/client.spec.tsx` 中 `pins the DSH "without inject" fix`。
+1. **宿主边界回归测试禁止手抄生产逻辑,必须直接挂载真实生产入口并做红/绿变异对照;真复现不出来的才退回结构性断言并说实话**。
+   - **违反会怎样**:写一条「看着测到了」的测试却从没见过它因生产代码改坏而变红,等于在替身环境里自说自话——0.7.2–0.7.7 的 `remote.acpResume` `without inject` 事故连犯三次同类错误:① `tests/client.spec.tsx` 用不带 `Service`/`tracker` 的手写普通对象替身,天然绕过守卫;② 0.7.5 误以为「裸 Cordis 复现不了守卫」,写了只盯源码变量名的结构性断言,根本没守住 bug;③ 0.7.8 初版 `tests/live-gateway-consumer.spec.ts` 虽起了真实 Gateway,却把修法手抄成内联伪代码、根本没导入 `src/client/index.ts`,把生产代码改回 0.7.5 测试依然全绿。
+   - **根因**:**真实 `@deepseek-ai/dsh-api-gateway/client` 在 Vitest 中完全可以 100% 复现 `without inject` 守卫**——之前复现不出来不是框架限制,而是用了普通对象替身或根上下文裸调 `client.get('remote')`。真正无法在单测中复现的仅限于物理环境缺失(如 jsdom 无 Chromium/Electron 的 Metal/Skia GPU 光栅化管线,复现不了 D49 瓦片闪白;mock `dsh-client-ui-primitives` 复现不了真实组件的 DOM 角色或 CSS 冲突)。
+   - **现在靠什么防**:凡涉及宿主守卫/协议边界的回归测试,必须直接 `import` 并加载真实生产插件入口(如 `tests/live-gateway-consumer.spec.ts` 在真实 `Gateway` + `ClientGateway` 上加载 `src/client/index.ts`),并在提交前做变异对照实验(临时改坏生产代码必须变红、逐字还原必须变绿);确实无法复现的物理渲染边界(如 D49 分层)才用结构性断言并在用例名里诚实标明边界。
+   - **证据**:`tests/live-gateway-consumer.spec.ts`、`src/client/index.ts`、D49、提交 `45b0faf`。
 
 2. **mock 的 `getSnapshot()` 每次返回新对象,会把 `useSyncExternalStore` 打进无限重渲染循环**。
    - **违反会怎样**:测试挂载组件后直接卡死或抛 `Maximum update depth exceeded`。
@@ -347,7 +347,8 @@
 - **2026-11-26｜D46 裸 `@Remote` 被识别为 unary**:SRC 反射不从 `async *` 推断流模式,改为 `@Remote({ mode: 'stream' })` 并补真实 Gateway 端到端测试(D46、提交 `8f0d65c`)。
 - **2026-11-26｜D47 两路合并暴露重复 mock/导入与 `DisclosureRow` 假按钮**:Vitest 未拦截的重复键与 `DisclosureRow` 整行即按钮行为经 `tsc` 与真组件核对修净(D47、提交 `501fcda`)。
 - **2026-11-27｜只读 `watch` 误套写操作 owner 校验**:详情页能看跨主会话历史却看不到实时输出,0.7.4 改回仅按存在性校验(D44 修订、提交 `7a1ce33`)。
-- **2026-11-27｜父作用域 `scope.get('remote')` 触发 DSH `without inject` 拦截**:真机详情页始终显示「实时输出不可用」,裸 Cordis 单测未复现,0.7.5 改为子作用域捕获 + 结构性断言守门(提交 `a9232eb`)。
+- **2026-11-27｜0.7.5 误诊 `without inject` 为父作用域 `scope.get('remote')`**:在 `inject(['remote'])` 内捕获整个 `remote` 对象并加了只盯变量名的源码断言,实际 0.7.2–0.7.7 仍持续在 `remote.acpResume` 上触发 `cannot get property "remote.acpResume" without inject`(提交 `a9232eb`)。
 - **2026-11-27｜探针证伪 `backends.*.model` 标 `volatile` 与 `configEditor.edit` 热改**:证实字典子项不可标 `volatile`、写普通字段必销毁池杀在途轮,改走顶层 `backendDefaults` 字典(D48、提交 `6f8f0ce`)。
 - **2026-11-27｜详情页单滚动容器触发约 7.8 Hz GPU 瓦片闪白与顶缝漏字**:录屏逐帧抓出跨秒同像素行水平半字裁切,0.7.6 拆分隔离滚动区、离屏停动画并稳定在途快照,待真机复核(D49、提交 `45b0faf`)。
 - **2026-11-27｜后端额度耗尽与通用故障混标为红「出错」**:Codex `usageLimitExceeded` 实发后暴露调度模型与面板无法区分「换后端/等重置」与代码故障,0.7.7 新增宿主侧 `failure-class.ts` 分类与橙色「额度耗尽」标注、原文不回显,agy/kiro 通用正则待样本校准(D50)。
+- **2026-11-27｜根治 `remote.acpResume` `without inject` 与手抄测试缺口**:确认 `remote.<namespace>` 须在 `inject(['remote.acpResume'])` 作用域内现场读取,并查出初版 `live-gateway-consumer.spec.ts` 手抄修法未加载 `src/client/index.ts`;改为真实 `Gateway` + `ClientGateway` 加载真实入口并做红/绿变异对照,同步补齐 `$mount` disposer 顺序释放与 abort 感知(`src/client/index.ts`、`tests/live-gateway-consumer.spec.ts`)。
