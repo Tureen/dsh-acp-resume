@@ -64,6 +64,8 @@
 
 | 0.7.5 | D48 后端缺省热更新与已释放会话重连覆盖 | 顶层 volatile `backendDefaults`（优先于静态配置）+ 侧栏直接编辑/清除/强度校验；已释放会话可读同后端活连接/缓存/未知清单并记内存重连覆盖（不改注册表），重连先应用缺省再应用覆盖；修订 D44 | `profile-settings` 5/5、`pool` 97/97 通过；`live-settings` 16/17（测试夹具建会话顺序已修正待复跑）、`client` 144/145（测试 mock snapshot 缓存已修正待复跑）；Desktop 真机组合待验收 | ◐ |
 
+| 0.7.6 | D49 详情页滚动容器拆分、层隔离与在途态快照稳定 | `ChatDetail` 固定非 sticky 顶栏 + 独立 `isolation: isolate` 滚动区（消顶缝漏字与 `zIndex` 倒挂）、`RunningWorkspace` `contain: layout paint` + `IntersectionObserver`/`tab.visible` 离屏停动画、`.acp-detail-md` 取消代码块二级 sticky；`detail-source`/`chats-source`/`workflows-source` 在途态保快轮询不发重复快照 | `panel-chrome` 7/7 通过、`client` 151/152（仅新增 D49 断言中 jsdom 将 `flex: 'none'` 规范化为 `'0 0 auto'`，已修正待复跑/CI）、`typecheck:client` 与 `build` 通过；**macOS Desktop GPU 瓦片闪白消除待真机录屏确认** | ◐ |
+
 | 待办 | Codex 会话级切换 | 读取并缓存完整模型目录及逐模型强度清单，再接入每轮覆盖 | 当前显示暂不支持；版本待定 | ☐ |
 
 ## 冒烟剧本(第 6 步固定内容)

@@ -95,7 +95,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({  Button: ({ children, 
   MarkdownText: ({ text, omitHtml, streaming, variant }: { text: string; omitHtml: boolean; streaming: boolean; variant: string }) =>
     <div data-md={variant} data-omit-html={String(omitHtml)} data-streaming={String(streaming)}>{omitHtml ? text.replace(/<[^>]+>/g, '') : text}</div>,
   Pill: ({ onClick, children }: { onClick(): void; children: ReactNode }) => <button onClick={onClick}>{children}</button>,
-  TextShimmer: ({ children }: { children: ReactNode }) => <span>{children}</span>,
+  TextShimmer: ({ children, active }: { children: ReactNode; active?: boolean }) => <span data-shimmer={active || undefined}>{children}</span>,
   extractMarkdownPlainText: (text: string) => text
     .replace(/^\s*#{1,6}\s+/gm, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -126,6 +126,7 @@ afterEach(() => {
   cleanup()
   resetChatsPanelViewState()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -723,6 +724,25 @@ describe('ChatsPanel', () => {
     source.dispose()
   })
 
+  it('WorkflowsSource keeps the same snapshot reference across unchanged polls while a workflow is running (D49)', async () => {
+    vi.useFakeTimers()
+    let tick = NOW
+    const running = [{ runId: 'run-1', template: 't', startedAt: NOW - 5_000, currentStep: 'plan', steps: [] }]
+    const rpc: PanelRpc = { call: async () => ({ ok: true, value: { running, recent: [] } }) }
+    const notified: number[] = []
+    const source = new WorkflowsSource(rpc, 'session-x', true, () => tick)
+    const stop = source.subscribe(() => { notified.push(1) })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = source.getSnapshot()
+    expect(notified).toHaveLength(1)
+    tick += POLL_INTERVAL_MS
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(source.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+    stop()
+    source.dispose()
+  })
+
   it('refreshIfSubscribed reads history exactly once per manual refresh without starting a timer', async () => {
     vi.useFakeTimers()
     const call = vi.fn<PanelRpc['call']>(async () => ({ ok: true, value: { running: [], recent: [] } }))
@@ -1103,6 +1123,27 @@ describe('ChatsSource', () => {
     expect(source.getSnapshot()).not.toBe(first)
     expect(source.getSnapshot().chats[0]?.turnCount).toBe(7)
     expect(notified).toHaveLength(2)
+  })
+
+  it('keeps the same snapshot reference across unchanged polls while a turn is in flight, without backing off (D49)', async () => {
+    vi.useFakeTimers()
+    let tick = NOW
+    const inFlightRow = chat({ inFlight: { chatId: `chat-${UUID_A}`, message: 'm', startedAt: NOW - 5_000 } })
+    const rpc = mockRpc(() => [inFlightRow])
+    const notified: number[] = []
+    const source = new ChatsSource(rpc, () => tick, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    source.subscribe(() => { notified.push(1) })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = source.getSnapshot()
+    expect(notified).toHaveLength(1)
+    // Past QUIET_POLLS_BEFORE_BACKOFF unchanged polls: same reference, no extra notify, still polling fast.
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF + 2; i += 1) {
+      tick += POLL_INTERVAL_MS
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    }
+    expect(source.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+    expect(listCalls(rpc)).toBe(QUIET_POLLS_BEFORE_BACKOFF + 3)
   })
 
   it('backs off to the idle interval after a run of unchanged polls, and resets to fast on a change', async () => {
@@ -1705,7 +1746,11 @@ describe('ChatDetail (D18, D30 density)', () => {
     expect(row3.querySelector('[data-answer]')?.textContent).toBe('(无回答文本)')
     expect(within(row3).getByText('#3')).toBeTruthy()
     expect((row3.querySelector('[data-panel-card]') as HTMLElement).style.borderRadius).toBe('10px')
-    expect(container.querySelector('header')?.style.position).toBe('sticky')
+    const header = container.querySelector('header') as HTMLElement
+    const scrollBody = container.querySelector('[data-detail-scroll]') as HTMLElement
+    expect(header.style.position).not.toBe('sticky')
+    expect(scrollBody.contains(header)).toBe(false)
+    expect(scrollBody.contains(row3)).toBe(true)
     const row1 = container.querySelector('[data-seq="1"]') as HTMLElement
     expect(row1.querySelector('[data-tag]')).toBeNull()
     expect(row1.querySelector('[data-question]')?.textContent).toBe('问题1')
@@ -2028,6 +2073,101 @@ describe('ChatDetail (D18, D30 density)', () => {
     render(<ChatDetail {...injected} />)
     expect(screen.getByRole('alert').textContent).toBe('该会话已删除')
   })
+
+  it('splits the fixed header from an isolated scroll container, contains RunningWorkspace, and injects static code-banner and offscreen pause CSS (D49)', () => {
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 5_000, message: '执行任务' }
+    const { container } = render(<ChatDetail {...detailProps(fakeSource(detailSnapshot({ entries: [running, turn(1)] }))).injected} />)
+    const root = container.querySelector('section[data-chat-id]') as HTMLElement
+    const header = container.querySelector('header') as HTMLElement
+    const scrollBody = container.querySelector('[data-detail-scroll]') as HTMLElement
+    const liveSection = container.querySelector('[data-live-section]') as HTMLElement
+    const styleEl = container.querySelector('style') as HTMLStyleElement
+
+    expect(root.style.overflow).toBe('hidden')
+    expect(header.style.position).not.toBe('sticky')
+    expect(header.style.flex).toBe('0 0 auto')
+    expect(scrollBody.contains(header)).toBe(false)
+    expect(scrollBody.contains(styleEl)).toBe(false)
+    expect(scrollBody.style.overflowY).toBe('auto')
+    expect(scrollBody.style.isolation).toBe('isolate')
+    expect(scrollBody.contains(liveSection)).toBe(true)
+    expect(liveSection.style.contain).toBe('layout paint')
+    expect(styleEl.textContent).toContain('.md-code-block > :has(> [data-code-block-banner]) { position: static; z-index: auto; }')
+    expect(styleEl.textContent).toContain('[data-detail-offscreen]')
+    expect(styleEl.textContent).toContain('animation-play-state: paused !important')
+  })
+
+  it('pauses RunningWorkspace shimmer/animations and offscreen scroll updates via IntersectionObserver and tab visibility (D49)', () => {
+    let observerCallback: IntersectionObserverCallback | undefined
+    let observedRoot: Element | Document | null | undefined
+    const observedTargets: Element[] = []
+    const disconnect = vi.fn()
+    class MockIntersectionObserver {
+      constructor(cb: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        observerCallback = cb
+        observedRoot = options?.root
+      }
+      observe(el: Element) { observedTargets.push(el) }
+      unobserve() {}
+      disconnect() { disconnect() }
+      takeRecords() { return [] }
+      readonly root = null
+      readonly rootMargin = ''
+      readonly thresholds = []
+    }
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 5_000, message: '长任务' }
+    let push!: (frame: LiveFrame) => void
+    const follow: FollowTurn = (_id, _at, listener) => { push = listener; return () => {} }
+    const base = detailProps(fakeSource(detailSnapshot({ entries: [running, turn(1)] })), { followTurn: follow }).injected
+    const renderDetail = (visible: boolean) => <ChatDetail {...base} useTabInfo={() => ({ tab: { ...base.useTabInfo().tab, visible } })} />
+
+    const view = render(renderDetail(true))
+    const header = view.container.querySelector('header') as HTMLElement
+    const scrollBody = view.container.querySelector('[data-detail-scroll]') as HTMLElement
+    const liveSection = view.container.querySelector('[data-live-section]') as HTMLElement
+
+    expect(observedRoot).toBe(scrollBody)
+    expect(observedTargets).toContain(liveSection)
+    expect(header.hasAttribute('data-detail-offscreen')).toBe(false)
+    expect(liveSection.hasAttribute('data-detail-offscreen')).toBe(false)
+    expect(liveSection.querySelector('[data-shimmer="true"]')?.textContent).toBe(zh.liveRunning)
+
+    // Expand live viewport so we also cover LiveViewport's shimmer + scrollTop pause while offscreen.
+    fireEvent.click(screen.getByRole('button', { name: zh.runningExpand }))
+    const box = view.container.querySelector('[data-live-output]') as HTMLElement
+    expect(box.querySelector('[data-shimmer="true"]')?.textContent).toBe(zh.liveWaiting)
+    Object.defineProperties(box, { scrollHeight: { value: 300, configurable: true }, clientHeight: { value: 100 } })
+    box.scrollTop = 0
+
+    // Scroll RunningWorkspace out of the detail scrollport: animations pause, shimmer unmounts, scrollTop stays untouched.
+    act(() => {
+      observerCallback?.([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver)
+    })
+    expect(liveSection.hasAttribute('data-detail-offscreen')).toBe(true)
+    expect(liveSection.querySelector('[data-shimmer="true"]')).toBeNull()
+    expect(header.hasAttribute('data-detail-offscreen')).toBe(false)
+    act(() => { push({ kind: 'snapshot', seq: 1, text: '第一段输出', truncated: false }) })
+    expect(box.scrollTop).toBe(0)
+
+    // Scroll RunningWorkspace back into view: shimmer resumes and LiveViewport snaps to bottom.
+    act(() => {
+      observerCallback?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+    })
+    expect(liveSection.hasAttribute('data-detail-offscreen')).toBe(false)
+    expect(liveSection.querySelector('[data-shimmer="true"]')?.textContent).toBe(zh.liveRunning)
+    expect(box.scrollTop).toBe(300)
+
+    // Hide the whole tab: both header and live section mark offscreen so animations pause.
+    view.rerender(renderDetail(false))
+    expect(header.hasAttribute('data-detail-offscreen')).toBe(true)
+    expect(liveSection.hasAttribute('data-detail-offscreen')).toBe(true)
+    expect(liveSection.querySelector('[data-shimmer="true"]')).toBeNull()
+
+    view.unmount()
+    expect(disconnect).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('ChatDetailTitle', () => {
@@ -2214,6 +2354,26 @@ describe('ChatDetailSource snapshot stability (D21)', () => {
     gone = true
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(source.getSnapshot().status).toBe('gone')
+  })
+
+  it('keeps the same snapshot reference across unchanged polls while a running entry is present, without backing off (D49)', async () => {
+    vi.useFakeTimers()
+    let tick = NOW
+    const running: RunningItem = { kind: 'running', startedAt: NOW - 5_000, message: '执行中' }
+    const rpc = detailRpc({ turns: () => ({ ok: true, value: { chat: chat(), entries: [running, turn(1)], total: 1 } }) })
+    const notified: number[] = []
+    const source = new ChatDetailSource(rpc, 'chat-x', () => tick, POLL_INTERVAL_MS, IDLE_POLL_INTERVAL_MS)
+    source.subscribe(() => { notified.push(1) })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = source.getSnapshot()
+    expect(notified).toHaveLength(1)
+    for (let i = 0; i < QUIET_POLLS_BEFORE_BACKOFF + 2; i += 1) {
+      tick += POLL_INTERVAL_MS
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    }
+    expect(source.getSnapshot()).toBe(first)
+    expect(notified).toHaveLength(1)
+    expect(rpc.calls.filter(c => c[1] === 'acpResume/turns')).toHaveLength(QUIET_POLLS_BEFORE_BACKOFF + 3)
   })
 })
 

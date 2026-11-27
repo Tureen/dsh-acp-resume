@@ -65,8 +65,8 @@ export class WorkflowsSource implements Observable<WorkflowsSnapshot> {
       const next: WorkflowsSnapshot = { status: 'ready', running: this.poll ? value.running : [], recent: value.recent, fetchedAt: this.now() }
       const { fetchedAt: _old, ...was } = this.snapshot
       const { fetchedAt: _new, ...is } = next
-      // Unchanged content keeps the reference, except while a run is going (its time display follows fetchedAt).
-      if (next.running.length === 0 && JSON.stringify(was) === JSON.stringify(is)) return
+      // Unchanged content keeps the reference even while a run is active (`LiveElapsed` ticks locally; D49).
+      if (JSON.stringify(was) === JSON.stringify(is)) return
       this.publish(next)
     } catch {
       if (this.disposed || id !== this.latest || this.snapshot.status !== 'loading') return

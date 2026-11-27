@@ -752,7 +752,7 @@ Config `workflow` 的默认值由 `true` 改为 `false`:工作流是独立组件
 - 元信息行末尾追加 cwd 的最后一级目录名(如 `kiro-cli · 12 轮 · 3 分钟前 · dsh-acp-resume`),进行中时同样追加;完整路径仍在名称的悬停提示里。
 
 修订(2026-11-26,D47 详情页信息架构与视觉层级重设计):在保留 D30 既有成果(单行标题+`⋯` 菜单、无刷新按钮、元信息行末级 cwd、异常轮红/橙左竖条语义、不走压扁老路)与 D18 边界(不改落盘结构)的基础上,按 D47 总纲重做详情页:
-- 四区结构:粘性顶栏 → 独立的「在途轮工作区」(蓝 3px 左条、`TextShimmer`、1 秒计时、可折叠指令与 0.7.2 流式视口,`settled` 后无缝过渡为首条历史轮并保阅读连续性)→「近期轮次」(最近 3 条,总条数 ≤ 4 不折叠)→「更早的记录」(官方 `DisclosureRow`,透出时间跨度与异常数,展开后按自然日分节,底部接 `shownOf`/`loadMore`)。
+- 四区结构:固定顶栏（2026-11-27 按 D49 由粘性顶栏改为滚动容器外的固定块）→ 独立的「在途轮工作区」(蓝 3px 左条、`TextShimmer`、1 秒计时、可折叠指令与 0.7.2 流式视口,`settled` 后无缝过渡为首条历史轮并保阅读连续性)→「近期轮次」(最近 3 条,总条数 ≤ 4 不折叠)→「更早的记录」(官方 `DisclosureRow`,透出时间跨度与异常数,展开后按自然日分节,底部接 `shownOf`/`loadMore`)。
 - 单轮结构化卡片:全宽 10px 圆角卡片,卡顶恢复 `#seq`、异常 `Tag` 与混合绝对时间+耗时(由已有 `startedAt`/`at` 计算);卡内上段为 `--dsw-specific-bubble` 指令块,下段为主底面回执区。
 - 官方 Markdown 清洗与安全渲染:复用 `@deepseek-ai/dsh-client-ui-primitives`,折叠态经 `extractMarkdownPlainText` 去语法显示 2+3 行;展开态指令(限高 160px)与回执均经 `MarkdownText(variant="body", omitHtml=true)` 安全渲染并配 `useClipboardCopy`,展开后点击正文选字不误触收起。
 - 零落盘预览增强:`src/panel.ts` 的 `PREVIEW_CHARS` 放宽至 320,并在 `TurnSummary` 上增加运行时可选 `outputLines?` 修复「全文 · N 行」错算预览行数问题,旧宿主优雅退化为「展开全文」。
@@ -1095,7 +1095,7 @@ Codex 显示「此后端暂不支持会话级切换」。后续单独实现完�
   - **Step 4(待实施)**:工作流、会话卡与单会话设置对齐,按注意力顺序重排主面板区块(同步修订 D29)。
   - **Step 5(待实施)**:团队派工视图本体(`pool.ts` 零存储投影、`TeamSection`、互斥分流、`PREVIEW_CHARS` 320)。
   - **Step 6 已落地**（2026-11-26）：详情时间与 title 使用共享格式，折叠清洗 Markdown，展开按 body 渲染并省略 HTML。
-  - **Step 7 已落地**（2026-11-26）：单轮全宽卡、粘性身份栏、展开正文选字与复制；沿用一次只展开一条。
+  - **Step 7 已落地**（2026-11-26；2026-11-27 按 D49 修订）：单轮全宽卡、固定身份栏（原粘性顶栏拆出滚动容器外以消除 GPU 瓦片闪白与顶缝漏字）、展开正文选字与复制；沿用一次只展开一条。
   - **Step 8 已落地**（2026-11-26）：已加载历史超过四条时仅常显最近三条，更早记录按日分节，展开后可继续加载。
   - **Step 9 已落地**（2026-11-26）：设计稿 §5.4 的自动订阅由 D46 按需查看约束覆盖。工作区默认可见，流式视口默认折叠；上翻超过 24px 暂停跟随，可点回到底部。设计稿 §5.1 的“刷新必然读到”不成立：按 D18，日志追加可失败且 purge 后不补写。等待期间保留末帧，按 startedAt 匹配后在同一帧交接，仅当前主动展开的视口继承展开态；3 秒未匹配提示缺记录，绝不误开其他轮。
 
@@ -1128,5 +1128,30 @@ rc.5 探针与源码核实得出两条硬边界：
   - `pool.chatOptions(chatId)` 对已释放会话返回 `supported: true, canChange: true, reason: 'released'`，选项清单依次取自同后端其他活连接、后端内存缓存；均无则返回 `{ backend, supported: true, canChange: true, choicesUnknown: true, reason: 'released' }`（面板显示「清单未知，将使用缺省值」，不报错）。
   - `setChatModel` / `setChatEffort` 对已释放会话不启动进程、不改注册表，直接写入重连覆盖；下次 `openLoad`（或降级 `openNew`）先应用有效缺省配置，再依次叠加该会话的重连覆盖。
   - 面板单会话提示拆清状态：运行中「进行中，结束后可改。」、已释放可改「下次重连时生效。」、已释放无清单「清单未知，将使用缺省值。」、活跃空闲「仅此会话。显式修改会在后续重连时保留；不改则沿用缺省配置。」、Codex「此后端暂不支持会话级切换。」。`TeamSection` 对已释放角色卡同样挂载 `ChatSettings`。
+
+## D49 详情页滚动容器拆分、层隔离与在途态快照稳定（2026-11-27，0.7.6，待真机确认）
+
+### 动机与像素级证据
+
+用户真机录屏反馈 ACP 详情页（`ChatDetail`）存在高频闪现：在有在途轮且向下滚动阅读已展开的长 Markdown 历史轮（含表格与 `bash` 代码块）时，正文区与下方历史卡片以约 **7.8 次/秒（3.334 秒内 26 次，6–10 Hz）** 整块闪白再闪回，期间无任何用户交互、无布局跳动、无卡片重排或加载态闪烁。逐帧分析给出两条指向浏览器合成器 GPU 瓦片（Raster Tile）失效的像素级证据：
+
+1. **跨秒固定像素行的水平裁切**：在 `1.467s`、`2.434s`、`2.500s` 三帧中，正文首行字符均被同一水平像素行拦腰切开（上半截锐利黑色、下半截及下方全白）——React 卸载重挂或 CSS `opacity` 无法横向切半单行文字，只有 Chromium 滚动内容层（ScrollingContentsLayer）瓦片网格在下方瓦片丢弃时才会产生此特征。
+2. **不闪区域精确对应独立合成层**：sticky `<header>`、`CodeBlock` 的 sticky `.bannerWrap`（`bash` + 工具图标）与 `.tableScroll`（`overflow-x: auto`）全程保持锐利，而共享同一滚动内容层的 `#7` 段落/列表/`<pre>`/`收起`、`#6`、`#5` 与 `更早的记录` 同步闪白。
+
+同时录屏还核实了两处布局穿帮：`styles.root` 的 `padding: 16` 叠加 `header` 的 `position: sticky; top: 0` 导致头部上方 16px 缝隙透出滚上去的表格残影，且 `<header>` 的 `zIndex: 1` 低于 `CodeBlock` `.bannerWrap` 的 `z-index: 6`。
+
+### 决策与取舍
+
+纯渲染层修复（不触碰 `run.ts` / `pool.ts` / `panel.ts` / `live-buffer.ts`、不新增生产依赖）：
+
+- **拆分固定头部与独立隔离滚动容器（修订 D30 / D47）**：对齐官方 `TextPreview.module.css`，`ChatDetail` 外层 `<section>` 改为 `overflow: hidden` 的非滚动 flex 列；`<header>` 改为 `flex: none` 的普通固定块（不再 `position: sticky`），彻底消除顶部 16px 漏字与 `zIndex` 倒挂；正文区移入独立 `<div data-detail-scroll>`（`flex: 1; minHeight: 0; overflowY: auto; isolation: isolate`），`<MarkdownCompactStyle />` 留在非滚动外层。
+- **在途工作区绘制隔离与离屏停动画**：`<RunningWorkspace>` 根 `<section data-live-section>` 增加 `contain: 'layout paint'`；以正文滚动容器为 `root` 挂载 `IntersectionObserver`，滚出视口或页签隐藏（`tab.visible === false`）时标记 `data-detail-offscreen`，一方面经全局规则 `animation-play-state: paused !important` 暂停内部 `StateDot`（60fps `stroke-dasharray` 主线程重绘），另一方面向 `TextShimmer` 传入 `active={false}` 直接卸载其 `mask-image` + `steps(48)` 遮罩层，同时暂停 `LiveViewport` 在离屏期间的 `scrollTop` 写入（回到视口立即恢复并回底）；页签隐藏时 `<header>` 同步标记 `data-detail-offscreen` 暂停头部 `StateDot`。
+- **取消详情页代码块 `.bannerWrap` 的二级 sticky**：在 `.acp-detail-md` 中采用官方 `MarkdownText.module.css` compact 模式的同款规则 `.acp-detail-md .md-code-block > :has(> [data-code-block-banner]) { position: static; z-index: auto; }`。理由：① 彻底消除滚动容器内剩余的二级 `position: sticky` 合成层分裂（视频中唯一浮在空白瓦片之上的即 `.bannerWrap`）；② 详情页代码块位于圆角 `PanelCard` 内（非全宽 `--dsw-alias-bg-base`），吸顶横幅底色与卡片不协调且在 160px 限高指令框内观感差；③ 保留语言标签、自动换行与复制按钮全部功能，零功能损失。
+- **消除在途态 5 秒无意义全量重渲染**：`detail-source.ts`、`chats-source.ts`、`workflows-source.ts` 此前在有在途轮/工作流时跳过快照相等检查、每 5 秒强制发新快照（早于 `LiveElapsed` 本地 1 秒时钟的历史残留），反而导致每 5 秒整页重渲染并重置 `LiveElapsed` 定时器。改为在途态内容未变时**保持快轮询间隔（不退避至 30s），但复用原快照引用、不触发重渲染**。
+
+### 边界与验收说明（待真机确认）
+
+本方案基于录屏像素级证据与 Chromium 合成器机制推断根因；jsdom 单元测试可严格锁定 DOM 分层结构、`isolation`/`contain` 样式、代码块静态化 CSS、离屏 `IntersectionObserver` 暂停逻辑与数据源快照引用稳定性，但 **jsdom 无法复现或断言真实 Electron/Chromium macOS Metal/Skia GPU 瓦片重绘**。最终消除约 8Hz 闪白的效果**待真机录屏对比确认**。
+
 
 

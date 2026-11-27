@@ -1,7 +1,7 @@
-/** ACP resource detail tab: session actions, live-to-log handoff and grouped Markdown history (D18/D30/D46/D47).
+/** ACP resource detail tab: fixed header, isolated scrollport, live-to-log handoff and grouped Markdown history (D18/D30/D46/D47/D49).
  * @module dsh-acp-resume/client/ChatDetail
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular, Button, Menu, Modal, Tag, type MenuEntry, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import { detailPreview, DetailMarkdown } from './detail-markdown.tsx'
 import { DisclosureRow, PanelCard, StatusRail, TextShimmer, Pill, MarkdownCompactStyle, cleanPreview, useClipboardCopy } from './panel-chrome.tsx'
@@ -22,13 +22,18 @@ export type ChatDetailProps = ChatDetailInjected & {
 }
 
 const styles = {
-  root: { display: 'flex', flexDirection: 'column', gap: 12, padding: 16, height: '100%', overflowY: 'auto', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-1)' },
+  root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-1)' },
 
-  // Header: the identity line, with the actions menu at its end.
+  // Fixed header above the scrollport: avoids sticky + padding top bleed and scroll-layer compositing conflicts (D49).
+  headerBar: { flex: 'none', padding: '16px 16px 8px', background: 'var(--dsw-alias-bg-layer-1)' },
   header: { display: 'flex', alignItems: 'center', gap: 8 },
   identity: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 },
   heading: { minWidth: 0, margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   meta: { display: 'flex', alignItems: 'center', gap: 6, margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
+
+  // Dedicated isolated scrollport below the header (mirrors official TextPreview `.body` + `isolation: isolate`).
+  scrollBody: { flex: 1, minHeight: 0, overflowY: 'auto', isolation: 'isolate', display: 'flex', flexDirection: 'column', gap: 12, padding: '4px 16px 16px', boxSizing: 'border-box' },
+  liveSection: { contain: 'layout paint' },
 
   error: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' },
   notice: { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-secondary)' },
@@ -36,7 +41,6 @@ const styles = {
   subheading: { margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
   sectionCount: { fontSize: 12, fontWeight: 400, color: 'var(--dsw-alias-label-tertiary)' },
 
-  sticky: { position: 'sticky', top: 0, zIndex: 1, background: 'var(--dsw-alias-bg-layer-1)', paddingBlock: 6 },
   list: { display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' },
   row: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px' },
   bubble: { background: 'var(--dsw-specific-bubble)', padding: 8, borderRadius: 8, minWidth: 0 },
@@ -179,12 +183,12 @@ function TurnRow({ item, now, open, full, onToggle, t }: TurnRowProps): ReactNod
 
 type TextFrame = Extract<LiveFrame, { kind: 'snapshot' }>
 
-function LiveViewport({ frame, settling, t }: { frame?: TextFrame; settling: boolean; t: PanelTranslate }) {
+function LiveViewport({ frame, settling, active, t }: { frame?: TextFrame; settling: boolean; active: boolean; t: PanelTranslate }) {
   const box = useRef<HTMLDivElement>(null)
   const [paused, setPaused] = useState(false)
   useLayoutEffect(() => {
-    if (!paused && box.current) box.current.scrollTop = box.current.scrollHeight
-  }, [paused, frame, settling])
+    if (active && !paused && box.current) box.current.scrollTop = box.current.scrollHeight
+  }, [active, paused, frame, settling])
   return <div style={{ position: 'relative' }}>
     {frame?.truncated && <p style={styles.aside}>{t('liveOutput')} · {t('liveTail')}</p>}
     <div ref={box} data-live-output style={{ minHeight: 72, maxHeight: 360, overflowY: 'auto', overflowWrap: 'anywhere' }}
@@ -193,21 +197,39 @@ function LiveViewport({ frame, settling, t }: { frame?: TextFrame; settling: boo
         setPaused(el.scrollHeight - el.scrollTop - el.clientHeight > 24)
       }}>
       {frame?.text ? <DetailMarkdown text={frame.text} streaming={!settling} t={t} />
-        : !settling && <TextShimmer active>{t('liveWaiting')}</TextShimmer>}
+        : !settling && <TextShimmer active={active}>{t('liveWaiting')}</TextShimmer>}
     </div>
     {paused && <Pill style={{ position: 'absolute', right: 8, bottom: 4 }} onClick={() => setPaused(false)}>{t('liveBottom')}</Pill>}
   </div>
 }
 
-function RunningWorkspace({ item, now, t, chatId, follow, signal, open, onToggle, noLongerRunning }: {
+function RunningWorkspace({ item, now, t, chatId, follow, signal, scrollRootRef, tabVisible, open, onToggle, noLongerRunning }: {
   item: RunningItem; now: number; t: PanelTranslate; chatId: string; follow?: FollowTurn; signal?: AbortSignal
+  scrollRootRef: RefObject<HTMLDivElement>; tabVisible: boolean
   open: boolean; onToggle(): void; noLongerRunning: boolean
 }) {
+  const sectionRef = useRef<HTMLElement>(null)
+  const [inView, setInView] = useState(true)
   const [promptOpen, setPromptOpen] = useState(false)
   const [frame, setFrame] = useState<TextFrame>()
   const [stage, setStage] = useState<'watching' | 'settled' | 'error'>('watching')
   const [missing, setMissing] = useState(false)
   const settling = noLongerRunning || stage === 'settled'
+  const liveVisible = tabVisible && inView
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return
+    const target = sectionRef.current
+    if (!target) return
+    const observer = new IntersectionObserver(
+      entries => {
+        const latest = entries.at(-1)
+        if (latest) setInView(latest.isIntersecting)
+      },
+      { root: scrollRootRef.current },
+    )
+    observer.observe(target)
+    return () => { observer.disconnect() }
+  }, [scrollRootRef])
   useEffect(() => {
     if (!open || !follow || settling || signal?.aborted) return
     let active = true
@@ -229,11 +251,11 @@ function RunningWorkspace({ item, now, t, chatId, follow, signal, open, onToggle
     const timer = setTimeout(() => setMissing(true), 3000)
     return () => clearTimeout(timer)
   }, [settling])
-  return <section data-live-section="" data-running="" aria-label={t('liveOutput')}>
+  return <section ref={sectionRef} style={styles.liveSection} data-live-section="" data-running="" data-detail-offscreen={!liveVisible ? '' : undefined} aria-label={t('liveOutput')}>
     <StatusRail state="running" style={{ ...styles.row, borderRadius: 10, borderTop: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-card-fill)' }}>
       <div style={styles.line}>
         <ChatStateDot state="ongoing" />
-        {missing ? <span role="status">{t('liveMissing')}</span> : <TextShimmer active>{t(settling ? 'liveSettling' : 'liveRunning')}</TextShimmer>}
+        {missing ? <span role="status">{t('liveMissing')}</span> : <TextShimmer active={liveVisible}>{t(settling ? 'liveSettling' : 'liveRunning')}</TextShimmer>}
         {!settling && <span title={formatTurnTimeTitle(t, item, now)}><LiveElapsed startedAt={item.startedAt} now={now} t={t} /></span>}
       </div>
       <div style={styles.bubble}>
@@ -244,7 +266,7 @@ function RunningWorkspace({ item, now, t, chatId, follow, signal, open, onToggle
       {(follow || open) && <Button variant="ghost" size="sm" aria-expanded={open} aria-label={t(open ? 'runningCollapse' : 'runningExpand')}
         onClick={() => { if (open) { setFrame(undefined); setStage('watching') }; onToggle() }}>{t('liveOutput')}</Button>}
       {open && stage === 'error' && <p role="status">{t('liveError')}</p>}
-      {open && (follow || settling) && (stage !== 'error' || frame) && <LiveViewport frame={frame} settling={settling} t={t} />}
+      {open && (follow || settling) && (stage !== 'error' || frame) && <LiveViewport frame={frame} settling={settling} active={liveVisible} t={t} />}
     </StatusRail>
   </section>
 }
@@ -330,6 +352,7 @@ function EarlierHistory({ items, unloaded, footer, renderItem, open, toggle, now
 
 interface ViewProps {
   readonly tabSignal?: AbortSignal
+  readonly tabVisible: boolean
   readonly follow?: FollowTurn
   readonly chatId: string
   readonly source: DetailSource
@@ -339,8 +362,9 @@ interface ViewProps {
   readonly t: PanelTranslate
 }
 
-function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSignal, t }: ViewProps): ReactNode {
+function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSignal, tabVisible, t }: ViewProps): ReactNode {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
+  const scrollRef = useRef<HTMLDivElement>(null)
   // One open turn at a time.
   const [openSeq, setOpenSeq] = useState<number | undefined>(undefined)
   const [fulls, setFulls] = useState<Readonly<Record<number, FullState>>>({})
@@ -378,10 +402,12 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   if (snapshot.status === 'gone') {
     return (
       <section style={styles.root} aria-label={short}>
-        <div style={styles.centered}>
-          <p style={styles.subheading}>{t('goneTitle')}</p>
-          <p style={styles.notice}>{t('goneBody')}</p>
-          <Button size="sm" variant="outline" onClick={closeTab}>{t('closeTab')}</Button>
+        <div style={styles.scrollBody} data-detail-scroll="">
+          <div style={styles.centered}>
+            <p style={styles.subheading}>{t('goneTitle')}</p>
+            <p style={styles.notice}>{t('goneBody')}</p>
+            <Button size="sm" variant="outline" onClick={closeTab}>{t('closeTab')}</Button>
+          </div>
         </div>
       </section>
     )
@@ -423,7 +449,7 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
   return (
     <section style={styles.root} aria-label={t('viewDetail', { chatId: short })} data-chat-id={chatId}>
       <MarkdownCompactStyle />
-      <header style={styles.sticky}>
+      <header style={styles.headerBar} data-detail-offscreen={!tabVisible ? '' : undefined}>
         <div style={styles.header}>
           <div style={styles.identity}>
             {chat === undefined ? null : <ChatStateDot state={chatDotState(chat, running !== undefined)} />}
@@ -447,22 +473,25 @@ function ChatDetailView({ chatId, source, close, purge, closeTab, follow, tabSig
             </p>
           )}
       </header>
-      {snapshot.status === 'error' && snapshot.error !== undefined
-        ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
-        : null}
-      {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
-      {workspaces.map(item =>
-        <RunningWorkspace key={item.startedAt} item={item} t={t} now={now} chatId={chatId} follow={follow} signal={tabSignal}
-          noLongerRunning={item.startedAt !== running?.startedAt} open={item.startedAt === viewed?.startedAt}
-          onToggle={() => setViewed(current => current?.startedAt === item.startedAt ? undefined : item)} />)}
-      <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
-      {snapshot.status !== 'loading' && !viewed && !running && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
-      {newestFirst.length === 0 ? null : (
-        <ul style={styles.list}>
-          {recent.map(renderItem)}
-        </ul>
-      )}
-      {folded ? <EarlierHistory open={earlierOpen || matchInEarlier} toggle={toggleEarlier} items={newestFirst.slice(RECENT_VISIBLE)} unloaded={unloaded} footer={footer} renderItem={renderItem} now={now} t={t} /> : footer}
+      <div ref={scrollRef} style={styles.scrollBody} data-detail-scroll="">
+        {snapshot.status === 'error' && snapshot.error !== undefined
+          ? <p role="alert" style={styles.error}>{t('loadFailed', { message: snapshot.error })}</p>
+          : null}
+        {actionError === undefined ? null : <p role="alert" style={styles.error}>{actionError}</p>}
+        {workspaces.map(item =>
+          <RunningWorkspace key={item.startedAt} item={item} t={t} now={now} chatId={chatId} follow={follow} signal={tabSignal}
+            scrollRootRef={scrollRef} tabVisible={tabVisible}
+            noLongerRunning={item.startedAt !== running?.startedAt} open={item.startedAt === viewed?.startedAt}
+            onToggle={() => setViewed(current => current?.startedAt === item.startedAt ? undefined : item)} />)}
+        <h3 style={styles.subheading}>{t('turnsHeading')}</h3>
+        {snapshot.status !== 'loading' && !viewed && !running && newestFirst.length === 0 ? <p style={styles.empty}>{t('noTurns')}</p> : null}
+        {newestFirst.length === 0 ? null : (
+          <ul style={styles.list}>
+            {recent.map(renderItem)}
+          </ul>
+        )}
+        {folded ? <EarlierHistory open={earlierOpen || matchInEarlier} toggle={toggleEarlier} items={newestFirst.slice(RECENT_VISIBLE)} unloaded={unloaded} footer={footer} renderItem={renderItem} now={now} t={t} /> : footer}
+      </div>
       <Modal open={confirming !== undefined} onClose={() => { setConfirming(undefined) }} closeLabel={t('dismiss')}
         title={t(confirming === 'release' ? 'releaseConfirmTitle' : 'confirmTitle', { chatId: short })}
         description={t(confirming === 'release' ? 'releaseConfirmBody' : 'confirmBody')}
@@ -490,10 +519,11 @@ export function ChatDetail({ useTabInfo, features, sourceFor, close, purge, foll
   const { tab } = useTabInfo()
   const chatId = parseChatAddress(tab.contentId)
   if (chatId === undefined) {
-    return <section style={styles.root}><p role="alert" style={styles.error}>{t('goneTitle')}</p></section>
+    return <section style={styles.root}><div style={styles.scrollBody} data-detail-scroll=""><p role="alert" style={styles.error}>{t('goneTitle')}</p></div></section>
   }
+  const tabVisible = tab.visible !== false
   return <PanelFeatureGate source={features} t={t}>{() =>
-    <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} tabSignal={tab.signal} follow={tab.visible === false ? undefined : followTurn} close={close} purge={purge}
+    <ChatDetailView key={chatId} chatId={chatId} source={sourceFor(chatId)} tabSignal={tab.signal} tabVisible={tabVisible} follow={tabVisible ? followTurn : undefined} close={close} purge={purge}
       closeTab={() => { tab.actions.close() }} t={t} />
   }</PanelFeatureGate>
 }

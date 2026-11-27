@@ -25,11 +25,11 @@ function message(error: unknown): string {
 /**
  * Observable detail data of one chat plus its on-demand entry reads.
  *
- * Snapshot reference is stable between content changes (D21): a poll whose
- * `turns` payload equals the current snapshot keeps the existing object, except
- * while a running prompt is present: then the existing poll cadence publishes a
- * new `fetchedAt` so its duration advances without a separate UI timer. Polling
- * backs off to {@link IDLE_POLL_INTERVAL_MS} after a run of unchanged polls and
+ * Snapshot reference is stable between content changes (D21/D49): a poll whose
+ * `turns` payload equals the current snapshot keeps the existing object even
+ * while a running prompt is present (`LiveElapsed` owns the 1-second timer),
+ * while holding the fast poll cadence until the turn settles. Polling backs off
+ * to {@link IDLE_POLL_INTERVAL_MS} after a run of unchanged idle polls and
  * resets to fast on any change or on `loadMore`.
  */
 export class ChatDetailSource implements DetailSource {
@@ -136,10 +136,19 @@ export class ChatDetailSource implements DetailSource {
     return this.disposed || id !== this.latest
   }
 
-  /** Publish only when content changed; a running prompt refreshes its duration at the existing poll cadence. */
+  /**
+   * Publish only when content changed (D21/D49). While a running prompt is
+   * present, keep the fast poll cadence so settlement lands promptly, but do
+   * not emit duplicate snapshots (`LiveElapsed` owns the 1-second display).
+   */
   private publish(next: DetailSnapshot): void {
     const hasRunning = next.entries.some(entry => entry.kind === 'running')
-    if (!hasRunning && detailSnapshotEqual(this.snapshot, next)) {
+    if (detailSnapshotEqual(this.snapshot, next)) {
+      if (hasRunning) {
+        this.quietPolls = 0
+        if (this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
+        return
+      }
       this.quietPolls += 1
       if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
         this.arm(this.idleIntervalMs)

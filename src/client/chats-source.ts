@@ -68,15 +68,15 @@ function message(error: unknown): string {
 /**
  * Observable panel data plus its commands.
  *
- * The snapshot reference is stable between content changes (D21): a poll whose
+ * The snapshot reference is stable between content changes (D21/D49): a poll whose
  * payload equals the current snapshot keeps the existing object, so
  * `useSyncExternalStore` sees no change and the panel does not re-render. Only
  * a real change (or a status flip) publishes a new reference, and `fetchedAt`
  * then marks that change — it does not advance on unchanged polls. While a
- * prompt runs, the existing poll cadence publishes its current snapshot so the
- * displayed duration advances; it adds no timer or higher-frequency refresh.
- * fast while the data is moving and backs off to {@link IDLE_POLL_INTERVAL_MS}
- * after {@link QUIET_POLLS_BEFORE_BACKOFF} unchanged polls; a change or a
+ * prompt runs, the source keeps the fast poll cadence so settlement is picked up
+ * promptly without emitting duplicate snapshots (`LiveElapsed` ticks locally).
+ * Polling backs off to {@link IDLE_POLL_INTERVAL_MS} after
+ * {@link QUIET_POLLS_BEFORE_BACKOFF} unchanged idle polls; a change or a
  * command resets it to fast.
  */
 export class ChatsSource implements Observable<ChatsSnapshot> {
@@ -200,10 +200,19 @@ export class ChatsSource implements Observable<ChatsSnapshot> {
     return this.disposed || id !== this.latest
   }
 
-  /** Publish only when content changed, except active prompt duration refreshes at the existing poll cadence. */
+  /**
+   * Publish only when content changed (D21/D49). While a turn is in flight,
+   * keep the fast poll cadence without publishing duplicate snapshots
+   * (`LiveElapsed` ticks locally every second).
+   */
   private publish(next: ChatsSnapshot): void {
     const hasInFlight = next.chats.some(chat => chat.inFlight !== undefined)
-    if (!hasInFlight && listSnapshotEqual(this.snapshot, next)) {
+    if (listSnapshotEqual(this.snapshot, next)) {
+      if (hasInFlight) {
+        this.quietPolls = 0
+        if (this.listeners.size > 0 && this.currentInterval !== this.intervalMs) this.arm(this.intervalMs)
+        return
+      }
       this.quietPolls += 1
       if (this.listeners.size > 0 && this.quietPolls >= QUIET_POLLS_BEFORE_BACKOFF && this.currentInterval !== this.idleIntervalMs) {
         this.arm(this.idleIntervalMs)

@@ -225,6 +225,8 @@ const MARKDOWN_COMPACT_CSS = `
 .${MARKDOWN_COMPACT_CLASS} > :last-child { margin-bottom: 0; }
 .${MARKDOWN_COMPACT_CLASS} h1, .${MARKDOWN_COMPACT_CLASS} h2, .${MARKDOWN_COMPACT_CLASS} h3 { font-size: 14px; margin: 0.7em 0 0.35em; }
 .${MARKDOWN_COMPACT_CLASS} p, .${MARKDOWN_COMPACT_CLASS} ul, .${MARKDOWN_COMPACT_CLASS} ol { margin: 0.45em 0; }
+.${MARKDOWN_COMPACT_CLASS} .md-code-block > :has(> [data-code-block-banner]) { position: static; z-index: auto; }
+[data-detail-offscreen] *, [data-detail-offscreen] *::before, [data-detail-offscreen] *::after { animation-play-state: paused !important; }
 `
 
 /** Injects scoped typography rules for `.acp-detail-md`. */
