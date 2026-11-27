@@ -1,4 +1,4 @@
-/** One demand-driven Remote stream for expanded viewers of the same owner's chat turn. @module */
+/** One demand-driven Remote stream for expanded viewers of the same viewing session and chat turn. @module */
 import type { InvocationDescriptor, TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 import type { LiveFrame } from '../live-buffer.ts'
 
@@ -81,7 +81,11 @@ export class LiveSource {
         publish(frame)
         if (frame.kind === 'settled') { this.settled(stream.chatId); return }
       }
-    } catch { /* Closing an old generation is expected. */ }
-    if (!signal.aborted) publish({ kind: 'error' })
+      if (!signal.aborted) throw new Error('watch ended before the settled frame')
+    } catch (error) {
+      if (signal.aborted) return
+      console.warn(`dsh-acp-resume: live output stream failed for ${stream.chatId}`, error)
+      publish({ kind: 'error' })
+    }
   }
 }

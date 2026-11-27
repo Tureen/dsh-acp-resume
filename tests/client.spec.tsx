@@ -2363,6 +2363,28 @@ describe('live detail body (D46)', () => {
     expect(stop).toHaveBeenCalledTimes(3)
   })
 
+  it('warns only on unexpected stream failure and renders the localized fallback without the raw cause', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const cause = new Error('fixture transport disconnected')
+    let opens = 0
+    const live = new LiveSource(async function* (_, __, signal) {
+      if (++opens === 1) await new Promise<void>((_, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      throw cause
+    }, vi.fn())
+    const follow: FollowTurn = (id, start, fn) => live.subscribe(id, TEST_SESSION, start, fn)
+    const { injected } = detailProps(fakeSource(detailSnapshot({ entries: [running] })), { followTurn: follow })
+    const { container } = render(<ChatDetail {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: zh.runningExpand }))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: zh.runningCollapse })))
+    expect(warn).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: zh.runningExpand }))
+    expect(await screen.findByText(zh.liveError)).toBeTruthy()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(`dsh-acp-resume: live output stream failed for chat-${UUID_A}`, cause)
+    expect(container.textContent).not.toContain(cause.message)
+  })
+
   it('pauses following while scrolled up and replaces the stream with the logged turn on settled', async () => {
     let snapshot = detailSnapshot({ entries: [running] })
     const logReady = Promise.withResolvers<void>()

@@ -61,6 +61,7 @@
 
 | 原文片段 | 含义 | 怎么改 |
 |---|---|---|
+| 实时输出不可用。可折叠后重新展开。 | 实时流未能建立或在结算前中断。0.7.4 已修复跨 DSH 会话看得到历史却读不到实时输出的问题。 | 在已有 chat 的详情中折叠后再展开；仍失败时在客户端控制台查看 `live output stream failed` 的具体原因。 |
 | pass either chatId or role, not both / pass chatId or role / chatId is required | 目标无效 | 按 schema 指定一个目标。 |
 | role is not available: the roles feature is off | 角色开关关闭 | 用 chatId 或明确开启 roles。 |
 | role needs a calling DSH session / roles need a calling session / acp_workflow needs a calling DSH session | 缺会话身份 | 在会话内调，或用 chatId 续聊。 |

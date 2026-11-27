@@ -259,14 +259,39 @@ describe('AcpResumePanelService', () => {
     expect(pool.chatInfo(chatId)?.active).toBe(true)
   })
 
-  it('checks the viewing owner before opening a live stream, and settles immediately for an idle chat', async () => {
+  it('streams an existing in-flight chat to a DSH session other than its owner', async () => {
+    const dir = tempDir('acp-panel-cross-session-')
+    const gate = join(dir, 'next')
+    const { pool } = makePool({ MOCK_TEXT: 'worker output', MOCK_NEXT_CHUNK_GATE: gate })
+    const { panel } = await mountPanel(pool)
+    const { chatId } = await pool.start(dir, undefined, { ownerSessionId: 'owner-A' })
+    const firstChunk = Promise.withResolvers<void>()
+    const pending = pool.send(chatId, 'work', undefined, { onText: () => firstChunk.resolve() })
+    const controller = new AbortController()
+    try {
+      await firstChunk.promise
+      const stream = panel.watch(chatId, 'viewer-B', controller.signal)[Symbol.asyncIterator]()
+      expect((await stream.next()).value).toMatchObject({ kind: 'snapshot', text: 'worker output' })
+      writeFileSync(gate, '')
+      expect((await stream.next()).value).toMatchObject({ kind: 'snapshot', text: 'worker output + next' })
+      writeFileSync(gate + '.finish', '')
+      expect((await stream.next()).value).toMatchObject({ kind: 'settled' })
+      expect((await stream.next()).done).toBe(true)
+    } finally {
+      controller.abort()
+      writeFileSync(gate, '')
+      writeFileSync(gate + '.finish', '')
+      await pending
+    }
+  })
+
+  it('rejects unknown chats and settles immediately for an idle chat', async () => {
     const { pool } = makePool()
     const { panel } = await mountPanel(pool)
     const { chatId } = await pool.start(process.cwd(), undefined, { ownerSessionId: 'owner' })
     const open = (id: string, owner: string) => panel.watch(id, owner, new AbortController().signal)[Symbol.asyncIterator]()
     expect(remoteMethods(panel).find(row => row.method === 'watch')?.mode).toBe('stream')
-    await expect(open(chatId, 'other').next()).rejects.toThrow('belongs to another DSH session')
-    await expect(open('missing', 'owner').next()).rejects.toThrow('unknown chat')
+    await expect(open('missing', 'other').next()).rejects.toMatchObject({ code: 'acp-resume/unknown-chat' })
     const it = open(chatId, 'owner')
     expect(await it.next()).toMatchObject({ value: { kind: 'settled', seq: 0 } })
     expect((await it.next()).done).toBe(true)

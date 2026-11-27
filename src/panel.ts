@@ -262,10 +262,11 @@ export class AcpResumePanelService extends TypertRemoteService {
     return entry
   }
 
-  /** SRC reflection treats a bare @Remote as unary. Mark watch explicitly for the stream carrier. */
+  /** Read-only like turns/turn. Keep sessionId in the SRC wire signature for existing viewers. */
+  // A bare @Remote is unary under SRC reflection; watch requires the stream carrier.
   @Remote({ mode: 'stream' })
   async *watch(chatId: string, sessionId: string, signal: AbortSignal): AsyncIterable<LiveFrame> {
-    const id = this.ownedChat(chatId, sessionId)
+    const id = this.knownChat(chatId)
     if (signal.aborted) return
     const live = this.pool.subscribeLive(id)
     signal.addEventListener('abort', live.close, { once: true })

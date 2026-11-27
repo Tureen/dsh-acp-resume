@@ -39,7 +39,7 @@ src/
   workflow-log.ts D29:按会话的工作流运行日志 workflows/<ownerSessionId>.jsonl(run-start + run-end 摘要，不存原文与 params;同 D18 纪律)
   workflow-record.ts D27:向调用会话写官方 tool-workflow/* 四种进度记录(仅顶层调用;写失败告警一次后停写)
   turn-log.ts    按轮日志 `turns/<chatId>.jsonl`(追加、截断、裁剪、容错读、删除;写失败只告警,D18)
-  panel.ts       D46:watch 是带 owner 校验与取消信号的 Remote 流。D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
+  panel.ts       D46:watch 是按 chatId 存在性校验的只读 Remote 流，支持取消。D44:close/purge/chatOptions/setChatModel/setChatEffort 核对 seat sessionId 与 owner。面板 host 半:`acpResume/list|close|purge|turns|turn|usage|workflows|backends|checkBackends`；状态只读，手动重查复用启动检测(D31)；另有独立的 `acpResumeInfo/features` 返回开关和创建工具名(D35)，关闭持久会话时仍可读
 - `src/client/panel-time.ts` / `panel-chrome.tsx`（D47）：全侧栏共享纯时间/耗时格式化与共享视觉原语（左侧 3px 状态竖条四态、10px 卡片外壳、引用稳定 `useMarkdownLabels`、`cleanPreview` 与官方组件再导出）。
 - `src/client/features-source.ts` / `PanelFeatureGate.tsx`（D35）：列表、详情正文和标题共享连接级能力查询，关闭时均不订阅业务数据源。工作流关闭时 `workflows-source.ts` 只在区块打开或手动刷新时读取历史。
 - `src/client/ProfileSettings.tsx`（D45/D47）：两个官方 ConfigForm、逐字段保存，官方 `Switch`/`Input`/`Modal(tone="warning")` 控件与首次写回确认。
@@ -99,7 +99,7 @@ pnpm test        # vitest run;pnpm 依赖预检失败时直接 ./node_modules/.b
 
 ### 期望测试基线
 
-- 全绿时的期望回归面为各套件用例之和，当前 742 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 95 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 30 + `client.spec.tsx` 142 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5;新套件落地时在此登记。
+- 全绿时的期望回归面为各套件用例之和，当前 744 例：官方协议面 `subagent-acp.spec.ts` 68(含恢复的 24 例 D8 豁免)+ `connection.spec.ts` 52 + `connection-codex.spec.ts` 39 + `pool.spec.ts` 95 + `tools.spec.ts` 58 + `jobs.spec.ts` 12 + `panel.spec.ts` 31 + `client.spec.tsx` 143 + `steer.spec.ts` 5 + `engine.spec.ts` 22 + `turn-log.spec.ts` 18 + `job-wait-gate.spec.ts` 15 + `team.spec.ts` 25 + `team-prompt.spec.ts` 6 + `dispatcher-preset.spec.ts` 17 + `skill-docs.spec.ts` 5 + `workflow.spec.ts` 20 + `usage.spec.ts` 8 + `workflow-log.spec.ts` 8 + `backend-verification.spec.ts` 24 + `backend-compatibility.spec.ts` 29 + `live-settings.spec.ts` 16 + `profile-settings.spec.tsx` 4 + `panel-time.spec.ts` 7 + `panel-chrome.spec.tsx` 7 + `live-buffer.spec.ts` 3 + `live-gateway.spec.ts` 2 + `team-view.spec.ts` 5;新套件落地时在此登记。
 
 
 
