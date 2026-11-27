@@ -53,7 +53,7 @@
 1. **`useClipboardCopy(text)` 返回 `{ copied, onCopy }`,不是 `{ copied, copy }`**。
    - **违反会怎样**:按直觉解构 `copy` 绑定 `onClick={promptCopy.copy}`,运行期事件处理器为 `undefined`,点击复制静默失效;更糟的是测试里若顺手 mock 成 `copy: () => {}`,单测反而会全绿掩盖缺陷。
    - **根因**:官方接口 `ClipboardCopyState` 的回调名固定为 `onCopy`。
-   - **现在靠什么防**:`src/client/ChatDetail.tsx` 走 `promptCopy.onCopy` / `replyCopy.onCopy`;合并修复 `501fcda` 已清理 `tests/client.spec.tsx` 中形状错误的旧 mock(`tests/profile-settings.spec.tsx:31` 仍有未消费到的旧占位,后续改该文件时一并对齐)。
+   - **现在靠什么防**:`src/client/ChatDetail.tsx` 走 `promptCopy.onCopy` / `replyCopy.onCopy`;合并修复 `501fcda` 已清理 `tests/client.spec.tsx` 中形状错误的旧 mock(`tests/profile-settings.spec.tsx` 曾留有一个未消费到的旧占位,已随本文档一并对齐)。
    - **证据**:`node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/use-clipboard-copy.d.ts:2-7`、提交 `501fcda`、`src/client/ChatDetail.tsx:142-169`。
 
 2. **`StateDot` 与 `TextShimmer` 没有自定义的繁杂状态开关——`StateDot` 只认五态 `state` + `appearance`,`TextShimmer` 只有 `active?: boolean`**。
@@ -106,7 +106,7 @@
 
 3. **DSH peer 依赖必须与已装 App 版本对齐,且 D8 的 24 例真实子进程测试不得当作坏测试删掉**。
    - **违反会怎样**:peer 错版有真实先例——误装 `0.1.0-rc.6` 导致整个 provider 行静默无法激活;而忽略在 CI 里因缺官方 checkout 自动跳过的 24 例真实子进程测试,会让子进程 EOF/SIGTERM/SIGKILL 销毁梯子与环境清洗的退化漏到生产。
-   - **根因**:npm 分发包不含官方 `src/spawn.ts`,CI 无法运行这 24 例,只能靠本地官方 checkout 兜底。
+   - **根因**:npm 分发包不含官方的 `packages/subprocess/subprocess-local/src/spawn.ts`,CI 无法运行这 24 例,只能靠本地官方 checkout 兜底。
    - **现在靠什么防**:App 升级时同步重装全套 `@deepseek-ai/dsh-*` peer 并跑回归;发版门槛 `pnpm release:skipped` 强制在本机补跑这 24 例。
    - **证据**:D2、D8、`scripts/release.mjs`。
 
@@ -163,11 +163,11 @@
    - **现在靠什么防**:定位反馈条先用 `within(目标区域)` 缩小范围,或直接按具体文本 / `aria-label` 查询;写 `data-*` 断言前核对组件真实 JSX 层级。
    - **证据**:0.7.5/0.7.6 测试提交(`6f8f0ce`、`45b0faf`)、`src/client/ChatDetail.tsx:254-258`、`tests/profile-settings.spec.tsx:192`。
 
-5. **交接纪律:改完代码或测试夹具后必须重跑对应测试再汇报,禁止「修了没重跑就交接」**。
-   - **违反会怎样**:两次出现修完测试夹具、以为稳了就不重跑直接报给接手人的情况——结果要么仍有未清的断言/导入错误,要么把验证成本甩给上游、中断并行节奏。
-   - **根因**:对「只改了几行夹具」过度自信,跳过了最低成本的闭环验证。
-   - **现在靠什么防**:任何对 `src/` 或 `tests/` 的修改(哪怕只改一行 mock)在交付前必须跑通对应单测文件(一次跑一个文件避免机载飙升),并把实际命令与通过条数写入汇报;接手人合并或发版前也必须自己复跑一遍涉及的测试文件。
-   - **证据**:0.7.5/0.7.6 协作复盘、`~/.agents/skills/release-dsh-plugin/SKILL.md` §2。
+5. **测试交接的两半规矩:实施者修完夹具后**不重跑、只报告**;接手人合并前**必须自己重跑**。**
+   - **违反会怎样**:规矩的任何一半被省掉都会出事。实施者若修完就地反复重跑,机器负载飙升、还容易为了变绿而改断言;接手人若信了「已修复」不复跑,就会把没修好的测试带进发版——0.7.5 那次 `client.spec.tsx` 的 D48 用例,实施者报告「mock 已修」,接手人复跑发现 `Maximum update depth` 没了但换成了 `Found multiple elements with the role "status"`,`section` 变量取错了层级,仍要再修一次。
+   - **根因**:两半规矩针对的是两种不同的失败模式——前半防「反复重跑掩盖问题」,后半防「报告不等于事实」。
+   - **现在靠什么防**:实施者改完 `src/` 或 `tests/` 后(哪怕只改一行 mock)**不重跑同一文件**,把改动、根因判断、未复验的事实写进汇报;接手人在合并或发版前**逐个复跑**涉及的测试文件(一次一个,看负载),以自己的结果为准。两边的实际命令与通过条数都写进记录。
+   - **证据**:0.7.5(`6f8f0ce`)与 0.7.6(`45b0faf`)的协作复盘;本机用户级 skill `release-dsh-plugin` §2「子代理说留给 CI 复验的,复验它」。
 
 ---
 
@@ -200,7 +200,7 @@
    - **证据**:提交 `501fcda`。
 
 5. **大测试文件冲突合并后,人工或脚本核对一次括号平衡**。
-   - **违反会怎样**:3000 行的 `tests/client.spec.tsx` 在合并块删减时少删或多删一个 `})` / `})`,导致半个文件里的 `describe` 嵌套错位甚至静默吞掉用例数。
+   - **违反会怎样**:3000 行的 `tests/client.spec.tsx` 在合并块删减时少删或多删一个 `}` / `})`,导致半个文件里的 `describe` 嵌套错位甚至静默吞掉用例数。
    - **根因**:git 冲突块在重复 `it(...)` 边界上经常发生错行匹配。
    - **现在靠什么防**:合并测试文件后核对括号平衡与预期测试总数(同时对照 `AGENTS.md` 基线)。
    - **证据**:提交 `501fcda`、`d333b73`。

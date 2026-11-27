@@ -28,7 +28,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Tag: ({ children }: { children?: ReactNode }) => <span data-tag="">{children}</span>,
   TextShimmer: () => null,
   extractMarkdownPlainText: (text: string) => text,
-  useClipboardCopy: () => ({ copied: false, copy: () => {} }),
+  useClipboardCopy: () => ({ copied: false, onCopy: () => {} }),
 }))
 
 import { ProfileSettings, type ProfileBackendInfo, type SettingsForm } from '../src/client/ProfileSettings.tsx'
