@@ -136,14 +136,19 @@ export function apply(ctx: Context): void {
       for (const detail of details.values()) detail.dispose()
       details.clear()
     }, 'dsh-acp-resume.detail-sources')
+    // The `remote` service may only be read on a scope that injected it: `scope` itself
+    // did not, so the mounted face is captured inside the child scope and handed out here.
+    let watchRemote: WatchRemote | undefined
     const binding = scope.inject(['remote'], async remoteScope => {
       const remote = remoteScope.get('remote') as WatchRemote
       await remote.$mount({ package: 'dsh-acp-resume', descriptors: [watchDescriptor] })
+      watchRemote = remote
+      return () => { watchRemote = undefined }
     })
     const live = new LiveSource(async function* (chatId, owner, signal) {
       await binding.await()
       if (signal.aborted) return
-      const remote = scope.get('remote') as WatchRemote | undefined
+      const remote = watchRemote
       if (!remote) throw new Error('Remote stream service unavailable')
       const handle = remote.acpResume.watch(chatId, owner, signal)
       const cancel = () => handle.dispose()

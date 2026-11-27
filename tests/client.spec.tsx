@@ -13,6 +13,9 @@
 
 import { useSyncExternalStore, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configOptions, neon, sonnet, orchestrator } from './fixtures/session-options.ts'
@@ -1483,6 +1486,57 @@ describe('apply (client wiring)', () => {
     expect(services.tabs).toHaveLength(0)
   })
 
+  it('mounts the stream descriptor through the injected remote and opens a live stream via followTurn (D46)', async () => {
+    // Covers the inject → $mount → LiveSource chain end to end. It does NOT reproduce the DSH
+    // client's "cannot get property without inject" guard (bare Cordis lets the parent scope read a
+    // provided service); that regression is pinned structurally in the test below.
+    const ctx = new Context()
+    const services = stubServices()
+    ctx.provide('slots', services.slots)
+    ctx.provide('sidebarRightTabs', services.sidebarRightTabs)
+    ctx.provide('locale', services.locale)
+    ctx.provide('connection', { rpc: mockRpc(() => []) })
+    let mounted = 0
+    const opened: string[] = []
+    const remote = {
+      $mount: async () => { mounted++ },
+      // Stand in for the stream carrier: one snapshot frame, then settled.
+      // A mounted stream handle is an AsyncIterable that also carries `dispose()`, like the real carrier's.
+      acpResume: { watch: (chatId: string) => {
+        opened.push(chatId)
+        const frames = (async function* () { yield { kind: 'snapshot', seq: 1, text: '实时文本', truncated: false }; yield { kind: 'settled', seq: 2 } })()
+        return Object.assign(frames, { dispose: () => { frames.return(undefined) } })
+      } },
+    }
+    // Reading `remote` from a scope that did not inject it must fail, as it does in the DSH client.
+    Object.defineProperty(remote, Symbol.for('dsh.test.guard'), { value: true })
+    const guarded = new Proxy(remote, { get(target, key, receiver) { return Reflect.get(target, key, receiver) } })
+    ctx.provide('remote', guarded)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fiber = await ctx.plugin(client)
+    expect(mounted).toBe(1)
+    const detail = services.bodies[1] as (typeof services.bodies)[number]
+    const face = detail.options.inject!(TEST_SESSION) as ChatDetailInjected
+    expect(face.followTurn).toBeTypeOf('function')
+    const follow = face.followTurn!
+    const frames: unknown[] = []
+    const stop = follow('chat-live', NOW - 500, frame => { frames.push(frame); if (frame.kind === 'settled') stop() })
+    await vi.waitFor(() => expect(frames.map(f => (f as { kind: string }).kind)).toEqual(['snapshot', 'settled']))
+    expect(opened).toEqual(['chat-live'])
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('live output stream failed'), expect.anything())
+    await fiber.dispose()
+  })
+
+  it('the live opener reads `remote` only from the value captured inside its inject scope (pins the DSH "without inject" fix)', () => {
+    // The DSH client refuses `ctx.get('remote')` on a scope that did not inject it; bare Cordis does not,
+    // so the regression cannot be reproduced here. Pin the shape instead: the opener must use the
+    // captured `watchRemote`, never `scope.get('remote')`.
+    // jsdom gives `import.meta.url` a non-file scheme; resolve from the test file's directory instead.
+    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts'), 'utf8')
+    const opener = source.slice(source.indexOf('new LiveSource('), source.indexOf('}, chatId =>'))
+    expect(opener).toContain('const remote = watchRemote')
+    expect(opener.includes("scope.get('remote')") || opener.includes('scope.get("remote")')).toBe(false)
+  })
   it('without a connection service registers nothing and warns once; a later connection brings the panel in', async () => {
     const ctx = new Context()
     const services = stubServices()
@@ -2315,6 +2369,126 @@ describe('D44 per-chat controls', () => {
       expect(await screen.findByText(zh.restartForChatActions)).toBeTruthy()
       expect(call.mock.calls.filter(args => args[1] === 'acpResume/close')).toHaveLength(1)
     } finally { cleanup(); await ctx.fiber.dispose() }
+  })
+
+  it('renders running, released-editable, choicesUnknown, Codex, and active copy in zh and en (D48)', async () => {
+    for (const copy of [zh, en]) {
+      // Active idle
+      render(<ChatsPanel {...props(ready([chat({ active: true })]), {
+        settings: { read: async () => ({ ...readSessionChoices({ configOptions: configOptions(neon) }), backend: 'agy', supported: true, canChange: true }), change: vi.fn() },
+        t: translator(copy),
+      })} />)
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) })) })
+      expect(screen.getByText(copy.switchLifetime)).toBeTruthy()
+      cleanup()
+
+      // Running
+      render(<ChatsPanel {...props(ready([chat({ active: true, inFlight: { chatId: 'a', startedAt: NOW, message: 'work' } })]), {
+        settings: { read: async () => ({ ...readSessionChoices({ configOptions: configOptions(neon) }), backend: 'agy', supported: true, canChange: false, reason: 'running' }), change: vi.fn() },
+        t: translator(copy),
+      })} />)
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) })) })
+      expect(screen.getByText(copy.switchRunning)).toBeTruthy()
+      expect(screen.getAllByRole('combobox').every(el => (el as HTMLSelectElement).disabled)).toBe(true)
+      cleanup()
+
+      // Released (editable): dropdowns enabled, change succeeds, displays "next reconnect" copy
+      let selectedModel = neon
+      const change = vi.fn(async (_id: string, field: 'model' | 'effort', value: string) => { if (field === 'model') selectedModel = value })
+      render(<ChatsPanel {...props(ready([chat({ active: false })]), {
+        settings: {
+          read: async () => ({ ...readSessionChoices({ configOptions: configOptions(selectedModel) }), backend: 'agy', supported: true, canChange: true, reason: 'released' }),
+          change,
+        },
+        t: translator(copy),
+      })} />)
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.releasedGroup.replace('{count}', '1').replace(/[()]/g, '\\$&')) }))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) })) })
+      const modelSelect = screen.getByRole('combobox', { name: copy.sessionModel }) as HTMLSelectElement
+      expect(modelSelect.disabled).toBe(false)
+      expect(screen.getByText(copy.switchReleased)).toBeTruthy()
+      await act(async () => { fireEvent.change(modelSelect, { target: { value: sonnet } }) })
+      expect(change).toHaveBeenCalledWith(chat().chatId, 'model', sonnet)
+      expect((screen.getByRole('combobox', { name: copy.sessionModel }) as HTMLSelectElement).value).toBe(sonnet)
+      expect(screen.getByText(copy.switchReleased)).toBeTruthy()
+      cleanup()
+
+      // Released (choicesUnknown): no selects, no error, shows unknown copy
+      render(<ChatsPanel {...props(ready([chat({ active: false })]), {
+        settings: { read: async () => ({ backend: 'agy', supported: true, canChange: true, choicesUnknown: true, reason: 'released' }), change: vi.fn() },
+        t: translator(copy),
+      })} />)
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.releasedGroup.replace('{count}', '1').replace(/[()]/g, '\\$&')) }))
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) })) })
+      expect(screen.getByText(copy.switchChoicesUnknown)).toBeTruthy()
+      expect(screen.queryByRole('combobox')).toBeNull()
+      expect(screen.queryByRole('alert')).toBeNull()
+      cleanup()
+
+      // Codex unsupported
+      render(<ChatsPanel {...props(ready([chat({ active: true })]), {
+        settings: { read: async () => ({ backend: 'codex', supported: false, canChange: false, reason: 'codex session-level switch is not available yet' }), change: vi.fn() },
+        t: translator(copy),
+      })} />)
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.sessionSettings) })) })
+      expect(screen.getByText(copy.switchUnsupported)).toBeTruthy()
+      cleanup()
+    }
+    // Locale key parity check
+    expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort())
+    for (const key of Object.keys(zh) as (keyof typeof zh)[]) {
+      expect(zh[key].length).toBeGreaterThan(0)
+      expect(en[key].length).toBeGreaterThan(0)
+    }
+  })
+
+  it('wires backendDefaults metadata from BackendStatus into ProfileSettings and blocks invalid effort (D48)', async () => {
+    const mutate = vi.fn(async () => true)
+    const form = (value: Record<string, unknown>) => {
+      const snap = { status: 'ready', writable: true, revision: 3, value }
+      return { getSnapshot: () => snap, subscribe: () => () => {}, mutate }
+    }
+    const statusSnapshot = {
+      status: 'ready' as const,
+      checking: false,
+      data: {
+        checking: false,
+        dispatchEnabled: true,
+        defaultBackend: 'default',
+        backends: [
+          { id: 'default', label: 'kiro-cli', configured: true, effortKind: 'kiro' as const, staticModel: 'claude-opus-5.5', compatibility: 'supported' as const, readiness: 'ready' as const },
+          { id: 'agy', label: 'Antigravity CLI (agy)', configured: false, automatic: true as const, effortKind: 'agy' as const, compatibility: 'supported' as const, readiness: 'ready' as const },
+          { id: 'codex', label: 'Codex', configured: false, automatic: true as const, effortKind: 'codex' as const, compatibility: 'supported' as const, readiness: 'ready' as const },
+        ],
+      },
+    }
+    const backendStatus = {
+      getSnapshot: () => statusSnapshot,
+      subscribe: () => () => {},
+      check: async () => {},
+    }
+    const forms = { main: form({ roles: true, workflow: false, backendDefaults: {} }), dispatcher: form({}) }
+    render(<ChatsPanel {...props(ready([]), {
+      backendStatus,
+      profileForms: () => forms,
+      t: translator(zh),
+    })} />)
+    fireEvent.click(screen.getByRole('button', { name: zh.profileSettings }))
+    // The defaults block is a div inside the settings `<section>`; the save/validation `status` is a sibling of the block, inside that `<section>`.
+    const section = (document.querySelector('[data-backend-defaults-section]') as HTMLElement).closest('section') as HTMLElement
+    expect(section).toBeTruthy()
+    expect(within(section).getAllByText(zh.backendAutomatic)).toHaveLength(2)
+    expect(within(section).getByRole('combobox', { name: 'agy 缺省思考强度' })).toBeTruthy()
+    expect(within(section).getByRole('textbox', { name: 'codex 缺省思考强度' })).toBeTruthy()
+    const agyEffort = within(section).getByRole('combobox', { name: 'agy 缺省思考强度' }) as HTMLSelectElement
+    const invalidOpt = document.createElement('option')
+    invalidOpt.value = 'max'
+    agyEffort.appendChild(invalidOpt)
+    fireEvent.change(agyEffort, { target: { value: 'max' } })
+    // The panel itself has a persistent screen-reader `status`; look for the settings one inside the section.
+    // The panel itself has a persistent screen-reader `status`; look for the settings one inside the section.
+    expect(within(section).getByRole('status').textContent).toContain('is not a valid effort level for agy')
+    expect(mutate).not.toHaveBeenCalled()
   })
 
   it('binds both detail mutations to the viewing seat sessionId', async () => {
