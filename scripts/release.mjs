@@ -15,8 +15,8 @@
  *   node scripts/release.mjs index <ver>  wait until repo and live index both show <ver>
  *   node scripts/release.mjs token        report the token's repository permissions
  *
- * RELEASE_MARKERS / RELEASE_ABSENT are JSON maps { "lib/x.js": "text" } the tarball must / must not
- * contain, set per release on the command line. The GitHub token is read from GITHUB_TOKEN (never
+ * RELEASE_MARKERS / RELEASE_ABSENT are JSON maps { "lib/x.js": "text" | ["text", ...] } the tarball
+ * must / must not contain, set per release on the command line; an array checks several needles in one file. The GitHub token is read from GITHUB_TOKEN (never
  * written anywhere). The official
  * checkout for `skipped` is DSH_OFFICIAL_CHECKOUT, defaulting like the test suite.
  */
@@ -260,18 +260,23 @@ const commands = {
       const skillFiles = readdirSync(join(root, 'skills', 'acp-resume-docs'), { recursive: true }).filter((name) => /\.\w+$/.test(name))
       say(`  skills/acp-resume-docs: ${skillFiles.length} files`)
       if (skillFiles.length < 9) fail('skill files missing from the tarball')
+      // Each value is one needle or an array of needles; an array keeps several checks for one file.
       const markers = JSON.parse(process.env.RELEASE_MARKERS ?? '{}')
-      for (const [file, needle] of Object.entries(markers)) {
+      for (const [file, needles] of Object.entries(markers)) {
         const text = readFileSync(join(root, file), 'utf8')
-        if (!text.includes(needle)) fail(`${file} does not contain ${JSON.stringify(needle)}`)
-        say(`  ${file} contains ${JSON.stringify(needle)}`)
+        for (const needle of Array.isArray(needles) ? needles : [needles]) {
+          if (!text.includes(needle)) fail(`${file} does not contain ${JSON.stringify(needle)}`)
+          say(`  ${file} contains ${JSON.stringify(needle)}`)
+        }
       }
       if (Object.keys(markers).length === 0) say('  (RELEASE_MARKERS unset: no per-release markers checked)')
       const absent = JSON.parse(process.env.RELEASE_ABSENT ?? '{}')
-      for (const [file, needle] of Object.entries(absent)) {
+      for (const [file, needles] of Object.entries(absent)) {
         const text = readFileSync(join(root, file), 'utf8')
-        if (text.includes(needle)) fail(`${file} still contains ${JSON.stringify(needle)}; this release was supposed to remove it`)
-        say(`  ${file} no longer contains ${JSON.stringify(needle)}`)
+        for (const needle of Array.isArray(needles) ? needles : [needles]) {
+          if (text.includes(needle)) fail(`${file} still contains ${JSON.stringify(needle)}; this release was supposed to remove it`)
+          say(`  ${file} no longer contains ${JSON.stringify(needle)}`)
+        }
       }
     } finally { rmSync(dir, { recursive: true, force: true }) }
   },
